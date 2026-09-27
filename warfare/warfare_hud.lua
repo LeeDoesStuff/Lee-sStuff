@@ -22,7 +22,28 @@ local lp        = Players.LocalPlayer
 local M = 0.28 -- studs -> meters, same factor the game's drone HUD uses
 local Attachments  = RS:WaitForChild("DroneSystem"):WaitForChild("Attachments")
 local DroneWS      = Workspace:WaitForChild("DroneWorkspace")
-local okFlight, MavicFlight = pcall(require, RS.Framework.Modules.MavicFlight)
+-- Next grenade on a MAVIC rack; mirrors Framework.Modules.MavicFlight.GetPayload. Inlined instead of require()
+-- so no game module ever runs in the executor's context (lower-level executors emulate require differently).
+local function mavicPayload(m)
+    local holder
+    for _, c in ipairs(m:GetChildren()) do
+        if c:IsA("Model") and c:GetAttribute("GrenadeHolder") then holder = c; break end
+    end
+    if not holder then return nil end
+    local rack = holder:FindFirstChild("RGD") or holder:FindFirstChild("Grenades") or holder
+    local best, bestN
+    for _, c in ipairs(rack:GetChildren()) do
+        local n = tonumber(c.Name)
+        if c:IsA("Model") and n and not c:GetAttribute("Dropped") and (not bestN or n < bestN) then best, bestN = c, n end
+    end
+    if not best then return nil end
+    return best.PrimaryPart or best:FindFirstChild("Grenade") or best:FindFirstChild("MeshPart") or best:FindFirstChildWhichIsA("BasePart")
+end
+
+-- Memory-reading features (muzzle aim, map ESP) need getgc + debug.getupvalue/getinfo + islclosure.
+-- Detected once; missing on some executors, and a slow getgc there would freeze the client on every scan.
+local HAS_GC = type(getgc) == "function" and type(islclosure) == "function"
+    and type(debug) == "table" and type(debug.getupvalue) == "function" and type(debug.getinfo) == "function"
 
 -- ExplosionFX: blast damage = full inside r/4, then dmg*(1-x)^1.7 down to 0 at r. Characters have 100 HP.
 local GRENADE_DMG = { M67 = 125, RDG5 = 110, F1 = 145, RGO = 135 } -- ExplosionFX default damage per type
@@ -44,7 +65,8 @@ local CFG = {
     watchWarn = true, watchLOS = true, watchFacing = true,
     bodyGuard = true, bodyRadius = 15, bodyOnlyFlying = true,
     droneAlert = true, droneRange = 80, droneHighlight = true,
-    mapEsp = true, mapNames = true, mapDrones = true, mapDotSize = 7,
+    mapEsp = true, mapNames = true, mapDrones = true, mapDotSize = 7, mapSpawn = true,
+    memScans = HAS_GC,
 }
 
 -- every drawn element: color c + transparency t (0 = solid, 1 = invisible); edited by the pickers in the Colors tab
@@ -236,8 +258,7 @@ local function predictor(m, main)
     local v0 = main.AssemblyLinearVelocity
     local hit, eta
     if kind == "MAVIC" then
-        local part = okFlight and select(2, pcall(MavicFlight.GetPayload, m))
-        if typeof(part) ~= "Instance" then part = nil end
+        local part = mavicPayload(m)
         local p0 = part and part.Position or main.Position
         local g = Vector3.new(0, -Workspace.Gravity, 0)
         local prev, last = p0, p0
@@ -289,20 +310,22 @@ end
 --   HeadMovement state .aim (weapon muzzle direction in HRP space, via the HeadMovement bridge): exact,
 --   but the game only holds it for ~5-8 nearby players, and only while a gun is up (not sprinting).
 -- Far players' pitch never reaches this client, so for them the cone is level and checks compare yaw only.
-local aimState, aimScanAt = nil, 0
+local aimState, aimScanAt, aimMiss = nil, 0, nil
 local function aimTable()
     if aimState then
         for _, v in pairs(aimState) do
             if type(v) == "table" and os.clock() - (v.up or 0) < 3 then return aimState end
         end
     end
-    -- ponytail: getgc scan is a small hitch, so at most every 15 s while the cached table is stale/empty
-    if not getgc or os.clock() < aimScanAt then return aimState end
-    aimScanAt = os.clock() + 15
+    -- ponytail: a getgc scan is a hitch (~100 ms on Potassium, more on slower executors). The table persists once
+    -- found, so rescans only happen while it's stale, backing off 15 s -> 30 -> 60 -> ... 5 min
+    if not (CFG.memScans and HAS_GC) or os.clock() < aimScanAt then return aimState end
+    aimMiss = math.min((aimMiss or 7.5) * 2, 300)
+    aimScanAt = os.clock() + aimMiss
     for _, g in ipairs(getgc(false)) do
         if type(g) == "function" and islclosure(g) and debug.getinfo(g).name == "OnRemoteData" then
             local t = debug.getupvalue(g, 2)
-            if type(t) == "table" then aimState = t; break end
+            if type(t) == "table" then aimState = t; aimMiss = nil; break end
         end
     end
     return aimState
@@ -459,10 +482,12 @@ end
 -- PlayerScripts.TacticalMap keeps one view table per map widget (minimap + full in-match map):
 -- {clip, cx, cz, spp (studs per pixel), rot, iconLayer, mates, ...}. Teammate dots are placed with its toView();
 -- enemy dots below use the same math, in an overlay frame inside each view's clip.
-local mapViews, mapScanAt, mapLayers = {}, 0, {}
+local mapViews, mapScanAt, mapLayers, mapMiss = {}, 0, {}, nil
 local function findMapViews()
-    if not getgc or os.clock() < mapScanAt then return end
-    mapScanAt = os.clock() + 10 -- ponytail: getgc(true) is a one-off hitch; only rescans while no live view is known
+    if not (CFG.memScans and HAS_GC) or os.clock() < mapScanAt then return end
+    -- ponytail: getgc(true) is a one-off hitch; rescans only while no live view is known, backing off 10 s -> 5 min
+    mapMiss = math.min((mapMiss or 5) * 2, 300)
+    mapScanAt = os.clock() + mapMiss
     local found = {}
     for _, t in ipairs(getgc(true)) do
         if type(t) == "table" and rawget(t, "spp") and rawget(t, "mates") and rawget(t, "iconLayer")
@@ -471,6 +496,7 @@ local function findMapViews()
         end
     end
     mapViews = found
+    if #found > 0 then mapMiss = nil end
 end
 
 local function mapLayer(v)
@@ -490,6 +516,46 @@ local function mapLayer(v)
     L.frame = f
     mapLayers[v] = L
     return L
+end
+
+-- Spawn/deploy map (PlayerScripts.SatelliteDeployMap): the real camera looks straight down and map tiles are
+-- laid over it; its markers use Camera:WorldToViewportPoint. Active when workspace InMenu, CurrentWindow == "Map",
+-- MapLoaded, and the camera points down (LookVector.Y <= -0.95).
+local SpawnDots = pool("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 6 }, function(d)
+    Instance.new("UICorner", d).CornerRadius = UDim.new(1, 0)
+    local n = Instance.new("TextLabel")
+    n.Name, n.ZIndex, n.BackgroundTransparency, n.TextScaled = "N", 6, 1, true
+    n.Size, n.AnchorPoint, n.Position = UDim2.new(0, 120, 0, 12), Vector2.new(0.5, 0), UDim2.new(0.5, 0, 1, 1)
+    n.Font, n.TextStrokeTransparency = Enum.Font.GothamBold, 0.3
+    n.Parent = d
+end, screen)
+
+local function spawnMapEsp()
+    if not (CFG.mapEsp and CFG.mapSpawn and Workspace:GetAttribute("InMenu") == true
+        and Workspace:GetAttribute("CurrentWindow") == "Map" and Workspace:GetAttribute("MapLoaded") == true) then return end
+    local cam = Workspace.CurrentCamera
+    if cam.CFrame.LookVector.Y > -0.95 then return end
+    local function put(pos, col, text, size)
+        local v, on = cam:WorldToViewportPoint(pos)
+        if not on then return end
+        local d = SpawnDots.get()
+        d.Position, d.Size = UDim2.fromOffset(v.X, v.Y), UDim2.fromOffset(size, size)
+        d.BackgroundColor3, d.BackgroundTransparency = col.c, col.t
+        d.N.Text, d.N.TextColor3, d.N.Visible = text, col.c, CFG.mapNames and text ~= ""
+    end
+    for _, pl in ipairs(Players:GetPlayers()) do
+        local char = isEnemy(pl) and pl.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then put(hrp.Position, COL.mapDot, pl.DisplayName:upper(), CFG.mapDotSize) end
+    end
+    if CFG.mapDrones then
+        local team = myTeam()
+        for _, m in ipairs(DroneWS:GetChildren()) do
+            local main = m:FindFirstChild("Other") and m.Other:FindFirstChild("Main")
+            if main and m:GetAttribute("Team") ~= team then put(main.Position, COL.mapDrone, "", CFG.mapDotSize + 2) end
+        end
+    end
 end
 
 local function mapEsp()
@@ -555,6 +621,7 @@ table.insert(conns, Run.RenderStepped:Connect(function()
     guard("threats", threats, warns, body, droneMain)
     guard("enemyDrones", enemyDrones, warns, body, droneMain)
     guard("mapEsp", mapEsp)
+    guard("spawnMapEsp", spawnMapEsp)
     table.sort(warns, function(a, b) return a[1] > b[1] end)
     local out = {}
     for i = 1, math.min(#warns, 5) do out[i] = warns[i][2] end
@@ -657,6 +724,7 @@ MapBox:AddLabel("Enemy dots on the in-match map and the minimap, placed with the
 toggle(MapBox, "WF_MapEsp", "mapEsp", "Enemies on map")
 toggle(MapBox, "WF_MapNames", "mapNames", "Names when zoomed in", "Same zoom level where the game shows teammate names")
 toggle(MapBox, "WF_MapDrones", "mapDrones", "Enemy drones on map")
+toggle(MapBox, "WF_MapSpawn", "mapSpawn", "Also on the spawn map", "Deploy screen overhead map")
 slider(MapBox, "WF_MapDot", "mapDotSize", "Dot size", 3, 16, "px")
 
 local Drones = Tabs.Threats:AddRightGroupbox("Enemy drones")
@@ -688,6 +756,12 @@ colorBoxes["HUD text"]:AddButton({ Text = "Reset all colors", Func = function()
         col.c, col.t = col.c0, col.t0
     end
 end })
+
+local Compat = Tabs.Settings:AddRightGroupbox("Executor compatibility")
+Compat:AddLabel(HAS_GC and "Memory scans available (getgc / debug.getupvalue)." or
+    "This executor has no getgc / debug.getupvalue: muzzle aim and in-match map dots are off (spawn map dots still work).", true)
+toggle(Compat, "WF_MemScans", "memScans", "Memory scans (muzzle aim, in-match map ESP)",
+    "Reads game memory with getgc. Turn off if your executor freezes or acts up; cones fall back to body facing")
 
 local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })

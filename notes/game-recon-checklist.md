@@ -90,6 +90,14 @@ Finding where money comes from is step one, not the analysis. Before writing cod
 - **Line-of-sight raycasts need a ragdoll skip.** Corpse colliders (including your own death ragdoll) block rays. Do what the game's own predictor does and ignore its corpse collision group.
 - Before deciding what to draw, measure how much of the data reaches this client: which fields, how many players, and at what distance. Say in the UI when a value is unknown ("FACING", yaw only) instead of drawing a confident wrong one.
 
+## 4d. Scripts other people run on other executors
+
+- **List every executor-specific call** (`getgc`, `debug.*`, `hookfunction`, `require` of game modules, `gethui`) and **check once that each exists.** When one is missing, switch off the feature that needs it. Don't retry in a loop.
+- **Never rescan memory on a timer while nothing is found.** A ~100 ms hitch on Potassium can be seconds on a weaker executor, and games have watchdogs (Warfare's weapon equip gives up after 6 s).
+- **Don't `require` game modules for small helpers.** Inline the ~20 lines instead; lower-level executors emulate require in their own ways.
+- **Test the stripped path locally:** load the script with `setfenv` on an environment where those globals are nil.
+- **When a tester reports a break, get the game's own console error first** (F9). Games often print where they got stuck.
+
 ## 5. Co-existing with a player who's playing
 
 - Assume the player plays while the farm runs. Detect manual commands (a transition you didn't cause) and **pause** instead of fighting them.
