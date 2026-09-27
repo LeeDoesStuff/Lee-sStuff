@@ -616,8 +616,25 @@ end
 -- the ring marks the center and the optional dim darkens outside it. Each frame takes whatever FOV the game set
 -- (equip, its own ADS tween) and narrows it; hands the game's FOV back when released.
 local UIS = game:GetService("UserInputService")
-local zoomNow, zoomBase, zoomSet = 1, nil, nil
+local zoomNow, zoomSet = 1, nil
 local baseSens = UIS.MouseDeltaSensitivity -- the game never writes this (grep), so it's ours to scale
+local TweenService = game:GetService("TweenService")
+local instant = TweenInfo.new(0)
+
+-- The game's ADS tween (Core FOV setter) writes FieldOfView after our render step, so the view flipped between
+-- its value and ours every frame. While we own the zoom: re-apply ours the moment anything else writes it, and
+-- play a 0 s tween on the same property, which makes Roblox cancel the game's running FOV tween.
+local zoomCam = Workspace.CurrentCamera
+table.insert(conns, zoomCam:GetPropertyChangedSignal("FieldOfView"):Connect(function()
+    -- float32 property: compare with a tolerance, or our own write looks foreign
+    if zoomSet and math.abs(zoomCam.FieldOfView - zoomSet) > 0.01 then zoomCam.FieldOfView = zoomSet end
+end))
+
+local function baseFov()
+    -- ponytail: zoom is relative to the player's FOV setting, not the game's in-flight ADS value (that fed back
+    -- into itself); the game's own ~1.2x ADS narrowing is replaced by ours while zoomed
+    return math.clamp(tonumber(Workspace:GetAttribute("FieldOfView")) or 80, 20, 120)
+end
 
 local function zoomStep(dt)
     local cam = Workspace.CurrentCamera
@@ -627,19 +644,23 @@ local function zoomStep(dt)
         and Workspace:GetAttribute("InMenu") ~= true and not UIS:GetFocusedTextBox()
     local target = want and CFG.zoomLevel or 1
     zoomNow += (target - zoomNow) * (1 - math.exp(-CFG.zoomSpeed * dt))
-    if math.abs(zoomNow - target) < 0.01 then zoomNow = target end
-    if zoomNow > 1.001 then
-        -- FieldOfView is stored as float32: compare with a tolerance or our own write reads as "the game changed it"
-        if not zoomSet or math.abs(cam.FieldOfView - zoomSet) > 0.01 then zoomBase = cam.FieldOfView end
-        zoomSet = 2 * math.deg(math.atan(math.tan(math.rad(zoomBase) / 2) / zoomNow))
-        cam.FieldOfView = zoomSet
+    if math.abs(zoomNow - target) < 0.005 then zoomNow = target end
+    if zoomNow > 1 or zoomSet then
+        local base = baseFov()
+        local fov = 2 * math.deg(math.atan(math.tan(math.rad(base) / 2) / zoomNow))
+        if zoomSet and math.abs(cam.FieldOfView - zoomSet) > 0.01 then
+            TweenService:Create(cam, instant, { FieldOfView = fov }):Play() -- cancels the game's FOV tween
+        end
+        zoomSet = fov
+        cam.FieldOfView = fov
         UIS.MouseDeltaSensitivity = CFG.zoomSens and baseSens / zoomNow or baseSens
-    elseif zoomSet then
-        if math.abs(cam.FieldOfView - zoomSet) <= 0.01 then cam.FieldOfView = zoomBase end
-        zoomSet, zoomBase = nil, nil
-        UIS.MouseDeltaSensitivity = baseSens
+        if zoomNow <= 1 then -- fully back out: hand the camera back to the game at the player's FOV
+            zoomSet = nil
+            cam.FieldOfView = base
+            UIS.MouseDeltaSensitivity = baseSens
+        end
     end
-    local on = zoomNow > 1.001
+    local on = zoomNow > 1
     local size = UDim2.fromScale(CFG.zoomSize / 100, CFG.zoomSize / 100)
     zoomDimFrame.Visible, zoomDimFrame.Size = on and COL.zoomDim.t < 1, size
     zoomDimStroke.Color, zoomDimStroke.Transparency = COL.zoomDim.c, COL.zoomDim.t
@@ -693,7 +714,7 @@ local function unload()
     for _, b in ipairs(Esp.list) do b:Destroy() end
     for _, L in pairs(mapLayers) do L.frame:Destroy() end
     pcall(Run.UnbindFromRenderStep, Run, "WarfareAimZoom")
-    if zoomSet then Workspace.CurrentCamera.FieldOfView = zoomBase end
+    if zoomSet then zoomSet = nil; Workspace.CurrentCamera.FieldOfView = baseFov() end
     UIS.MouseDeltaSensitivity = baseSens
     root:Destroy(); screen:Destroy()
     if Library then pcall(Library.Unload, Library) end
