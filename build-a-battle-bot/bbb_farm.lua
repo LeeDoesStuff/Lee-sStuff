@@ -27,9 +27,18 @@
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
+local GuiService  = game:GetService("GuiService")
 local LP          = Players.LocalPlayer
 local PG          = LP:WaitForChild("PlayerGui")
 local Shared      = RS:WaitForChild("Shared")
+
+-- After a (re)join, wait out the game's loading screen: before it, syncs can come back empty
+-- (a junk filter would see nothing equipped) and the plot signs aren't drawn yet.
+if not game:IsLoaded() then game.Loaded:Wait() end
+do
+    local t = os.clock()
+    while PG:GetAttribute("Loading") == true and os.clock() - t < 90 do task.wait(0.5) end
+end
 
 -- Re-exec safe
 if getgenv().BBB_FARM then pcall(getgenv().BBB_FARM.unload) end
@@ -57,6 +66,7 @@ local R = {
     alien   = RS:WaitForChild("AlienShipRemote"),
     scrap   = RS:WaitForChild("ScrapperRemote"),
     sign    = RS:WaitForChild("PlotSignRemote"),
+    bay     = RS:WaitForChild("WorkshopBayRemote"),
 }
 local money = LP:WaitForChild("leaderstats"):WaitForChild("Money")
 
@@ -69,7 +79,7 @@ end
 
 local CFG = {
     -- Bot · Depths
-    depths = false, maxRun = 0, drainTo = 15, drainMax = 30, skip = false, skipPct = 25,
+    depths = false, maxRun = 0, drainTo = 15, drainMax = 30, skip = false, skipPct = 25, adminBias = true,
     -- Bot · Pit events
     events = false, eventKinds = set(EVENT_KINDS), stay = false, titanHold = 20, manualPause = 90,
     -- Crates & parts
@@ -78,15 +88,15 @@ local CFG = {
     equip = false, equipSlots = set(BotParts.SLOT_ORDER),
     sellJunk = false, keepPerSlot = 2, keepRarity = 6, -- never sell rarity >= keepRarity (6 = Mythic)
     -- Upgrades
-    upgrades = false, workshopFirst = true, stationCap = 0, reserve = 0, fabricator = false,
+    upgrades = false, workshopFirst = true, bulk = true, stationCap = 0, reserve = 0, fabricator = false,
     skills = false, skillFocus = "Economy", saveForTop = true,
     rebirth = false, rebirthExtra = 0, rebirthMax = 0,
     -- Rewards
-    playtime = false, daily = false, quests = false, guild = false,
+    playtime = false, daily = false, quests = false, guild = false, autoCodes = false,
     -- Scrap
     scrap = false, frenzyOnly = false, minGround = 1, scrapReturn = true, scrapper = false, raid = false,
     -- Misc
-    antiAfk = true,
+    antiAfk = true, rejoin = true,
 }
 
 local S = {
@@ -95,7 +105,7 @@ local S = {
     evs = {},           -- active pit events by kind: { joined, pit = s in arena, seen }
     garage = nil, counts = {}, gsync = nil,
     reward = nil, rewardAt = 0, quest = nil, guild = nil, rb = nil, sk = nil, raid = nil,
-    lastCmd = {}, fullUntil = 0, lastErr = {},
+    lastCmd = {}, fullUntil = 0, lastErr = {}, questTries = {},
     -- Backoffs keyed by Instance. Not weak tables: Roblox drops an Instance's Lua wrapper when no script
     -- holds it, so weak-keyed entries vanished while the part still existed (a 2-min backoff lasted 16 s).
     -- ponytail: never pruned; a few skipped parts per minute, fine for a session
@@ -171,18 +181,25 @@ local function myStations()
             local title = g:FindFirstChild("Title", true)
             local info  = g:FindFirstChild("InfoLabel", true)
             local cost  = g:FindFirstChild("CostLabel", true)
-            if title then e.lv = tonumber(title.Text:match("LV%.(%d+)")) or e.lv end
+            if title then
+                e.lv = tonumber(title.Text:match("LV%.(%d+)")) or e.lv
+                e.maxed = e.maxed or title.Text:find("MAX") ~= nil
+            end
             if info then
                 local cur, cap = info.Text:match("([%d%.,]+%a*)%s*/%s*([%d%.,]+%a*)%s*$")
                 cur, cap = num(cur), num(cap)
                 if cur and cap and cap > 0 then e.fill = cur / cap end
             end
-            if cost and cost.Visible then e.cost = num(cost.Text) or e.cost end -- hidden = maxed (stale text)
+            if cost then e.cost = num(cost.Text) or e.cost end
         end
     end
-    -- exact price from the config: labels round to 1 decimal ("1.2M" is 1,155,557)
+    -- State from the title, price from the config. Labels round to 1 decimal ("1.2M" is 1,155,557), and
+    -- the game shows a PlotSignBillboard's CostLabel only while that sign's prompt is focused and on
+    -- camera, so its Visible says nothing about MAX.
     for _, e in pairs(by) do
-        if e.lv and e.cost then e.cost = WorkshopConfig.stationUpgradeCost(e.lv + 1) end
+        if e.maxed or (e.lv and e.lv >= WorkshopConfig.STATION_MAX_LEVEL) then e.cost = nil
+        elseif e.lv then e.cost = WorkshopConfig.stationUpgradeCost(e.lv + 1)
+        elseif e.cost then e.cost = WorkshopConfig.STATION_COST end -- empty pad: "ENERGY STATION · BUY"
     end
     return by
 end
@@ -202,20 +219,22 @@ local function workshop()
             w.cost = w.cost or num(d.Text)
         end
     end
-    if w.lv and w.cost then w.cost = WorkshopConfig.upgradeCost(w.lv + 1) end -- exact, not the rounded label
+    -- exact price, not the rounded label ("MAX LEVEL" at LV.5 already fails num())
+    w.cost = w.cost and w.lv and w.lv < WorkshopConfig.MAX_LEVEL and WorkshopConfig.upgradeCost(w.lv + 1) or nil
     return w
 end
 
 -- Scrapper: PlotSignBillboard "SCRAPPER LV.9 · UPGRADE · 25.6K · ×5.59" (levels are wave-gated).
--- At MAX (LV.18) the title reads "SCRAPPER MAX" and the CostLabel is hidden but keeps its old text.
+-- At MAX (LV.18) the title reads "SCRAPPER MAX", with no level. The price comes from the config: the
+-- CostLabel only shows while the sign's prompt is focused, and at MAX it keeps a stale price.
 local function scrapper()
     for _, g in ipairs(PG:GetChildren()) do
         local a = g:IsA("BillboardGui") and g.Adornee
         if a and a.Name == "ScrapperSignHolder" and a:GetAttribute("PlotIndex") == plotIdx() then
-            local title, cost = g:FindFirstChild("Title", true), g:FindFirstChild("CostLabel", true)
+            local title = g:FindFirstChild("Title", true)
             local lv = title and tonumber(title.Text:match("LV%.(%d+)"))
-            cost = cost and cost.Visible and (lv and WorkshopConfig.scrapperUpgradeCost(lv + 1) or num(cost.Text))
-            return { part = a, lv = lv, cost = cost }
+            local open = lv and lv < WorkshopConfig.SCRAPPER_MAX_LEVEL
+            return { part = a, lv = lv, cost = open and WorkshopConfig.scrapperUpgradeCost(lv + 1) or nil }
         end
     end
 end
@@ -230,6 +249,16 @@ local function levelOf(part)
     end
     local w = workshop()
     return w and w.lv
+end
+
+-- Price of the station sign's "UPGRADE ×N" from level lv: the next N single levels. nil when it would
+-- pass the station max or the farm's level cap.
+local function bulkCost(lv, steps)
+    local top = lv + steps
+    if top > WorkshopConfig.STATION_MAX_LEVEL or (CFG.stationCap > 0 and top > CFG.stationCap) then return nil end
+    local sum = 0
+    for l = lv + 1, top do sum += WorkshopConfig.stationUpgradeCost(l) end
+    return sum
 end
 
 local function stationFill()
@@ -299,7 +328,7 @@ end
 local function press(e)
     local part, lv0, m0 = e.part, e.lv, money.Value
     if not moveNear(part) then return false end
-    R.sign:FireServer(part)
+    R.sign:FireServer(part, e.steps) -- steps = the station sign's "UPGRADE ×10" (BulkSteps); nil = one level
     if waitTook(part, lv0, m0, e.cost) then return true end
     local pp = part:FindFirstChildOfClass("ProximityPrompt")
     if not pp then return false end
@@ -354,6 +383,7 @@ local function junkParts()
     if not (g and g.builds and g.parts) then return {}, 0 end
     local onBuild = {}
     for _, b in ipairs(g.builds) do for _, uid in pairs(b.parts or {}) do onBuild[uid] = true end end
+    if next(onBuild) == nil then return {}, 0 end -- nothing equipped anywhere = builds not synced yet, not junk
     local bySlot = {}
     for _, p in ipairs(g.parts) do
         local d = BotParts.PARTS[p.id]
@@ -367,8 +397,10 @@ local function junkParts()
         table.sort(list, function(a, b) return partScore(a.id) > partScore(b.id) end)
         local kept = 0
         for _, p in ipairs(list) do
-            local rarity = BotParts.PARTS[p.id].rarity or 1
-            if onBuild[p.uid] or p.locked or rarity >= CFG.keepRarity or kept < CFG.keepPerSlot then
+            -- unknown rarity (a new event tier) and admin-given parts are never junk
+            local rarity = BotParts.PARTS[p.id].rarity
+            if onBuild[p.uid] or p.locked or not rarity or BotParts.isAdminPart(p.id)
+                or rarity >= CFG.keepRarity or kept < CFG.keepPerSlot then
                 kept += 1
             else
                 junk[#junk + 1] = p.uid
@@ -379,12 +411,13 @@ local function junkParts()
     return junk, value
 end
 
--- Admin "CRATE LUCK" event: workspace AdminLuckMult/AdminLuckEndsAt; the server raises
--- CrateConfig.EVENT_LUCK, which scales the rarer rows of both crate-type and part-rarity odds.
-local function luckEvent()
-    local m, e = workspace:GetAttribute("AdminLuckMult"), workspace:GetAttribute("AdminLuckEndsAt")
-    if typeof(m) == "number" and m > 1 and typeof(e) == "number" and os.time() < e then return m end
+-- Admin events: workspace Admin<Luck|Coins|Energy>Mult + …EndsAt (unix). Returns the multiplier while one runs.
+-- CRATE LUCK raises CrateConfig.EVENT_LUCK, which scales the rarer rows of crate-type and part-rarity odds.
+local function adminEvent(kind)
+    local m, e = workspace:GetAttribute("Admin" .. kind .. "Mult"), workspace:GetAttribute("Admin" .. kind .. "EndsAt")
+    if typeof(m) == "number" and m > 1 and typeof(e) == "number" and workspace:GetServerTimeNow() < e then return m end
 end
+local function luckEvent() return adminEvent("Luck") end
 
 -- The game's CrateOpen overlay queues a tap-to-reveal per "opened" event; mute
 -- just that one connection while auto-opening so it doesn't stack up.
@@ -541,7 +574,8 @@ end)
 on(R.garage, function(k, d) if k == "sync" and typeof(d) == "table" then S.gsync = d end end)
 on(R.reward, function(k, d)
     if k == "sync" and typeof(d) == "table" then S.reward, S.rewardAt = d, os.clock()
-    elseif k == "claimed" then log("claimed " .. tostring(typeof(d) == "table" and d.kind)) end
+    elseif k == "claimed" then log("claimed " .. tostring(typeof(d) == "table" and d.kind))
+    elseif k == "code" and typeof(d) == "table" then log("code: " .. tostring(d.message or (d.ok and "ok") or "?")) end
 end)
 on(R.quest, function(k, d) if k == "sync" and typeof(d) == "table" then S.quest = d end end)
 on(R.guild, function(k, d)
@@ -562,6 +596,29 @@ table.insert(S.conns, LP.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
 end))
+
+-- Disconnects: the error prompt carries a code (267 kicked by a script, 277 connection lost, 288 server
+-- shut down, …). Scripts keep running behind it, so write the log right away.
+table.insert(S.conns, GuiService.ErrorMessageChanged:Connect(function(msg)
+    if msg == "" then return end
+    local ok, code = pcall(function() return GuiService:GetErrorCode().Value end)
+    log(("disconnected: code %s · %s · job %s"):format(ok and tostring(code) or "?", msg, game.JobId:sub(1, 8)))
+    pcall(writefile, "bbb_farm_log.txt", table.concat(S.log, "\n"))
+end))
+
+-- Keep farming across teleports (IY autorejoin, server hops): queue this file for the next server.
+-- Queued only when a teleport starts, so switching the option off takes effect right away.
+table.insert(S.conns, LP.OnTeleport:Connect(function(state)
+    if state == Enum.TeleportState.Started and CFG.rejoin and queue_on_teleport then
+        queue_on_teleport('loadstring(readfile("bbb_farm.lua"))()')
+        log("teleport started — farm queued for the next server")
+        pcall(writefile, "bbb_farm_log.txt", table.concat(S.log, "\n"))
+    end
+end))
+
+local function redeemCodes()
+    for code in pairs(RewardConfig.CODES or {}) do R.reward:FireServer("redeemCode", code) end
+end
 
 local function refresh()
     R.crate:FireServer("request")
@@ -600,11 +657,23 @@ local function botTick(dt)
             want = want or not e.joined
         end
     end
-    if m == "bay" or now < (S.manualUntil or 0) then return end -- player is steering
+    if m == "bay" then -- the player opened the garage bay; nobody closes it on an unattended client
+        if now - S.modeAt > 300 and now - (S.bayExit or 0) > 60 then
+            S.bayExit = now
+            R.bay:FireServer("deploy") -- the bay's own DEPLOY button: bot drives back out
+            log("garage bay open 5 min+ — deployed the bot back out")
+        end
+        return
+    end
+    if now < (S.manualUntil or 0) then return end -- player is steering
     -- The server never sends "plot" after toWorkshop/depthsStop: "toPlot" is the resting state.
     local home     = m == "plot" or m == "toPlot"
     local inPit    = m == "arena" or m == "toArena"
     local inDepths = m == "depths" or m == "toDepths"
+    -- Admin COINS event: money ×N, but only in the Depths → skip the plot stays. ENERGY event: XP ×N, but
+    -- only at the plot, and Depths time overflows the stations' 120 s buffers → stay home.
+    local coins  = CFG.adminBias and adminEvent("Coins") and not adminEvent("Energy")
+    local energy = CFG.adminBias and adminEvent("Energy") and not adminEvent("Coins")
     if CFG.events and (want or (CFG.stay and active)) then
         if inDepths then
             cmd("depthsStop") -- toArena is ignored from the Depths; leave first
@@ -614,9 +683,9 @@ local function botTick(dt)
     elseif inPit then
         if CFG.events then cmd("toWorkshop") end
     elseif m == "depths" then
-        if CFG.depths and CFG.maxRun > 0 and now - S.modeAt >= CFG.maxRun then cmd("depthsStop") end
-    elseif home and CFG.depths and now - S.modeAt >= 8 then -- ~8 s to drive home first
-        if stationFill() * 100 <= CFG.drainTo or now - S.modeAt >= CFG.drainMax then startDepths() end
+        if CFG.depths and (energy or (CFG.maxRun > 0 and not coins and now - S.modeAt >= CFG.maxRun)) then cmd("depthsStop") end
+    elseif home and CFG.depths and not energy and now - S.modeAt >= 8 then -- ~8 s to drive home first
+        if coins or stationFill() * 100 <= CFG.drainTo or now - S.modeAt >= CFG.drainMax then startDepths() end
     end
 end
 
@@ -698,6 +767,18 @@ local function upgradeTick()
         for _ = 1, 25 do -- ponytail: cap per batch so the character is only away a few seconds
             local e = bestUpgrade()
             if not (e and afford(e.cost)) then break end
+            if CFG.bulk and e.lv and e.part.Name == "StationAnchor" then
+                -- "UPGRADE ×10" costs exactly the next 10 single levels, so it only saves trips. Use it when
+                -- every station could take +10 too; then it buys what one-at-a-time would have bought anyway.
+                local steps, all, mine = WorkshopConfig.STATION_BULK_STEPS or 10, 0, nil
+                for anchor, st in pairs(myStations()) do
+                    local c = st.lv and bulkCost(st.lv, steps)
+                    if st.lv and not c then all = math.huge break end
+                    all += c or 0
+                    if anchor == e.part then mine = c end
+                end
+                if mine and afford(all) then e.steps, e.cost = steps, mine end
+            end
             if press(e) then
                 S.upgrades += 1
                 log(("%s -> LV.%s (%s)"):format(e.what, tostring(levelOf(e.part)), compact(e.cost)))
@@ -752,18 +833,7 @@ local function skillTick()
 end
 
 local function progressTick()
-    local rb = S.rb
-    if CFG.rebirth and rb and not RebirthConfig.capped(rb.rebirths or 0)
-        and (CFG.rebirthMax == 0 or (rb.rebirths or 0) < CFG.rebirthMax)
-        and (LP:GetAttribute("BestDepthWave") or 0) >= (rb.requiredWave or math.huge) + CFG.rebirthExtra then
-        R.rebirth:FireServer("rebirth")
-        log("rebirth -> " .. tostring((rb.rebirths or 0) + 1))
-        S.rb = nil
-        task.delay(3, function()
-            R.rebirth:FireServer("request")
-            R.skill:FireServer("request")
-        end)
-    end
+    local claimed = false
     local r = S.reward
     if r then
         local fired = false
@@ -792,7 +862,11 @@ local function progressTick()
         local fired = false
         for _, list in ipairs({ q.daily or {}, q.weekly or {} }) do
             for _, e in pairs(list) do
-                if typeof(e) == "table" and not e.claimed and (e.progress or 0) >= (e.goal or math.huge) then
+                if typeof(e) == "table" and e.claimed then S.questTries[e.id] = nil end -- ids repeat daily
+                if typeof(e) == "table" and not e.claimed and (e.progress or 0) >= (e.goal or math.huge)
+                    and (S.questTries[e.id] or 0) < 3 then
+                    -- a claim the server keeps refusing mustn't block rebirth forever
+                    S.questTries[e.id] = (S.questTries[e.id] or 0) + 1
                     R.quest:FireServer("claim", e.id)
                     log("quest " .. tostring(e.id))
                     fired = true
@@ -800,6 +874,7 @@ local function progressTick()
             end
         end
         if fired then
+            claimed = true
             S.quest = nil
             task.delay(1, function() R.quest:FireServer("request") end)
         end
@@ -812,6 +887,21 @@ local function progressTick()
                 S.guild = nil -- the server re-pushes sync every few seconds
             end
         end
+    end
+    -- Rebirth last, and only on a tick with nothing left to claim: quest goals scale with rebirths
+    -- (d_money = 60K × (rebirths + 1)), so a finished-but-unclaimed quest can turn unfinished again.
+    local rb = S.rb
+    if claimed or (CFG.quests and not S.quest) then return end
+    if CFG.rebirth and rb and not RebirthConfig.capped(rb.rebirths or 0)
+        and (CFG.rebirthMax == 0 or (rb.rebirths or 0) < CFG.rebirthMax)
+        and (LP:GetAttribute("BestDepthWave") or 0) >= (rb.requiredWave or math.huge) + CFG.rebirthExtra then
+        R.rebirth:FireServer("rebirth")
+        log("rebirth -> " .. tostring((rb.rebirths or 0) + 1))
+        S.rb = nil
+        task.delay(3, function()
+            R.rebirth:FireServer("request")
+            R.skill:FireServer("request")
+        end)
     end
 end
 
@@ -1113,6 +1203,8 @@ slider(Depths, "BBB_DrainTo", "drainTo", "Leave plot at station fill", 0, 100, "
 slider(Depths, "BBB_DrainMax", "drainMax", "Max plot stay", 5, 120, "s", "…or after this long at the plot, whichever comes first")
 toggle(Depths, "BBB_Skip", "skip", "Use wave skip", "Start runs at your best wave (costs half of what waves 1..N pay)")
 slider(Depths, "BBB_SkipPct", "skipPct", "Skip only if cost ≤", 1, 100, "% of money")
+toggle(Depths, "BBB_AdminBias", "adminBias", "Follow admin COINS / ENERGY events",
+    "COINS ×N only pays in the Depths: no plot stays while it runs. ENERGY ×N only pays at the plot: the bot stays home. Both at once: normal loop")
 
 local Pit = Tabs.Bot:AddRightGroupbox("Pit Events — crates, coins, boosts")
 toggle(Pit, "BBB_Events", "events", "Auto Pit Events", "Tiers are server-wide: the bot only needs to land one hit to get the full rewards")
@@ -1186,6 +1278,8 @@ local gameSell = GameSell:AddDropdown("BBB_GameAutoSell", {
 local Plot = Tabs.Upgrades:AddLeftGroupbox("Plot")
 toggle(Plot, "BBB_Upgrades", "upgrades", "Auto Stations & Workshop", "Buys empty pads, workshop levels (more pads) and station levels — whichever gives the most fuel/s per coin")
 toggle(Plot, "BBB_WorkshopFirst", "workshopFirst", "Workshop first", "Buy the next workshop level as soon as it's affordable (each opens a pad with cheap early levels)")
+toggle(Plot, "BBB_Bulk", "bulk", "Bulk ×10 station upgrades",
+    "Uses the sign's UPGRADE ×10 when every station could take +10 levels: the same levels for a tenth of the trips (×10 costs exactly 10 single levels)")
 slider(Plot, "BBB_StationCap", "stationCap", "Station level cap", 0, 100, "", "Stop upgrading stations at this level. 0 = no cap")
 slider(Plot, "BBB_Reserve", "reserve", "Keep in reserve", 0, 90, "% of money", "Plot and fabricator upgrades only spend what's above this")
 
@@ -1221,7 +1315,15 @@ toggle(Claims, "BBB_Daily", "daily", "Daily login")
 toggle(Claims, "BBB_Quests", "quests", "Daily & weekly quests")
 toggle(Claims, "BBB_Guild", "guild", "Guild chests", "Day and week ladders")
 local Codes = Tabs.Rewards:AddRightGroupbox("Codes")
-Codes:AddButton({ Text = "Redeem BUILDABOT", Func = function() R.reward:FireServer("redeemCode", "BUILDABOT") end })
+do
+    local known = {}
+    for code in pairs(RewardConfig.CODES or {}) do known[#known + 1] = code end
+    table.sort(known)
+    Codes:AddLabel("Codes in the game's config: " .. (#known > 0 and table.concat(known, ", ") or "none"), true)
+end
+Codes:AddButton({ Text = "Redeem all codes", Func = redeemCodes })
+toggle(Codes, "BBB_AutoCodes", "autoCodes", "Redeem codes on load",
+    "Fires every code in the game's config once per load, so codes added by updates get used; used ones just answer 'already redeemed'")
 
 -- ---------- Scrap ----------
 local Scrap = Tabs.Scrap:AddLeftGroupbox("Scrap — character farm")
@@ -1234,7 +1336,7 @@ toggle(Scrap, "BBB_Scrapper", "scrapper", "Auto Upgrade Scrapper", "×1.24 scrap
 local scrapLabel = Scrap:AddLabel("…", true)
 
 local Raid = Tabs.Scrap:AddRightGroupbox("Alien Raid")
-Raid:AddLabel("Every ~10 min the ship drops Alien crates into the Pit. A crate is yours only if your character stays with it in the Pit for the whole capture timer — the catcher parks there (hopping to dodge lasers) and pauses scrap/upgrade teleports until the raid ends.", true)
+Raid:AddLabel("A 4-minute raid (every ~40 min on the servers watched) drops Alien crates into the Pit one at a time. Hold one in the Pit until its 60 s timer ends, or until the raid ends, which pays whatever you're holding: up to 4 per raid. The catcher dodges lasers and bots and pauses scrap/upgrade teleports meanwhile.", true)
 toggle(Raid, "BBB_Raid", "raid", "Catch Alien Crates", "Alien crates: 42% Rare, 29% Epic, 7.5% Legendary+, incl. 2.25% Mythic / 0.75% Godly")
 local raidLabel = Raid:AddLabel("…", true)
 
@@ -1252,9 +1354,14 @@ task.spawn(function()
             for kind, e in pairs(S.evs) do evs[#evs + 1] = kind .. (e.joined and " (joined)" or "") end
             local hours = math.max((now - S.t0) / 3600, 1 / 60)
             local s, w = scrapper(), workshop()
+            local admin = {}
+            for _, kind in ipairs({ "Coins", "Energy", "Luck" }) do
+                local m = adminEvent(kind)
+                if m then admin[#admin + 1] = kind:upper() .. " ×" .. tostring(m) end
+            end
             statusLabel:SetText(table.concat({
                 ("bot: %s %ds%s"):format(tostring(S.mode), math.floor(now - S.modeAt), now < (S.manualUntil or 0) and "  [paused: manual]" or ""),
-                ("event: %s"):format(#evs > 0 and table.concat(evs, ", ") or "none"),
+                ("event: %s · admin: %s"):format(#evs > 0 and table.concat(evs, ", ") or "none", #admin > 0 and table.concat(admin, ", ") or "none"),
                 ("money %s · earned %s (%s/h)"):format(compact(money.Value), compact(S.earned), compact(S.earned / hours)),
                 ("stations fill %d%% · workshop LV.%s · upgrades %d"):format(math.floor(stationFill() * 100), tostring(w and w.lv), S.upgrades),
                 ("rebirths %s · best wave %s · skill pts %s"):format(tostring(LP:GetAttribute("Rebirths")), tostring(LP:GetAttribute("BestDepthWave")), tostring(S.sk and S.sk.points or LP:GetAttribute("SkillPoints"))),
@@ -1313,6 +1420,8 @@ S.unload = function() pcall(function() Library:Unload() end) end
 -- ---------- Settings ----------
 local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
 toggle(Menu, "BBB_AntiAfk", "antiAfk", "Anti-AFK", "Stops the 20-minute idle kick")
+toggle(Menu, "BBB_Rejoin", "rejoin", "Restart farm after a rejoin / server hop",
+    "Queues this farm for the next server when a teleport starts (IY autorejoin, hops). A full game relaunch still needs a manual load")
 local IyBox = Tabs.Settings:AddRightGroupbox("Infinite Yield (runs its own commands)")
 IyBox:AddLabel("Drives IY's command bar, so these need IY loaded (your autoexec does it).", true)
 CFG.iySafety, CFG.iyNoRender = false, false
@@ -1331,6 +1440,8 @@ ThemeManager:SetFolder("BattleBotFarm")
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
+if CFG.autoCodes then redeemCodes() end
 
-log("loaded — bot is " .. S.mode)
+-- PlaceVersion: the spec was verified on 449; a different number means the game updated since
+log(("loaded — bot is %s · place v%s · job %s"):format(S.mode, tostring(game.PlaceVersion), game.JobId:sub(1, 8)))
 Library:Notify("Battle Bot Farm ready — RightCtrl toggles the UI. Save a config in Settings to keep your toggles.", 5)

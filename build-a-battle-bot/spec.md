@@ -106,7 +106,8 @@ On `depthsDefeat` fire `depthsStop` immediately — otherwise the bot idles in t
 | `GarageRemote:FireServer("equip", {buildId =, uid =})` | equip onto any of the 3 builds, **from anywhere** (build #2 rev 2→3 while bot was in the Pit) | ✅ |
 | `GarageRemote:FireServer("deploy", buildId)` | switch active build | 📄 |
 | `GarageRemote:FireServer("request")` | → `"sync", {builds = {{id, name, level, xp, rev, parts = {Weapon, Body, Head, Wheels, Satellite → uid}}}, parts = {{id, uid}}, deployedId}` | ✅ |
-| `WorkshopBayRemote:FireServer("swap", {uid =})` / `("deploy")` | bay path (needs garage prompt + bot at plot) — `equip` makes it unnecessary | ✅ |
+| `WorkshopBayRemote:FireServer("swap", {uid =})` / `("deploy")` | bay path (needs garage prompt + bot at plot) — `equip` makes it unnecessary. `"deploy"` is the bay's DEPLOY button (bot drives back out); `"cancel"` / `"close"` also exist | ✅ |
+| `PlotSignRemote:FireServer(stationAnchor, 10)` | since PlaceVersion 449: `UPGRADE ×10` on a station (`WorkshopConfig.STATION_BULK_STEPS`), priced as the next 10 levels | ✅ (bought LV.33→43 etc. in one press) |
 
 Stats per part: `BotParts.PARTS[partId].stat` (weapon→attack, body→health, head→crit, wheels→attackSpeed), × `CrateConfig.partStatMult(crateId) = 1 + (tier-1)·0.06`. Compute bests locally from `require(ReplicatedStorage.Shared.BotParts)`.
 
@@ -159,9 +160,10 @@ Read the state from the server-written labels:
 | **Empty pad** (fresh / after rebirth) | `PlayerGui.PlotSignBillboard` | `ENERGY STATION` · `BUY` · `CostLabel 400` |
 | Workshop (pad count 2→6) | workspace `Sign.…WorkshopSignScreen` SurfaceGui | `WORKSHOP LV.3` · `UPGRADE` · `16.0K` (`MAX LEVEL` at LV.5) |
 | Scrapper | `PlayerGui.PlotSignBillboard` (Adornee = `ScrapperSignHolder`) | `SCRAPPER LV.9` · `25.6K` · `×5.59` |
-| **Scrapper at MAX** (LV.18) | same billboard | `SCRAPPER MAX` · `MAX LEVEL` · `×38.74`. `CostLabel` is `Visible = false` but **still holds the last price** (656.8K) |
+| **Scrapper at MAX** (LV.18) | same billboard | `SCRAPPER MAX` · `MAX LEVEL` · `×38.74` (no `LV.n`). The `CostLabel` **still holds the last price** (656.8K) |
+| Station **×10** (since PlaceVersion 449) | `PlotSignActionBillboard` → `BulkButton` (attr `BulkSteps = 10`) | `UPGRADE ×10` · `CostLabel 12.5K` = exactly the next 10 single levels (LV.2: Σ `stationUpgradeCost(3..12)`) |
 
-Labels round to one decimal (`1.2M` is 1,155,557), and hidden labels keep stale text. The farm reads a price only from a **visible** label, then replaces it with the exact config value (formulas in §4).
+**Don't read state from label visibility.** The `WorkshopSign` client sets a `PlotSignBillboard`'s `UpgradeButton`/`CostLabel` `Visible` only while that sign's prompt is focused and the camera faces it. So `Visible = false` means "not the sign you're standing at", not MAX. Labels also round to one decimal (`1.2M` is 1,155,557). The farm reads the **state from the title** (`LV.n` = level, `MAX` = maxed, neither = empty BUY pad) and the **price from the config** (formulas in §4).
 
 ### Scrap
 
@@ -314,21 +316,23 @@ Deploy: `%USERPROFILE%\AppData\Local\Potassium\workspace\bbb_farm.lua`, run `loa
 
 | Tab | Feature | Settings (default) |
 |---|---|---|
-| **Bot** | Auto Depths: run → defeat → `depthsStop` at once (skips the 90 s revive window) → drain stations at home → restart | Max run length (0 = until defeat) · Leave plot at station fill (15 %) · Max plot stay (30 s) · Use wave skip (off) · Skip only if cost ≤ (25 % of money) |
+| **Bot** | Auto Depths: run → defeat → `depthsStop` at once (skips the 90 s revive window) → drain stations at home → restart | Max run length (0 = until defeat) · Leave plot at station fill (15 %) · Max plot stay (30 s) · Use wave skip (off) · Skip only if cost ≤ (25 % of money) · **Follow admin COINS / ENERGY events (on)**: COINS ×N → no plot stays; ENERGY ×N → bot stays home (`workspace.Admin<Coins|Energy>Mult/EndsAt`) |
 | | Auto Pit Events: `depthsStop` if in Depths → `toArena` → leave once joined; retries after a KO | Events to join (swarm, elite, frenzy, rush, titan) · In the Pit (Join, then leave / Stay whole event) · Titan: time in Pit (20 s) · Pause after a manual command (90 s; server `toPlot` after a rebirth is not counted) |
 | **Crates & Parts** | Auto Claim (from anywhere) · Auto Fabricator · Auto Open | Crate types to open (all) · Hide reveal animation (on) · Hold crates for CRATE LUCK events (off) + Hold crates from (Lava). Status: fabricator LV, pile, next delivery, luck bar, unopened crates |
 | | Auto Sell Junk (off; irreversible) + "Sell junk now" | Keep best per slot (2) · Never sell (Mythic+). Always keeps locked parts and parts on any build. Status: parts/slots and junk preview |
 | | Auto Equip Best, only while the bot is home | Slots to manage (all five) |
-| **Upgrades** | Auto Stations & Workshop: buys empty pads, workshop levels and station levels by lowest coins per fuel/s, priced exactly from `WorkshopConfig`. A sign that doesn't take is skipped 60 s (scrapper 120 s); a maxed sign has no price and is never tried | Workshop first (on) · Station level cap (0 = none) · Keep in reserve (0 % of money) |
+| **Upgrades** | Auto Stations & Workshop: buys empty pads, workshop levels and station levels by lowest coins per fuel/s, priced exactly from `WorkshopConfig`, state read from the sign titles. A sign that doesn't take is skipped 60 s (scrapper 120 s); a maxed sign has no price and is never tried | Workshop first (on) · **Bulk ×10 station upgrades (on)**: used only when every station could take +10, so it buys what single levels would have, in a tenth of the trips · Station level cap (0 = none) · Keep in reserve (0 % of money) |
 | | Auto Fabricator | shares the reserve |
 | | Auto Skill Tree | Focus (Economy / Combat / Crates / Cheapest) · Save points for top pick (on) |
 | | Auto Rebirth | Extra waves before rebirth (0) · Stop at rebirth (0 = no limit) |
-| **Rewards** | Playtime · Daily login · Quests · Guild chests, each its own toggle | Redeem BUILDABOT button |
+| **Rewards** | Playtime · Daily login · Quests · Guild chests, each its own toggle | Codes: "Redeem all codes" (every key of `RewardConfig.CODES`, today only BUILDABOT) + Redeem codes on load (off). The group reward needs the honor-system like/favorite flags, so it stays manual |
 | **Scrap** | Auto Collect Scrap: sweep the Pit nearest-first → Scrapper → back | Only during Scrap Frenzy (off) · Start a trip at (1 piece) · Return to start (on) · Auto Upgrade Scrapper |
 | | Alien Raid catcher: touch-catch (`firetouchinterest`), then hold in the Pit for the countdown, dodging laser discs and enemy bots | Status: raid state, crates in the Pit, caught this session (verified: 4 of 4 in one raid) |
 | **Status** | Live counters + log | — |
-| *(all tabs)* | Character teleports (upgrades, scrap) pause while a game panel is open (`PlayerGui` attr `OpenPanel`), but only for 90 s: the update log opens itself after an update and nobody closes it on an unattended client | — |
-| **Settings** | Anti-AFK (on) · Unload · configs · themes · **Infinite Yield**: AFK safety bundle (`staffwatch\noprompts\clearerror`), Stop 3D rendering (`norender`). Both are run through IY's own command bar. | IY toggles are off by default |
+| *(all tabs)* | Character teleports (upgrades, scrap) pause while a game panel is open (`PlayerGui` attr `OpenPanel`), but only for 90 s: the update log opens itself after an update and nobody closes it on an unattended client. The garage bay (`bay` mode) gets 5 min, then `WorkshopBayRemote "deploy"` | — |
+| *(safety)* | Waits out the loading screen (`PlayerGui` attr `Loading`) before any tick. Junk selling refuses to run while no build has anything equipped (unsynced data), and never sells unknown-rarity or admin parts. Rebirth fires only on a tick with no quest left to claim (goals like `d_money` scale with rebirths); a claim refused 3× stops blocking it | — |
+| *(logging)* | `loaded` line carries PlaceVersion + JobId; disconnects log their code (`GuiService.ErrorMessageChanged`), e.g. `285 DisconnectClientInitiated` = this client left, as on an IY rejoin | — |
+| **Settings** | Anti-AFK (on) · **Restart farm after a rejoin / server hop (on)**: `queue_on_teleport` when a teleport starts · Unload · configs · themes · **Infinite Yield**: AFK safety bundle (`staffwatch\noprompts\clearerror`), Stop 3D rendering (`norender`). Both are run through IY's own command bar. | IY toggles are off by default |
 
 Verified live with the farm: swarm joined, left the same second, 6 tiers paid; post-rebirth rebuild went 2 BUY pads → workshop LV.1→2→…→5 → new pads → upgrades; 51 scrap pieces delivered in ~3 min; scrapper LV.1→6; skills bought on rebirth.
 
