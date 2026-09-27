@@ -826,14 +826,12 @@ local function raidCrates()
     return list
 end
 
--- A carried crate floats ~CARRY_HEIGHT above its carrier's root
+-- Measured live: a caught crate is welded to its carrier (WeldConstraint "CarryWeld", Body -> HumanoidRootPart)
+-- and shows a mm:ss countdown; hold it until the countdown ends. Dying/lasers drop it for anyone to grab.
 local function crateCarrier(crate)
-    local p = crate:GetPivot().Position
-    for _, plr in ipairs(Players:GetPlayers()) do
-        local r = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
-        if r then
-            local d = p - r.Position
-            if math.abs(d.X) < 2.5 and math.abs(d.Z) < 2.5 and d.Y > 2 and d.Y < 9 then return plr end
+    for _, w in ipairs(crate:GetDescendants()) do
+        if w:IsA("WeldConstraint") and w.Name == "CarryWeld" and w.Part1 and w.Part1.Name == "HumanoidRootPart" then
+            return Players:GetPlayerFromCharacter(w.Part1.Parent)
         end
     end
 end
@@ -843,13 +841,61 @@ local function inPit(pos)
     return (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(c.X, 0, c.Z)).Magnitude < MAP.ARENA_RADIUS - 4
 end
 
--- Stay with one crate until it's ours, gone, taken, or timed out. Every 1.5 s we hop to a new
--- point 2.5 studs off the spot (still inside CAPTURE_RADIUS) so the 0.9 s-warning lasers miss.
+-- What knocks the crate off you in the Pit (measured/player-confirmed): the ship's lasers — a flat
+-- 12-stud warning disc (0.2 x 12 x 12 Part in workspace.AlienShip) lands ~0.9 s before a 6-stud hit —
+-- and bots: other players' PlotBots fighting in the Pit, event bots (BotSwarm) and the Titan (PitBoss).
+local function pitThreats()
+    local list = {}
+    local ship = workspace:FindFirstChild("AlienShip")
+    if ship then
+        for _, p in ipairs(ship:GetChildren()) do
+            if p:IsA("BasePart") and p.Position.Y < 4 and p.Size.Y >= 8 then
+                list[#list + 1] = { pos = p.Position, r = p.Size.Y / 2 + 4 }
+            end
+        end
+    end
+    local mine = "PlotBot_" .. tostring(plotIdx())
+    for _, m in ipairs(workspace.PlotBots:GetChildren()) do
+        if m:IsA("Model") and m.Name:match("^PlotBot_") and m.Name ~= mine then
+            local ok, cf = pcall(m.GetPivot, m)
+            if ok and inPit(cf.Position) then list[#list + 1] = { pos = cf.Position, r = 14 } end
+        end
+    end
+    for name, r in pairs({ BotSwarm = 12, PitBoss = 22 }) do
+        local f = workspace:FindFirstChild(name)
+        if f then
+            for _, m in ipairs(f:GetChildren()) do
+                local ok, cf = pcall(m.GetPivot, m)
+                if ok then list[#list + 1] = { pos = cf.Position, r = r } end
+            end
+        end
+    end
+    return list
+end
+
+local function flatDist(a, b) return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude end
+
+-- Of 16 random points inside the Pit, the one farthest (edge-to-edge) from every threat
+local function safestPitSpot(rng, threats)
+    local best, bestScore
+    for _ = 1, 16 do
+        local a, r = rng:NextNumber(0, math.pi * 2), rng:NextNumber(4, MAP.ARENA_RADIUS - 8)
+        local p = MAP.ARENA_CENTER + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+        local score = math.huge
+        for _, t in ipairs(threats) do score = math.min(score, flatDist(t.pos, p) - t.r) end
+        if not bestScore or score > bestScore then best, bestScore = p, score end
+    end
+    return best + Vector3.new(0, 3, 0)
+end
+
+-- Catch one crate and carry it until it's delivered: touch it (teleport onto it + firetouchinterest) until
+-- its CarryWeld points at our root, then stay inside the Pit and keep away from threats — hop at once when
+-- a laser disc or bot gets in range, and at least every 0.8 s anyway.
 local function catchCrate(crate)
     local got0, t0 = S.alienCaught or 0, os.clock()
     local limit = ALIEN.CAPTURE_TIME + ALIEN.CRATE_LIFETIME + 15
-    local spot
-    log("raid: holding " .. crate.Name)
+    local rng, lastHop = Random.new(), 0
+    log("raid: going for " .. crate.Name)
     while S.alive and CFG.raid and crate.Parent and os.clock() - t0 < limit do
         local h = hrp()
         if h then
@@ -858,15 +904,28 @@ local function catchCrate(crate)
                 log("raid: " .. carrier.Name .. " has " .. crate.Name)
                 return
             end
-            if carrier ~= LP or not spot then -- follow it to the ground; once it's riding on us, hold still
-                local p = crate:GetPivot().Position
-                spot = Vector3.new(p.X, MAP.ARENA_CENTER.Y + 3, p.Z)
-                if not inPit(spot) then spot = MAP.ARENA_CENTER + Vector3.new(0, 3, 0) end
+            if carrier == LP then -- riding on us: keep it inside the Pit, away from lasers and bots
+                local threats, danger = pitThreats(), false
+                for _, t in ipairs(threats) do
+                    if flatDist(t.pos, h.Position) < t.r then danger = true break end
+                end
+                if danger or os.clock() - lastHop > 0.8 then
+                    lastHop = os.clock()
+                    h.CFrame = CFrame.new(safestPitSpot(rng, threats))
+                end
+                task.wait(0.1)
+            else -- free: stand on it and touch it
+                local body = crate:FindFirstChild("Body", true) or crate.PrimaryPart
+                h.CFrame = CFrame.new(crate:GetPivot().Position + Vector3.new(0, 1, 0))
+                if body and firetouchinterest then
+                    firetouchinterest(h, body, 0)
+                    firetouchinterest(h, body, 1)
+                end
+                task.wait(0.15)
             end
-            local ang = math.floor(os.clock() / 1.5) * 2.4
-            h.CFrame = CFrame.new(spot + Vector3.new(math.cos(ang), 0, math.sin(ang)) * 2.5)
+        else
+            task.wait(0.25)
         end
-        task.wait(0.25)
     end
     task.wait(1.5) -- let the inventory sync land
     log(((S.alienCaught or 0) > got0) and ("raid: caught " .. crate.Name .. "!")

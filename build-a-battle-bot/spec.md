@@ -176,9 +176,20 @@ Materials sometimes sit at y≈20–33 (on pit structure); skip anything with `Y
 
 Config: every 600 s, lasts 240 s, drops a crate every 8 s (crates live 45 s), `CAPTURE_RADIUS 6`, `CAPTURE_TIME 60`. Lasers fire 3 at a time every 5 s: 35 damage, radius 6, 0.9 s warning. Server → `AlienShipRemote "start"/"state"/"end" {caught}`. Crates appear as `workspace.AlienShip.Crate_Alien_<n>`.
 
-- **Touching a crate doesn't catch it.** Measured: touch-and-leave caught 0 in one raid.
-- Per the player: **the character must stay in the arena with the crate for the whole capture timer** until it's delivered. A delivery shows up as `CrateRemote "sync"` `counts.Alien` rising.
-- The farm's catcher parks within the capture radius, hopping 2.5 studs every 1.5 s to beat the laser warning. It pauses all other character teleports and logs the raid's `"state"` fields the first time. **First live run still pending.**
+**Measured live 2026-09-26:**
+
+- There is **one crate at a time**: `workspace.AlienShip.Crate_Alien_<n>` (parts `Body`, `Lid`, `Dome`, `Vein`). A BillboardGui on it shows a **mm:ss countdown** (60 s, `CAPTURE_TIME`). The raid board is a `Part` in the same folder: "ALIEN RAID · CATCH THE FALLING ALIEN CRATES · 2:23".
+- **Catch by touching it.** Teleport onto it and fire `firetouchinterest(root, crate.Body, 0/1)`. The server then welds it to you: `WeldConstraint "CarryWeld"`, `Body → <you>.HumanoidRootPart`. The carrier can be read straight from that weld.
+- **Hold it in the Pit until the countdown ends**, and it's yours. You get `AlienShipRemote "end" {caught = 1}`, `counts.Alien` goes +1, and the `d_raid` quest ticks.
+- **Getting hit drops it**, and anyone can grab it:
+  - **Ship lasers:** a flat warning disc (`Part`, size 0.2×12×12, at y≈1, inside `workspace.AlienShip`) appears about 0.9 s before a 6-stud, 35-damage hit. 2–3 come at a time.
+  - **Other players' bots:** their `PlotBot_<n>` models fighting in the Pit attack characters. Event bots (`BotSwarm`) and the Titan (`PitBoss`) count too.
+- **What didn't work:**
+  - Touch-and-leave caught 0.
+  - Standing *near* the crate without touching lost it to a player who walked into it (`darkendshadow has Crate_Alien_1`).
+  - Small 2.5-stud hops don't clear a 6-stud laser.
+- **What worked:** a touch catch at 22:17:38, held to the end, then **caught 1** at 22:18:39.
+- **Current catcher:** every 0.1 s it scans the laser discs and enemy bots. It hops at once when one is in range, and at least every 0.8 s, each time to the Pit spot (best of 16 random samples) farthest from all threats. It pauses scrap and upgrade teleports while a raid is on.
 
 ---
 
@@ -304,7 +315,7 @@ Deploy: `%USERPROFILE%\AppData\Local\Potassium\workspace\bbb_farm.lua`, run `loa
 | | Auto Rebirth | Extra waves before rebirth (0) · Stop at rebirth (0 = no limit) |
 | **Rewards** | Playtime · Daily login · Quests · Guild chests, each its own toggle | Redeem BUILDABOT button |
 | **Scrap** | Auto Collect Scrap: sweep the Pit nearest-first → Scrapper → back | Only during Scrap Frenzy (off) · Start a trip at (1 piece) · Return to start (on) · Auto Upgrade Scrapper |
-| | Alien Raid catcher: hold in the Pit with the crate for its whole capture timer | Status: raid state, crates in the Pit, caught this session |
+| | Alien Raid catcher: touch-catch (`firetouchinterest`), then hold in the Pit for the countdown, dodging laser discs and enemy bots | Status: raid state, crates in the Pit, caught this session (verified: caught 1) |
 | **Status** | Live counters + log | — |
 | **Settings** | Anti-AFK (on) · Unload · configs · themes | — |
 

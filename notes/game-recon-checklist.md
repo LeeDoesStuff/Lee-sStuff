@@ -54,6 +54,14 @@ Finding where money comes from is step one, not the analysis. Before writing cod
   - Events: start, join, leave, rewards arrive.
   - Rebirth: rebirth, rebuild, resume.
 - **Learn the full completion condition of timed or capture mechanics.** Touching an alien crate for 1.5 s and leaving caught 0. The crate needs the character to stay with it in the arena for the whole capture timer. Judge success by the **actual delivery signal** (the inventory count rising), not by "the thing disappeared".
+- **Capture mechanics usually have three parts: *acquire*, *hold*, *survive*.** Each needs its own input:
+  - **Acquire** needs a real touch (`firetouchinterest` on the object's part). Standing near it lost the crate to a player who walked into it.
+  - **Hold** means staying in the zone until a countdown ends. Read the countdown from the object's BillboardGui.
+  - **Survive** means not getting hit, because a hit drops what you carry. Read ownership from how the server marks it, here a `WeldConstraint` from the object to the carrier's `HumanoidRootPart`.
+- **In hostile or contested zones, list every threat and its telegraph before building the hold loop:**
+  - **Environmental attacks:** find their warning visuals (here, flat 12-stud discs spawned about 0.9 s before a 6-stud hit) and scan them at ≥10 Hz.
+  - **Other players' units and event NPCs:** they attack characters, so keep distance.
+  - **Dodge:** move to the point farthest from all threats (sample several candidates) the moment one is in range. Hops smaller than the hit radius don't dodge anything.
 - **Watch for confounded signals.** The same resource can arrive from several sources: Alien crates came from raids and from event rewards, so a raid-catch counter reported a catch with no raid running. Only count a change inside the window where your action could have caused it.
 
 ## 4. Inputs: test the gate, not just the happy path
