@@ -66,7 +66,7 @@ local CFG = {
     bodyGuard = true, bodyRadius = 15, bodyOnlyFlying = true,
     droneAlert = true, droneRange = 80, droneHighlight = true,
     mapEsp = true, mapNames = true, mapDrones = true, mapDotSize = 7, mapSpawn = true,
-    aimZoom = false, zoomLevel = 3, zoomSize = 35, zoomSpeed = 14, zoomSens = true, zoomRing = true,
+    aimZoom = false, zoomLevel = 3, zoomSize = 35, zoomSpeed = 14, zoomSens = true,
     memScans = HAS_GC,
 }
 
@@ -92,11 +92,10 @@ local COL = {
     hudStroke = { c = Color3.fromRGB(0, 0, 0),       t = 0.3,  name = "HUD text outline",          group = "HUD text" },
     mapDot    = { c = Color3.fromRGB(255, 50, 50),   t = 0,    name = "Map: enemy dot",            group = "Map" },
     mapDrone  = { c = Color3.fromRGB(255, 60, 200),  t = 0,    name = "Map: enemy drone",          group = "Map" },
-    zoomRing  = { c = Color3.fromRGB(255, 255, 255), t = 0.4,  name = "Zoom ring",                 group = "Aim zoom" },
     zoomDim   = { c = Color3.fromRGB(0, 0, 0),       t = 1,    name = "Zoom: outside the ring (1 = no dim)", group = "Aim zoom" },
 }
 local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "espText", "espStroke", "chamFill", "chamVis",
-    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomRing", "zoomDim" }
+    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomDim" }
 local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text", "Map", "Aim zoom" }
 for _, col in pairs(COL) do col.c0, col.t0 = col.c, col.t end -- defaults for the reset button
 
@@ -190,7 +189,6 @@ local function zoomCircle(thick)
     return f, st
 end
 local zoomDimFrame, zoomDimStroke = zoomCircle(4000)
-local zoomRingFrame, zoomRingStroke = zoomCircle(2)
 local infoLabel = label(0.74, 16)
 
 -- ============================== game state ==============================
@@ -643,8 +641,6 @@ local function zoomStep(dt)
     end
     local on = zoomNow > 1.001
     local size = UDim2.fromScale(CFG.zoomSize / 100, CFG.zoomSize / 100)
-    zoomRingFrame.Visible, zoomRingFrame.Size = on and CFG.zoomRing, size
-    zoomRingStroke.Color, zoomRingStroke.Transparency = COL.zoomRing.c, COL.zoomRing.t
     zoomDimFrame.Visible, zoomDimFrame.Size = on and COL.zoomDim.t < 1, size
     zoomDimStroke.Color, zoomDimStroke.Transparency = COL.zoomDim.c, COL.zoomDim.t
 end
@@ -779,13 +775,12 @@ slider(Body, "WF_BodyR", "bodyRadius", "Radius", 5, 60, "m")
 toggle(Body, "WF_BodyFly", "bodyOnlyFlying", "Only while flying a drone")
 
 local Zoom = Tabs.Aim:AddLeftGroupbox("Aim zoom")
-Zoom:AddLabel("Hold right mouse with a gun out to zoom. Roblox has one camera, so the whole view zooms; the ring marks the center (dim outside it in the Colors tab).", true)
+Zoom:AddLabel("Hold right mouse with a gun out to zoom. Roblox has one camera, so the whole view zooms (optional dim outside a center circle: Colors tab).", true)
 toggle(Zoom, "WF_AimZoom", "aimZoom", "Aim zoom")
 Zoom:AddSlider("WF_ZoomLevel", { Text = "Zoom", Default = CFG.zoomLevel, Min = 1.5, Max = 8, Rounding = 1, Suffix = "x",
     Callback = function(v) CFG.zoomLevel = v end })
-slider(Zoom, "WF_ZoomSize", "zoomSize", "Ring size", 10, 90, "% of screen height")
+slider(Zoom, "WF_ZoomSize", "zoomSize", "Dim circle size", 10, 90, "% of screen height")
 slider(Zoom, "WF_ZoomSpeed", "zoomSpeed", "Zoom speed", 4, 40, "")
-toggle(Zoom, "WF_ZoomRing", "zoomRing", "Show ring")
 toggle(Zoom, "WF_ZoomSens", "zoomSens", "Lower mouse sensitivity while zoomed", "Divides sensitivity by the zoom so aiming feels the same")
 
 local MapBox = Tabs.Threats:AddRightGroupbox("Map ESP")
