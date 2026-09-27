@@ -489,6 +489,7 @@ on(R.bot, function(k, d)
         elseif not ours and d == "toPlot" then
             log("server sent the bot home")
         end
+        if d == "toDepths" or d == "depths" then S.startTries = 0 end -- the start was answered
         S.mode, S.modeAt = d, os.clock()
     elseif k == "depthsDefeat" and typeof(d) == "table" then
         S.runs += 1
@@ -499,6 +500,9 @@ on(R.bot, function(k, d)
         end
     elseif k == "arenaKo" then
         log("KO'd in the Pit (" .. tostring(typeof(d) == "table" and d.cause) .. ")")
+    elseif k == "skipDenied" then -- a denied skip starts nothing; don't retry it every 8 s
+        S.noSkipUntil, S.lastCmd.depthsStart = os.clock() + 300, nil
+        log("wave skip denied — plain starts for 5 min")
     end
 end)
 
@@ -630,9 +634,19 @@ local function refresh()
 end
 
 -- ============================== ticks ==============================
+-- One depthsStart per 8 s at most. A start the server ignores (bot rebuilding after a KO, mid-rebirth,
+-- a stale mode on our side) gets no "toDepths" echo: after 3 in a row, wait 60 s instead of re-firing.
 local function startDepths()
+    local now = os.clock()
+    if now < (S.startBackoff or 0) or now - (S.lastCmd.depthsStart or -1e9) < 8 then return end
+    if (S.startTries or 0) >= 3 then
+        S.startTries, S.startBackoff = 0, now + 60
+        log(("depthsStart got no answer 3× (bot %s) — waiting 60 s"):format(tostring(S.mode)))
+        return
+    end
+    S.startTries = (S.startTries or 0) + 1
     local wave, cost = LP:GetAttribute("DepthsSkipWave") or 0, LP:GetAttribute("DepthsSkipCost") or 0
-    if CFG.skip and wave >= 3 and cost > 0 and cost <= money.Value * CFG.skipPct / 100 then
+    if CFG.skip and now >= (S.noSkipUntil or 0) and wave >= 3 and cost > 0 and cost <= money.Value * CFG.skipPct / 100 then
         cmd("depthsStart", { skip = true })
     else
         cmd("depthsStart")
@@ -666,26 +680,42 @@ local function botTick(dt)
         return
     end
     if now < (S.manualUntil or 0) then return end -- player is steering
+    local busy = CFG.events and (want or (CFG.stay and active))
+    if m == "depths" then S.depthsSeen = now end
+    -- Watchdog: Auto Depths on, nothing holding the bot (event, manual pause, bay), yet no Depths run for
+    -- 10 min → our idea of the mode is stale (a missed echo, a transit state that never resolved).
+    if CFG.depths and not busy and m ~= "depths" and now - (S.depthsSeen or S.t0) > 600 then
+        log(("auto depths: no run for 10 min (bot %s) — starting over"):format(tostring(m)))
+        S.depthsSeen, S.startTries, S.startBackoff, S.lastCmd.depthsStart = now, 0, 0, nil
+        m, S.mode, S.modeAt = "plot", "plot", now - 60
+    end
     -- The server never sends "plot" after toWorkshop/depthsStop: "toPlot" is the resting state.
     local home     = m == "plot" or m == "toPlot"
     local inPit    = m == "arena" or m == "toArena"
     local inDepths = m == "depths" or m == "toDepths"
-    -- Admin COINS event: money ×N, but only in the Depths → skip the plot stays. ENERGY event: XP ×N, but
-    -- only at the plot, and Depths time overflows the stations' 120 s buffers → stay home.
+    -- Admin COINS ×N pays only in the Depths → no plot stays. ENERGY ×N pays only at the plot → keep
+    -- running (Depths money is what buys fuel/s), but come home as the fullest station buffer fills and
+    -- drain it low, so none of the doubled fuel overflows. Parking at the plot for the whole event
+    -- starved the upgrades right after a rebirth.
     local coins  = CFG.adminBias and adminEvent("Coins") and not adminEvent("Energy")
     local energy = CFG.adminBias and adminEvent("Energy") and not adminEvent("Coins")
-    if CFG.events and (want or (CFG.stay and active)) then
+    if busy then
         if inDepths then
             cmd("depthsStop") -- toArena is ignored from the Depths; leave first
         elseif not inPit then
             cmd("toArena")
         end
     elseif inPit then
-        if CFG.events then cmd("toWorkshop") end
+        -- events on: drive home first so the stations get drained; events off (you sent it, or turned
+        -- events off mid-event): depthsStart works straight from the Pit
+        if CFG.events then cmd("toWorkshop") elseif CFG.depths then startDepths() end
     elseif m == "depths" then
-        if CFG.depths and (energy or (CFG.maxRun > 0 and not coins and now - S.modeAt >= CFG.maxRun)) then cmd("depthsStop") end
-    elseif home and CFG.depths and not energy and now - S.modeAt >= 8 then -- ~8 s to drive home first
-        if coins or stationFill() * 100 <= CFG.drainTo or now - S.modeAt >= CFG.drainMax then startDepths() end
+        local full = energy and now - S.modeAt >= 20 and stationFill() >= 0.95
+        local long = CFG.maxRun > 0 and not coins and now - S.modeAt >= CFG.maxRun
+        if CFG.depths and (full or long) then cmd("depthsStop") end
+    elseif home and CFG.depths and now - S.modeAt >= 8 then -- ~8 s to drive home first
+        local drainTo = energy and math.min(CFG.drainTo, 10) or CFG.drainTo
+        if coins or stationFill() * 100 <= drainTo or now - S.modeAt >= CFG.drainMax then startDepths() end
     end
 end
 
@@ -1204,7 +1234,7 @@ slider(Depths, "BBB_DrainMax", "drainMax", "Max plot stay", 5, 120, "s", "…or 
 toggle(Depths, "BBB_Skip", "skip", "Use wave skip", "Start runs at your best wave (costs half of what waves 1..N pay)")
 slider(Depths, "BBB_SkipPct", "skipPct", "Skip only if cost ≤", 1, 100, "% of money")
 toggle(Depths, "BBB_AdminBias", "adminBias", "Follow admin COINS / ENERGY events",
-    "COINS ×N only pays in the Depths: no plot stays while it runs. ENERGY ×N only pays at the plot: the bot stays home. Both at once: normal loop")
+    "COINS ×N only pays in the Depths: no plot stays while it runs. ENERGY ×N only pays at the plot: runs end as the stations fill and the bot drains them low before going back, so no doubled fuel is wasted. Both at once: normal loop")
 
 local Pit = Tabs.Bot:AddRightGroupbox("Pit Events — crates, coins, boosts")
 toggle(Pit, "BBB_Events", "events", "Auto Pit Events", "Tiers are server-wide: the bot only needs to land one hit to get the full rewards")

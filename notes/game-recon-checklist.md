@@ -1067,6 +1067,7 @@ Log every `AttributeChanged` on `workspace`, `ReplicatedStorage`, `Lighting` and
 - **IY in `autoexec`** is `loadstring(game:HttpGet(<GitHub>))` on every join: the same hang risk as the Obsidian fetch (§5b). Vendor it and `readfile` it.
 - **External watchdog →** a scheduled task on the PC. A heartbeat file older than 3 min means the client is dead, kicked or jammed → alert, or relaunch with a `roblox://placeId=…&gameInstanceId=…` link (the format IY `;jobid` copies).
 - **In-game watchdog →** every loop stamps `lastProgress`; a separate thread restarts a loop stuck for N min (`task.cancel`, then respawn) and logs it.
+  - *BBB Auto Depths:* a `depthsStart` with no `toDepths` echo is retried at most 3 times, then waits 60 s (instead of firing every 8 s forever). `skipDenied` switches to plain starts for 5 min. No Depths run for 10 min, with nothing legitimately holding the bot, means the farm's mode is stale: log it, assume home, start over. And every mode needs an exit: with Pit events off, a bot left in the Pit had no branch that brought it back.
 - **Verify →** kill the Roblox process mid-run; the watchdog notices within 3 min.
 
 #### S19 · If you use IY, remote spies or other tools → they're detectable too
@@ -1173,7 +1174,8 @@ Every system here is a clock, a counter or other players. Before automating any 
 
 #### Admin-triggered events
 - **Detect:** workspace attributes (BBB `Admin<Luck|Coins|Energy>Mult` plus `…StartsAt` / `…EndsAt`, and `AdminEventBy`); drops (`AdminDropAt` / `Crate` / `Amount` / `By`); banners (`AdminRemote "announce"`) and system chat; "ADMIN ABUSE" UI.
-- **Automate:** `GetAttributeChangedSignal` switches into event mode until `EndsAt`. In BBB: CRATE LUCK → open held Lava+ crates; COINS → bias to the Depths; ENERGY → park at the plot.
+- **Automate:** `GetAttributeChangedSignal` switches into event mode until `EndsAt`. In BBB: CRATE LUCK → open held Lava+ crates; COINS → skip the plot stays; ENERGY → end runs as the station buffers fill, drain them low, go back.
+  - **Don't park a unit on the boosted resource if the boost's input comes from somewhere else.** The first BBB version parked the bot at the plot for a 30-min ENERGY ×2 event. But fuel/s is bought with Depths money, and right after a rebirth the stations were weak and money had stopped, so the bot sat at home earning almost nothing. The player saw a stuck bot. Waste none of the boosted resource instead (return before the buffers overflow) and keep the other faucets running.
 - → **Scope test:** local (an attribute on one server) or global (MessagingService)? Check an alt on another server at that moment.
   - → **Local** → it happens where an admin is. The hot server is the watched one.
   - → **Global** → nothing to hunt.

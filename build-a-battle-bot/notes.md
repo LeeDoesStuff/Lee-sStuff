@@ -14,6 +14,7 @@ Non-obvious findings (measured 2026-09-26):
 - Scrap is a parallel character farm. Hard teleports keep the load, unlike [needle-haystack-project](../needle-in-a-haystack/notes.md).
 - Pit event tiers are server-wide totals; `joined` survives leaving.
 - Sign labels round to one decimal, and a MAX sign keeps a stale price. `CostLabel.Visible` is the WorkshopSign client's focus logic (true only for the sign whose prompt is focused and on camera), not state. The farm reads state from titles (LV.n / MAX / neither = BUY pad) and prices from `WorkshopConfig` (arg = the level being bought).
+- Admins (e.g. "NotDonkey") run ENERGY/LUCK ×2 events for 30 min plus crate drops. Never park the bot at the plot for ENERGY: Depths money buys the fuel/s. The farm ends runs at 95 % station fill instead (user saw the park as a stuck loop, 2026-09-27).
 - PlaceVersion 449 (2026-09-27) added station "UPGRADE ×10": `PlotSignRemote:FireServer(anchor, 10)`, cost = next 10 levels exactly. Diff `bbb_src_new/` against `bbb_src/` after relaunches to catch updates.
 - Alien raids don't follow `AlienShipConfig` (390 + 600 s): one server raided every 2400 s. React to `AlienShipRemote` pushes; don't predict. The threat-aware catcher went 4/4 in a raid (verified 2026-09-26), and the raid's end delivers a crate held only partway, so the last crate always pays.
 Lessons from the first farm's misses: [game-recon-full-progression](../notes/game-recon-checklist.md). Other projects: [fix-it-up-project](../fix-it-up/notes.md), [sneaker-panel-project](../sneaker-resell-simulator/notes.md).
