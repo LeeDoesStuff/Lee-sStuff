@@ -106,6 +106,7 @@ local S = {
     garage = nil, counts = {}, gsync = nil,
     reward = nil, rewardAt = 0, quest = nil, guild = nil, rb = nil, sk = nil, raid = nil,
     lastCmd = {}, fullUntil = 0, lastErr = {}, questTries = {},
+    joinedAt = {},      -- event kind -> when we joined; outlives S.evs records, which expire after 10 s of silence
     -- Backoffs keyed by Instance. Not weak tables: Roblox drops an Instance's Lua wrapper when no script
     -- holds it, so weak-keyed entries vanished while the part still existed (a 2-min backoff lasted 16 s).
     -- ponytail: never pruned; a few skipped parts per minute, fine for a session
@@ -459,12 +460,14 @@ local function iy(command)
     return true
 end
 
-local function cmd(c, arg)
+-- why: logged with the command, so every run end / Pit trip in the log says which rule sent it
+local function cmd(c, arg, why)
     local now = os.clock()
     if now - (S.lastCmd[c] or -1e9) < 8 then return end
     S.lastCmd[c], S.lastSent = now, now
     R.bot:FireServer(c, arg)
-    log("bot -> " .. c .. (arg and arg.skip and (" (skip to wave " .. tostring(LP:GetAttribute("DepthsSkipWave")) .. ")") or ""))
+    log("bot -> " .. c .. (arg and arg.skip and (" (skip to wave " .. tostring(LP:GetAttribute("DepthsSkipWave")) .. ")") or "")
+        .. (why and (" · " .. why) or ""))
 end
 
 -- ============================== listeners ==============================
@@ -496,7 +499,7 @@ on(R.bot, function(k, d)
         log(("depths over: wave %s, +%s"):format(tostring(d.wave), compact(tonumber(d.earned) or 0)))
         if CFG.depths then
             S.lastCmd.depthsStop = nil -- skip the 90 s revive window right away
-            cmd("depthsStop")
+            cmd("depthsStop", nil, "defeated")
         end
     elseif k == "arenaKo" then
         log("KO'd in the Pit (" .. tostring(typeof(d) == "table" and d.cause) .. ")")
@@ -519,11 +522,13 @@ local function eventHandler(fixedKind)
             e.seen = os.clock()
             if typeof(d) == "table" and d.joined == true and not e.joined then
                 e.joined = true
+                S.joinedAt[kind] = os.clock()
                 log("joined " .. kind)
             end
         elseif k == "end" then
-            S.evs[kind] = nil
+            S.evs[kind], S.joinedAt[kind] = nil, nil
         elseif k == "rewards" and typeof(d) == "table" then
+            S.joinedAt[kind] = nil
             S.events += 1
             log(("%s rewards: %s tiers, %s coins, %d crates"):format(kind, tostring(d.tiers),
                 compact(tonumber(d.coins) or 0), typeof(d.crates) == "table" and #d.crates or 0))
@@ -636,7 +641,7 @@ end
 -- ============================== ticks ==============================
 -- One depthsStart per 8 s at most. A start the server ignores (bot rebuilding after a KO, mid-rebirth,
 -- a stale mode on our side) gets no "toDepths" echo: after 3 in a row, wait 60 s instead of re-firing.
-local function startDepths()
+local function startDepths(why)
     local now = os.clock()
     if now < (S.startBackoff or 0) or now - (S.lastCmd.depthsStart or -1e9) < 8 then return end
     if (S.startTries or 0) >= 3 then
@@ -647,15 +652,15 @@ local function startDepths()
     S.startTries = (S.startTries or 0) + 1
     local wave, cost = LP:GetAttribute("DepthsSkipWave") or 0, LP:GetAttribute("DepthsSkipCost") or 0
     if CFG.skip and now >= (S.noSkipUntil or 0) and wave >= 3 and cost > 0 and cost <= money.Value * CFG.skipPct / 100 then
-        cmd("depthsStart", { skip = true })
+        cmd("depthsStart", { skip = true }, why)
     else
-        cmd("depthsStart")
+        cmd("depthsStart", nil, why)
     end
 end
 
 local function botTick(dt)
     local m, now = S.mode, os.clock()
-    local want, active = false, false -- an enabled event we haven't joined yet / any enabled event
+    local want, active = nil, false -- first enabled event kind we haven't joined yet / any enabled event
     for kind, e in pairs(S.evs) do
         if now - e.seen > 10 then
             S.evs[kind] = nil -- missed its "end"
@@ -664,11 +669,14 @@ local function botTick(dt)
             if kind == "titan" and m == "arena" and not e.joined then
                 e.pit += dt
                 if e.pit >= CFG.titanHold then
-                    e.joined = true
+                    e.joined, S.joinedAt[kind] = true, now
                     log("titan: counted as joined")
                 end
             end
-            want = want or not e.joined
+            -- a record re-created after 10 s of silence starts un-joined; the joinedAt memory stops the
+            -- bot from going back into the Pit for an event it already joined
+            local joined = e.joined or (S.joinedAt[kind] and now - S.joinedAt[kind] < 360)
+            if not joined then want = want or kind end
         end
     end
     if m == "bay" then -- the player opened the garage bay; nobody closes it on an unattended client
@@ -693,29 +701,30 @@ local function botTick(dt)
     local home     = m == "plot" or m == "toPlot"
     local inPit    = m == "arena" or m == "toArena"
     local inDepths = m == "depths" or m == "toDepths"
-    -- Admin COINS ×N pays only in the Depths → no plot stays. ENERGY ×N pays only at the plot → keep
-    -- running (Depths money is what buys fuel/s), but come home as the fullest station buffer fills and
-    -- drain it low, so none of the doubled fuel overflows. Parking at the plot for the whole event
-    -- starved the upgrades right after a rebirth.
-    local coins  = CFG.adminBias and adminEvent("Coins") and not adminEvent("Energy")
-    local energy = CFG.adminBias and adminEvent("Energy") and not adminEvent("Coins")
+    -- Admin COINS ×N pays only in the Depths → skip the plot stays while it runs. ENERGY ×N gets no special
+    -- rule: it doesn't speed up the stations (an LV.37 still makes 69/s), and the bot drains them one at a
+    -- time, so "come home when they fill" cut every run to ~20 s (tried and reverted 2026-09-27).
+    local coins = CFG.adminBias and adminEvent("Coins")
+    local why = want and (want .. " not joined yet") or "stay whole event"
     if busy then
         if inDepths then
-            cmd("depthsStop") -- toArena is ignored from the Depths; leave first
+            cmd("depthsStop", nil, why) -- toArena is ignored from the Depths; leave first
         elseif not inPit then
-            cmd("toArena")
+            cmd("toArena", nil, why)
         end
     elseif inPit then
         -- events on: drive home first so the stations get drained; events off (you sent it, or turned
         -- events off mid-event): depthsStart works straight from the Pit
-        if CFG.events then cmd("toWorkshop") elseif CFG.depths then startDepths() end
+        if CFG.events then cmd("toWorkshop", nil, "events joined") elseif CFG.depths then startDepths("from the Pit") end
     elseif m == "depths" then
-        local full = energy and now - S.modeAt >= 20 and stationFill() >= 0.95
-        local long = CFG.maxRun > 0 and not coins and now - S.modeAt >= CFG.maxRun
-        if CFG.depths and (full or long) then cmd("depthsStop") end
+        if CFG.depths and CFG.maxRun > 0 and not coins and now - S.modeAt >= CFG.maxRun then
+            cmd("depthsStop", nil, ("max run %d s"):format(CFG.maxRun))
+        end
     elseif home and CFG.depths and now - S.modeAt >= 8 then -- ~8 s to drive home first
-        local drainTo = energy and math.min(CFG.drainTo, 10) or CFG.drainTo
-        if coins or stationFill() * 100 <= drainTo or now - S.modeAt >= CFG.drainMax then startDepths() end
+        local drained = stationFill() * 100 <= CFG.drainTo
+        if coins or drained or now - S.modeAt >= CFG.drainMax then
+            startDepths(coins and "COINS event" or drained and "stations drained" or "max plot stay")
+        end
     end
 end
 
@@ -1233,8 +1242,8 @@ slider(Depths, "BBB_DrainTo", "drainTo", "Leave plot at station fill", 0, 100, "
 slider(Depths, "BBB_DrainMax", "drainMax", "Max plot stay", 5, 120, "s", "…or after this long at the plot, whichever comes first")
 toggle(Depths, "BBB_Skip", "skip", "Use wave skip", "Start runs at your best wave (costs half of what waves 1..N pay)")
 slider(Depths, "BBB_SkipPct", "skipPct", "Skip only if cost ≤", 1, 100, "% of money")
-toggle(Depths, "BBB_AdminBias", "adminBias", "Follow admin COINS / ENERGY events",
-    "COINS ×N only pays in the Depths: no plot stays while it runs. ENERGY ×N only pays at the plot: runs end as the stations fill and the bot drains them low before going back, so no doubled fuel is wasted. Both at once: normal loop")
+toggle(Depths, "BBB_AdminBias", "adminBias", "No plot stays during admin COINS events",
+    "COINS ×N only pays in the Depths, so the bot restarts runs right away while it lasts. Every other time (ENERGY events included) the normal loop runs")
 
 local Pit = Tabs.Bot:AddRightGroupbox("Pit Events — crates, coins, boosts")
 toggle(Pit, "BBB_Events", "events", "Auto Pit Events", "Tiers are server-wide: the bot only needs to land one hit to get the full rewards")
