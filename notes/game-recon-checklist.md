@@ -165,6 +165,7 @@ Run this after §1. Do E1 first: once the configs and the replicated save data a
   - `require` the modules live instead of retyping their formulas.
   - `;dex` browses modules, values and attributes in place.
   - Press each buy button once under `;remotespy` to map sink → remote → args.
+  - **Find every script that uses a name without decompiling everything:** string constants sit in bytecode as plain text. Run `getscriptbytecode(s):find(name, 1, true)` over `getloadedmodules()` plus the scripts in PlayerScripts and PlayerGui, then decompile only the hits. *Hit The Thrift:* this found MRKET's opener, the apartment module, in one pass.
 - **State:** use the first of these that exists:
   - `ReplicatedStorage.ReplicaRemoteEvents` (ReplicaService: `Replica_ReplicaSetValue`, …).
   - Knit's `…knit.Services.<Name>Service.RP` (replicated properties).
@@ -347,6 +348,8 @@ Check these before skipping one:
   - Sell tables (BBB `{150 … 40000}`).
   - Unsellable flags (Sneaker `[1] = "Unsellable"` → only usable in trade-ups).
   - Exchange shops and trade-up recipes.
+  - **Exits gated behind a purchase that aren't on the map.** Hit The Thrift's MRKET is a laptop inside a 500k apartment, but players talk about it like a place. Search module names (`MRKETModule`), `UIController.Register` keys and remote names for the outlet, then trace whatever calls its `Open`.
+  - **Wallet caps on NPC buyers.** Hit The Thrift's Craig pays full value up to $1M and only 20% above that. The formula sits in the client's confirm dialog, so grep sell dialogs for `afford` and `can only give`. Once item values pass the cap, the capped buyer becomes the worst exit.
 - **Automate:** measure each drain with one unit (money before and after). Route each item by value × rate minus time cost; bulk junk goes to the instant drain.
 - **Watch:**
   - Listed ROI isn't realised ROI. Through Sneaker's cashier, you break even only on buys at 1.82× or more.

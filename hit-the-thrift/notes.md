@@ -1,0 +1,16 @@
+# Hit The Thrift Project
+
+> Hit The Thrift (place 122454884469606) recon — MRKET is the Ropop laptop in your own 500k apartment; Craig pays full value only to $1M, then 20%; spec hit-the-thrift-spec.md
+
+
+Started 2026-09-27. The user's first question was where **MRKET** is. They typed "MRKT" and corrected it; the game spells it MRKET. Spec: `%USERPROFILE%\rblx\hit-the-thrift-spec.md`. No farm yet; run [game-recon-full-progression](../notes/game-recon-checklist.md) before building one.
+
+- MRKET isn't a map spot or a phone app. It's the **Ropop laptop inside your own apartment**.
+  - Apartments unlock server-side. When they do, the poster on the thrift's 3rd floor gets an orange highlight.
+  - An apartment costs 500k. Then you open a MRKET account, whose store name is permanent.
+  - Offers come in through phone Messages. You pack the order at the apartment station and deliver it to the buyer NPC.
+- **Craig's wallet cap:** full value up to $1M, then 20% of the rest. Detergents push a tool's `Value` far past the catalog `Resale`, and the user carries Legendary pieces worth over $6M, so selling those to Craig loses most of their value. MRKET's Legendary rate is x1.25.
+- State on 2026-09-27: apartments were unlocked for the user but not bought, and they had about 637k.
+- Decompiled sources: Potassium workspace `thrift_src_*.lua`.
+
+See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md).

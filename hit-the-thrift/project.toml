@@ -1,0 +1,5 @@
+name = "Hit The Thrift"
+place_id = 122454884469606
+game_id = 8391342266
+status = "recon"
+notes = ["notes.md", "spec.md"]

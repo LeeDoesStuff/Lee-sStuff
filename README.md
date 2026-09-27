@@ -20,4 +20,6 @@ Recon notes and specs for games I've automated. Each folder has the script, `pro
 - [fix-it-up](fix-it-up/)
 - [needle-in-a-haystack](needle-in-a-haystack/)
 - [mog-or-die](mog-or-die/)
+- [warfare](warfare/)
+- [hit-the-thrift](hit-the-thrift/)
 - [notes](notes/) — cross-game: [recon checklist](notes/game-recon-checklist.md), [Infinite Yield guide](notes/infinite-yield.md), [Potassium bridge quirks](notes/potassium-bridge-quirks.md)
