@@ -38,7 +38,9 @@ assert(math.abs(lethalRadius(55, 125) - 18.83) < 0.05 and lethalRadius(55, 90) =
 
 local CFG = {
     predict = true, rings = true, horizon = 8,
-    cones = true, coneLen = 60, coneAngle = 6, coneRange = 150,
+    cones = true, coneLen = 60, coneAngle = 6, coneRange = 150, coneGradient = true, gradAngle = 90,
+    esp = true, espNames = true, espRange = 500,
+    chams = true, chamsWalls = true, chamsVisColor = true, chamsRange = 500,
     watchWarn = true, watchLOS = true,
     bodyGuard = true, bodyRadius = 15, bodyOnlyFlying = true,
     droneAlert = true, droneRange = 80, droneHighlight = true,
@@ -52,11 +54,16 @@ local COL = {
     core     = { c = Color3.fromRGB(150, 0, 0),     t = 0.25, name = "Full-damage ring" },
     cone     = { c = Color3.fromRGB(255, 220, 90),  t = 0.3,  name = "Aim cone" },
     coneHot  = { c = Color3.fromRGB(255, 40, 40),   t = 0,    name = "Aim cone (on you)" },
+    coneAway = { c = Color3.fromRGB(60, 255, 110),  t = 0.4,  name = "Aim cone (looking away)" },
+    espText  = { c = Color3.fromRGB(255, 255, 255), t = 0,    name = "ESP text" },
+    chamFill = { c = Color3.fromRGB(255, 50, 50),   t = 0.6,  name = "Chams fill (behind cover)" },
+    chamVis  = { c = Color3.fromRGB(255, 220, 60),  t = 0.5,  name = "Chams fill (in sight)" },
+    chamLine = { c = Color3.fromRGB(255, 255, 255), t = 0.2,  name = "Chams outline" },
     drone    = { c = Color3.fromRGB(255, 60, 200),  t = 0.4,  name = "Enemy drone highlight" },
     warnText = { c = Color3.fromRGB(255, 80, 60),   t = 0,    name = "Warning text" },
     infoText = { c = Color3.fromRGB(255, 220, 120), t = 0,    name = "Predictor text" },
 }
-local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "drone", "warnText", "infoText" }
+local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "drone", "espText", "chamFill", "chamVis", "chamLine", "warnText", "infoText" }
 
 -- ============================== drawing ==============================
 local conns = {}
@@ -64,15 +71,18 @@ local root = Instance.new("Folder")
 root.Name = "WarfareHUD"
 root.Parent = gethui and gethui() or game:GetService("CoreGui")
 
-local function pool(class, props)
+local pools = {}
+local function pool(class, props, init, parent)
     local p = { n = 0, list = {} }
+    pools[#pools + 1] = p
     function p.get()
         p.n += 1
         local a = p.list[p.n]
         if not a then
             a = Instance.new(class)
             for k, v in pairs(props) do a[k] = v end
-            a.Parent = root
+            if init then init(a) end
+            a.Parent = parent or root
             p.list[p.n] = a
         end
         if a:IsA("HandleAdornment") then a.Visible = true else a.Enabled = true end
@@ -91,12 +101,14 @@ local terrain = Workspace.Terrain
 local Lines = pool("LineHandleAdornment", { Adornee = terrain, AlwaysOnTop = true, ZIndex = 1, Thickness = 3 })
 local Rings = pool("CylinderHandleAdornment", { Adornee = terrain, AlwaysOnTop = true, ZIndex = 0, Height = 0.4 })
 local Marks = pool("Highlight", { DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, OutlineColor = Color3.new(1, 1, 1) })
+-- ponytail: Roblox renders at most 31 Highlights (chams + enemy drones share it); ~20 enemies fits. Nearest-first cap if it ever overflows
+local Chams = pool("Highlight", {})
 
 -- fade: extra transparency on top of the element's own (cone edges are drawn fainter than the center line)
 local function line(a, b, key, thick, fade)
     local d = b - a
     if d.Magnitude < 0.05 then return end
-    local h, col = Lines.get(), COL[key]
+    local h, col = Lines.get(), type(key) == "table" and key or COL[key]
     h.CFrame, h.Length = CFrame.lookAt(a, b), d.Magnitude
     h.Color3, h.Thickness, h.Transparency = col.c, thick or 3, math.min(1, col.t + (fade or 0))
 end
@@ -107,6 +119,14 @@ local function ring(center, normal, r, key)
     h.Radius, h.InnerRadius = r, math.max(0, r - math.max(0.35, r * 0.025))
     h.Color3, h.Transparency = COL[key].c, COL[key].t
 end
+
+local Esp = pool("BillboardGui", { AlwaysOnTop = true, LightInfluence = 0, Size = UDim2.fromOffset(220, 16),
+    StudsOffset = Vector3.new(0, 2, 0), MaxDistance = math.huge, ResetOnSpawn = false }, function(b)
+    local t = Instance.new("TextLabel")
+    t.Name, t.Size, t.BackgroundTransparency = "T", UDim2.fromScale(1, 1), 1
+    t.Font, t.TextSize, t.TextStrokeTransparency = Enum.Font.GothamMedium, 13, 0.4
+    t.Parent = b
+end, root.Parent)
 
 local screen = Instance.new("ScreenGui")
 screen.Name, screen.IgnoreGuiInset, screen.ResetOnSpawn, screen.DisplayOrder = "WarfareHUD", true, false, 50
@@ -248,19 +268,33 @@ local function threats(warns, body, droneMain)
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if head and hum and hum.Health > 0 then
             local hp, look = head.Position, head.CFrame.LookVector
-            local hot = false
-            if CFG.watchWarn then
-                for _, tgt in ipairs({ { body, "BODY" }, { droneMain, "DRONE" } }) do
-                    local part = tgt[1]
-                    if part then
-                        local d = part.Position - hp
-                        if d.Magnitude < len and look:Dot(d.Unit) > cosA
-                            and (not CFG.watchLOS or clearLOS(hp, part.Position, char)) then
-                            hot = true
-                            warns[#warns + 1] = { 2, ("WATCHED: %s aiming at your %s (%dm)"):format(pl.Name, tgt[2], d.Magnitude * M) }
-                        end
+            local hot, bestDot = false, -1 -- bestDot: how directly they face your body or drone (1 = dead on)
+            for _, tgt in ipairs({ { body, "BODY" }, { droneMain, "DRONE" } }) do
+                local part = tgt[1]
+                if part then
+                    local d = part.Position - hp
+                    local dot = look:Dot(d.Unit)
+                    bestDot = math.max(bestDot, dot)
+                    if CFG.watchWarn and d.Magnitude < len and dot > cosA
+                        and (not CFG.watchLOS or clearLOS(hp, part.Position, char)) then
+                        hot = true
+                        warns[#warns + 1] = { 2, ("WATCHED: %s aiming at your %s (%dm)"):format(pl.Name, tgt[2], d.Magnitude * M) }
                     end
                 end
+            end
+            local camDist = (hp - camPos).Magnitude
+            if CFG.esp and camDist < CFG.espRange / M then
+                local b = Esp.get()
+                b.Adornee = head
+                b.T.Text = CFG.espNames and ("%s  %dm"):format(pl.Name, camDist * M) or ("%dm"):format(camDist * M)
+                b.T.TextColor3, b.T.TextTransparency = COL.espText.c, COL.espText.t
+            end
+            if CFG.chams and camDist < CFG.chamsRange / M then
+                local hl = Chams.get()
+                local f = CFG.chamsVisColor and clearLOS(camPos, hp, char) and COL.chamVis or COL.chamFill
+                hl.Adornee, hl.FillColor, hl.FillTransparency = char, f.c, f.t
+                hl.OutlineColor, hl.OutlineTransparency = COL.chamLine.c, COL.chamLine.t
+                hl.DepthMode = CFG.chamsWalls and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
             end
             if CFG.bodyGuard and body and (flying or not CFG.bodyOnlyFlying) then
                 local d = (hp - body.Position).Magnitude
@@ -268,8 +302,15 @@ local function threats(warns, body, droneMain)
                     warns[#warns + 1] = { 3, ("ENEMY NEAR BODY: %s %dm"):format(pl.Name, d * M) }
                 end
             end
-            if CFG.cones and (hp - camPos).Magnitude < range then
+            if CFG.cones and camDist < range then
                 local key = hot and "coneHot" or "cone"
+                if not hot and CFG.coneGradient then
+                    -- 0 at gradAngle or wider off you (away color) -> 1 inside the cone half-angle (on-you color)
+                    local ang = math.deg(math.acos(math.clamp(bestDot, -1, 1)))
+                    local f = 1 - math.clamp((ang - CFG.coneAngle) / math.max(1, CFG.gradAngle - CFG.coneAngle), 0, 1)
+                    local a, h = COL.coneAway, COL.coneHot
+                    key = { c = a.c:Lerp(h.c, f), t = a.t + (h.t - a.t) * f }
+                end
                 line(hp, hp + look * len, key, hot and 3 or 2)
                 coneEdges(hp, look, len, CFG.coneAngle, key, 0.3)
             end
@@ -318,11 +359,10 @@ local function guard(name, f, ...)
     local ok, err = pcall(f, ...)
     if not ok and errs[name] ~= err then
         errs[name] = err
-        local line, path = os.date("%H:%M:%S ") .. name .. ": " .. tostring(err) .. "
-", "WarfareHUD/errors.txt"
+        local msg, path = os.date("%H:%M:%S ") .. name .. ": " .. tostring(err) .. "\n", "WarfareHUD/errors.txt"
         pcall(function()
             if not isfolder("WarfareHUD") then makefolder("WarfareHUD") end
-            if isfile(path) then appendfile(path, line) else writefile(path, line) end
+            if isfile(path) then appendfile(path, msg) else writefile(path, msg) end
         end)
     end
 end
@@ -344,7 +384,7 @@ table.insert(conns, Run.RenderStepped:Connect(function()
     warnLabel.Text = table.concat(out, "\n")
     warnLabel.TextColor3, warnLabel.TextTransparency = COL.warnText.c, COL.warnText.t
     infoLabel.TextColor3, infoLabel.TextTransparency = COL.infoText.c, COL.infoText.t
-    Lines.flush(); Rings.flush(); Marks.flush()
+    for _, pl in ipairs(pools) do pl.flush() end
 end))
 
 local Library
@@ -352,6 +392,7 @@ local function unload()
     if getgenv().WARFARE_HUD == nil then return end
     getgenv().WARFARE_HUD = nil
     for _, c in ipairs(conns) do c:Disconnect() end
+    for _, b in ipairs(Esp.list) do b:Destroy() end
     root:Destroy(); screen:Destroy()
     if Library then pcall(Library.Unload, Library) end
 end
@@ -402,6 +443,20 @@ slider(Cones, "WF_ConeAngle", "coneAngle", "Cone half-angle", 2, 25, "°", "Also
 slider(Cones, "WF_ConeRange", "coneRange", "Draw for enemies within", 20, 600, "m", "Distance from your camera")
 toggle(Cones, "WF_Watch", "watchWarn", "WATCHED warning", "When an enemy's head points at your body or drone within cone length")
 toggle(Cones, "WF_WatchLOS", "watchLOS", "Require line of sight", "Skip warnings through walls")
+toggle(Cones, "WF_ConeGrad", "coneGradient", "Color by aim",
+    "Blend from 'looking away' to 'on you' as their aim swings toward your body or drone. Colors and opacity: Colors tab")
+slider(Cones, "WF_GradAngle", "gradAngle", "Fully 'away' at", 15, 180, "°", "Angle off you where the cone is fully the away color")
+
+local EspBox = Tabs.Threats:AddLeftGroupbox("ESP")
+toggle(EspBox, "WF_Esp", "esp", "Enemy ESP", "Name + distance over each enemy's head, through walls")
+toggle(EspBox, "WF_EspNames", "espNames", "Show names")
+slider(EspBox, "WF_EspRange", "espRange", "Max distance", 25, 1500, "m", "From your camera (your drone while flying)")
+
+local ChamBox = Tabs.Threats:AddLeftGroupbox("Chams")
+toggle(ChamBox, "WF_Chams", "chams", "Enemy chams", "Colored body highlight. Colors and opacity: Colors tab")
+toggle(ChamBox, "WF_ChamsWalls", "chamsWalls", "Show through walls")
+toggle(ChamBox, "WF_ChamsVis", "chamsVisColor", "Different color when in sight", "Line of sight from your camera to their head")
+slider(ChamBox, "WF_ChamsRange", "chamsRange", "Max distance", 25, 1500, "m")
 
 local Body = Tabs.Threats:AddRightGroupbox("Body guard")
 toggle(Body, "WF_Body", "bodyGuard", "Warn: enemy near body")

@@ -66,6 +66,9 @@ Two types, models in `ReplicatedStorage.DroneSystem` (Actor), live drones in `wo
 | Body guard (enemy near idle body) | enemy HRP distance while `InDrone` | v1 |
 | Enemy drone alert | `workspace.DroneWorkspace` children with other `Team`: distance, closing speed, ETA, Highlight | v1 |
 | Color + opacity per element | Obsidian color pickers with `Transparency` (saved by SaveManager) | v1 |
+| ESP (name + distance) | BillboardGui on enemy Head, distance from camera (= drone while flying) | v1.1, verified live (18 labels) |
+| Cone color by aim | blend "looking away" → "on you" color + opacity by angle between their look and your body/drone; fully away at `gradAngle` (90°) | v1.1, verified live |
+| Chams | Highlight on enemy character, AlwaysOnTop or Occluded, separate fill when camera has LOS to head. Shares Roblox's 31-Highlight cap with enemy-drone marks | v1.1, verified live (18) |
 
 ## Script: `warfare_hud.lua` (v1, 2026-09-27)
 
