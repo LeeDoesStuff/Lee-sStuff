@@ -317,7 +317,7 @@ Deploy: `%USERPROFILE%\AppData\Local\Potassium\workspace\bbb_farm.lua`, run `loa
 | **Scrap** | Auto Collect Scrap: sweep the Pit nearest-first → Scrapper → back | Only during Scrap Frenzy (off) · Start a trip at (1 piece) · Return to start (on) · Auto Upgrade Scrapper |
 | | Alien Raid catcher: touch-catch (`firetouchinterest`), then hold in the Pit for the countdown, dodging laser discs and enemy bots | Status: raid state, crates in the Pit, caught this session (verified: caught 1) |
 | **Status** | Live counters + log | — |
-| **Settings** | Anti-AFK (on) · Unload · configs · themes | — |
+| **Settings** | Anti-AFK (on) · Unload · configs · themes · **Infinite Yield**: AFK safety bundle (`staffwatch\noprompts\clearerror`), Stop 3D rendering (`norender`). Both are run through IY's own command bar. | IY toggles are off by default |
 
 Verified live with the farm: swarm joined, left the same second, 6 tiers paid; post-rebirth rebuild went 2 BUY pads → workshop LV.1→2→…→5 → new pads → upgrades; 51 scrap pieces delivered in ~3 min; scrapper LV.1→6; skills bought on rebirth.
 

@@ -398,6 +398,23 @@ local function carried()
     return n
 end
 
+-- Run an Infinite Yield command through IY's own command-bar handler (verified live). IY's functions
+-- aren't reachable from other scripts — even its plugins run in their own environment — but the bar's
+-- FocusLost(enterPressed) handler calls execCmd. Live build: Frame "Cmdbar" > TextBox "Input".
+local function iy(command)
+    local root = gethui and gethui() or game:GetService("CoreGui")
+    local bar = root:FindFirstChild("Cmdbar", true)
+    local input = bar and (bar:IsA("TextBox") and bar or bar:FindFirstChildWhichIsA("TextBox"))
+    if not (input and getconnections) then
+        log("IY not loaded — skipped: " .. command)
+        return false
+    end
+    input.Text = command
+    for _, c in ipairs(getconnections(input.FocusLost)) do c:Fire(true) end
+    log("IY: " .. command)
+    return true
+end
+
 local function cmd(c, arg)
     local now = os.clock()
     if now - (S.lastCmd[c] or -1e9) < 8 then return end
@@ -1269,6 +1286,14 @@ S.unload = function() pcall(function() Library:Unload() end) end
 -- ---------- Settings ----------
 local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
 toggle(Menu, "BBB_AntiAfk", "antiAfk", "Anti-AFK", "Stops the 20-minute idle kick")
+local IyBox = Tabs.Settings:AddRightGroupbox("Infinite Yield (runs its own commands)")
+IyBox:AddLabel("Drives IY's command bar, so these need IY loaded (your autoexec does it).", true)
+CFG.iySafety, CFG.iyNoRender = false, false
+toggle(IyBox, "BBB_IySafety", "iySafety", "AFK safety bundle",
+    "staffwatch (alert when game staff join) + noprompts (no purchase popups) + clearerror (clear kick blur)",
+    function(v) iy(v and "staffwatch\\noprompts\\clearerror" or "unstaffwatch\\showprompts") end)
+toggle(IyBox, "BBB_IyNoRender", "iyNoRender", "Stop 3D rendering (AFK CPU saver)", "IY norender / render",
+    function(v) iy(v and "norender" or "render") end)
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
