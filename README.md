@@ -14,9 +14,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/LeeDoesS
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/LeeDoesStuff/main/yba%20xenon.lua"))()
 
 ## Game notes (my own)
-Recon notes and specs for games I've automated. Each folder has `notes.md`, `project.toml`, and `spec.md` where there is one:
+Recon notes and specs for games I've automated. Each folder has the script, `project.toml`, `notes.md`, and `spec.md` where there is one:
 - [build-a-battle-bot](build-a-battle-bot/)
 - [sneaker-resell-simulator](sneaker-resell-simulator/)
 - [fix-it-up](fix-it-up/)
 - [needle-in-a-haystack](needle-in-a-haystack/)
+- [mog-or-die](mog-or-die/)
 - [notes](notes/) — cross-game: [recon checklist](notes/game-recon-checklist.md), [Potassium bridge quirks](notes/potassium-bridge-quirks.md)

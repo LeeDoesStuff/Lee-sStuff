@@ -1,0 +1,5 @@
+name = "Mog or Die"
+status = "parked"
+script = "mog_auto.lua"
+ui = "Obsidian (SaveManager folder MogAuto)"
+notes = []
