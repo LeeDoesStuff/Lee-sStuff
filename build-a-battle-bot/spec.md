@@ -62,6 +62,16 @@ Progression chain: Depths money → station upgrades → fuel/s → XP → bot l
 | Rebirth | 0 → 100 (Ascension "coming soon") | best wave ≥ `requiredWave(r)` | `RebirthRemote "rebirth"` |
 | Guild bosses | — | **"COMING SOON"** in the guild panel | — |
 
+### The game's own automation (use it, mirror it)
+
+| Feature | Access | Switch | Farm |
+|---|---|---|---|
+| **AUTO SELL** by rarity | free | `RewardRemote "setSetting", "AutoSell<1..7>", bool`. Server-stored (`RewardRemote "sync".settings`); sells parts as crates open, before they take a slot | Mirrored in *Crates & Parts → Game's AUTO SELL*. Server state is truth; never written on load; excluded from SaveManager |
+| **AUTO REBIRTH** | pass (`Perk_AutoRebirth`) | `RebirthRemote "auto", bool` (state in `RebirthRemote "sync".auto`) | Switch shown only if owned; otherwise the farm's Auto Rebirth does the same |
+| **AUTO CLAIM** | pass | none: the server claims and sends `CrateRemote "autoClaimed"` | The farm's Auto Claim does the same (`CrateRemote "claim"`) |
+
+The rest of the game's settings (`Setting_Music/Sfx/ScreenShake/BubbleChat/UpgradeHints` on `PlayerGui`) are cosmetic.
+
 ---
 
 ## 2. Remote API (all `RemoteEvent`s — the client never calls `InvokeServer`)
