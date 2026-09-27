@@ -72,7 +72,8 @@ Two types, models in `ReplicatedStorage.DroneSystem` (Actor), live drones in `wo
 | Color + opacity per element | Obsidian color pickers with `Transparency` (saved by SaveManager), 18 of them in 5 groupboxes, plus a reset button. No hardcoded colors outside the `COL` table (text outlines and drone outline/heading line included) | v1.2, verified live |
 | ESP (name + distance) | BillboardGui on enemy Head, distance from camera (= drone while flying) | v1.1, verified live (18 labels) |
 | Cone color by aim | blend "looking away" → "on you" color + opacity by angle between their look and your body/drone; fully away at `gradAngle` (90°) | v1.1, verified live |
-| Chams | Highlight on enemy character, AlwaysOnTop or Occluded, separate fill when camera has LOS to head. Shares Roblox's 31-Highlight cap with enemy-drone marks | v1.1, verified live (18) |
+| Chams | Style "Per part" (default): a BoxHandleAdornment on each body part, colored by that part's own camera LOS (refreshed every 0.1 s), no instance cap, no outline. Style "Highlight": whole-body Highlight colored by head LOS, with outline; shares Roblox's 31-Highlight cap with enemy-drone marks | v1.4, verified live: a peeking enemy showed Head = in-sight color, 14 parts = cover color |
+| Ragdoll pass-through | LOS and predictor raycasts skip `CollisionGroup "RagdollCorpse"` / `RagdollRig` parts, like the game's MavicFlight predictor. *Measured:* your own death ragdoll (`Terrain.<you>_LocalCorpse.RagdollRig.RagdollCollider`) blocked every LOS check while dead | v1.4 |
 
 ## Script: `warfare_hud.lua` (v1, 2026-09-27)
 

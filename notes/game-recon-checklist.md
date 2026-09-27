@@ -86,6 +86,8 @@ Finding where money comes from is step one, not the analysis. Before writing cod
 
 - **A remote player's Head LookVector is not their aim.** On Warfare, weapon-hold animations pitched the head 6–31° away from where the bullets went. Aim usually replicates through the game's own channel (a bridge or remote that poses necks and guns). Find it, and find what it actually carries: that game sends the muzzle direction, but only for nearby players.
 - **Ground truth is the bullets.** Sample the tracer or bullet pool: take the direction between two frames, trace it back to the shooter's head, and compare each estimator's angle. Your own shots show up in the sample too, and they're a free calibration check.
+- **Verification probes must not assume the default colors.** The player re-colors things: a cyan "hidden" chams color read as "visible" under a green-channel test. Compare against the live picker value (`Options[idx].Value`) instead.
+- **Line-of-sight raycasts need a ragdoll skip.** Corpse colliders (including your own death ragdoll) block rays. Do what the game's own predictor does and ignore its corpse collision group.
 - Before deciding what to draw, measure how much of the data reaches this client: which fields, how many players, and at what distance. Say in the UI when a value is unknown ("FACING", yaw only) instead of drawing a confident wrong one.
 
 ## 5. Co-existing with a player who's playing

@@ -40,7 +40,7 @@ local CFG = {
     predict = true, rings = true, horizon = 8,
     cones = true, coneLen = 60, coneAngle = 6, coneRange = 150, coneGradient = true, gradAngle = 90,
     esp = true, espNames = true, espRange = 500,
-    chams = true, chamsWalls = true, chamsVisColor = true, chamsRange = 500,
+    chams = true, chamsStyle = "Per part", chamsWalls = true, chamsVisColor = true, chamsRange = 500,
     watchWarn = true, watchLOS = true, watchFacing = true,
     bodyGuard = true, bodyRadius = 15, bodyOnlyFlying = true,
     droneAlert = true, droneRange = 80, droneHighlight = true,
@@ -110,6 +110,7 @@ local Rings = pool("CylinderHandleAdornment", { Adornee = terrain, AlwaysOnTop =
 local Marks = pool("Highlight", { DepthMode = Enum.HighlightDepthMode.AlwaysOnTop })
 -- ponytail: Roblox renders at most 31 Highlights (chams + enemy drones share it); ~20 enemies fits. Nearest-first cap if it ever overflows
 local Chams = pool("Highlight", {})
+local Boxes = pool("BoxHandleAdornment", { ZIndex = 1 }) -- per-part chams: no instance cap, one color per part
 
 -- fade: extra transparency on top of the element's own (cone edges are drawn fainter than the center line)
 local function line(a, b, key, thick, fade)
@@ -196,9 +197,24 @@ end
 local losP = RaycastParams.new()
 losP.FilterType = Enum.RaycastFilterType.Exclude
 -- ponytail: any part blocks sight, incl. glass/foliage; add a transparency filter if warnings get too quiet
+-- Raycast that passes through ragdoll corpses (incl. your own death ragdoll, Terrain.<you>_LocalCorpse.RagdollRig),
+-- same as the game's MavicFlight predictor, which skips CollisionGroup "RagdollCorpse" / humanoid bodies.
+local function isRagdoll(inst)
+    return inst.CollisionGroup == "RagdollCorpse" or inst:FindFirstAncestor("RagdollRig") ~= nil
+end
+local function cast(origin, dir, params)
+    local stop = origin + dir
+    for _ = 1, 4 do
+        local r = Workspace:Raycast(origin, stop - origin, params)
+        if not (r and isRagdoll(r.Instance)) then return r end
+        origin = r.Position + dir.Unit * 0.05
+    end
+    return nil
+end
+
 local function clearLOS(from, to, theirChar)
     losP.FilterDescendantsInstances = { theirChar, lp.Character, DroneWS, Workspace.CurrentCamera }
-    return Workspace:Raycast(from, to - from, losP) == nil
+    return cast(from, to - from, losP) == nil
 end
 
 -- ============================== features ==============================
@@ -225,7 +241,7 @@ local function predictor(m, main)
         for i = 1, CFG.horizon * 30 do
             local t = i / 30
             local p = p0 + v0 * t + g * (0.5 * t * t)
-            local res = Workspace:Raycast(prev, p - prev, rp)
+            local res = cast(prev, p - prev, rp)
             if res then
                 line(last, res.Position, "arc", 3)
                 hit, eta = res, t
@@ -239,7 +255,7 @@ local function predictor(m, main)
         local speed = v0.Magnitude
         if speed > 3 then
             local reach = math.min(speed * CFG.horizon, 3000)
-            local res = Workspace:Raycast(main.Position, v0.Unit * reach, rp)
+            local res = cast(main.Position, v0.Unit * reach, rp)
             local stop = res and res.Position or main.Position + v0.Unit * reach
             line(main.Position, stop, "arc", 2)
             if res then hit, eta = res, (res.Position - main.Position).Magnitude / speed end
@@ -309,11 +325,23 @@ local function facing(look, d, exact)
     return look:Dot(flat.Unit)
 end
 
+-- per-part line of sight from the camera, refreshed every 0.1 s (~15 parts x ~20 enemies of raycasts)
+local visCache, visAt = {}, 0
+local function partVisible(part, camPos, char)
+    local v = visCache[part]
+    if v == nil then
+        v = clearLOS(camPos, part.Position, char)
+        visCache[part] = v
+    end
+    return v
+end
+
 local function threats(warns, body, droneMain)
     local camPos = Workspace.CurrentCamera.CFrame.Position
     local len, range = CFG.coneLen / M, CFG.coneRange / M
     local cosA = math.cos(math.rad(CFG.coneAngle))
     local flying = droneMain ~= nil
+    if os.clock() - visAt > 0.1 then visCache, visAt = {}, os.clock() end -- fresh table: never holds old parts
     local byPlr = {}
     for _, v in pairs(aimTable() or {}) do
         if type(v) == "table" and v.plr then byPlr[v.plr] = v end
@@ -349,7 +377,16 @@ local function threats(warns, body, droneMain)
                 b.T.TextColor3, b.T.TextTransparency = COL.espText.c, COL.espText.t
                 b.T.TextStrokeColor3, b.T.TextStrokeTransparency = COL.espStroke.c, COL.espStroke.t
             end
-            if CFG.chams and camDist < CFG.chamsRange / M then
+            if CFG.chams and camDist < CFG.chamsRange / M and CFG.chamsStyle == "Per part" then
+                for _, part in ipairs(char:GetChildren()) do
+                    if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and part.Transparency < 1 then
+                        local f = CFG.chamsVisColor and partVisible(part, camPos, char) and COL.chamVis or COL.chamFill
+                        local b = Boxes.get()
+                        b.Adornee, b.Size = part, part.Size + Vector3.new(0.06, 0.06, 0.06)
+                        b.Color3, b.Transparency, b.AlwaysOnTop = f.c, f.t, CFG.chamsWalls
+                    end
+                end
+            elseif CFG.chams and camDist < CFG.chamsRange / M then
                 local hl = Chams.get()
                 local f = CFG.chamsVisColor and clearLOS(camPos, hp, char) and COL.chamVis or COL.chamFill
                 hl.Adornee, hl.FillColor, hl.FillTransparency = char, f.c, f.t
@@ -521,7 +558,12 @@ slider(EspBox, "WF_EspRange", "espRange", "Max distance", 25, 1500, "m", "From y
 local ChamBox = Tabs.Threats:AddLeftGroupbox("Chams")
 toggle(ChamBox, "WF_Chams", "chams", "Enemy chams", "Colored body highlight. Colors and opacity: Colors tab")
 toggle(ChamBox, "WF_ChamsWalls", "chamsWalls", "Show through walls")
-toggle(ChamBox, "WF_ChamsVis", "chamsVisColor", "Different color when in sight", "Line of sight from your camera to their head")
+ChamBox:AddDropdown("WF_ChamsStyle", {
+    Text = "Style", Values = { "Per part", "Highlight" }, Default = CFG.chamsStyle,
+    Tooltip = "Per part: a box on each body part, colored by that part's own line of sight (no outline). Highlight: body-shaped glow + outline, one color for the whole body (by head line of sight)",
+    Callback = function(v) CFG.chamsStyle = v end,
+})
+toggle(ChamBox, "WF_ChamsVis", "chamsVisColor", "Different color when in sight", "Line of sight from your camera to each part (or the head, in Highlight style)")
 slider(ChamBox, "WF_ChamsRange", "chamsRange", "Max distance", 25, 1500, "m")
 
 local Body = Tabs.Threats:AddRightGroupbox("Body guard")
