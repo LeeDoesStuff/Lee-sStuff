@@ -66,6 +66,7 @@ local CFG = {
     bodyGuard = true, bodyRadius = 15, bodyOnlyFlying = true,
     droneAlert = true, droneRange = 80, droneHighlight = true,
     mapEsp = true, mapNames = true, mapDrones = true, mapDotSize = 7, mapSpawn = true,
+    aimZoom = false, zoomLevel = 3, zoomSize = 35, zoomSpeed = 14, zoomSens = true, zoomRing = true,
     memScans = HAS_GC,
 }
 
@@ -91,10 +92,12 @@ local COL = {
     hudStroke = { c = Color3.fromRGB(0, 0, 0),       t = 0.3,  name = "HUD text outline",          group = "HUD text" },
     mapDot    = { c = Color3.fromRGB(255, 50, 50),   t = 0,    name = "Map: enemy dot",            group = "Map" },
     mapDrone  = { c = Color3.fromRGB(255, 60, 200),  t = 0,    name = "Map: enemy drone",          group = "Map" },
+    zoomRing  = { c = Color3.fromRGB(255, 255, 255), t = 0.4,  name = "Zoom ring",                 group = "Aim zoom" },
+    zoomDim   = { c = Color3.fromRGB(0, 0, 0),       t = 1,    name = "Zoom: outside the ring (1 = no dim)", group = "Aim zoom" },
 }
 local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "espText", "espStroke", "chamFill", "chamVis",
-    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone" }
-local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text", "Map" }
+    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomRing", "zoomDim" }
+local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text", "Map", "Aim zoom" }
 for _, col in pairs(COL) do col.c0, col.t0 = col.c, col.t end -- defaults for the reset button
 
 -- ============================== drawing ==============================
@@ -174,6 +177,20 @@ local function label(y, size)
     return t
 end
 local warnLabel = label(0.13, 18)
+
+-- aim zoom overlay: a centered circle sized by screen height; the dim is a huge UIStroke drawn outside it
+local function zoomCircle(thick)
+    local f = Instance.new("Frame")
+    f.AnchorPoint, f.Position, f.SizeConstraint = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), Enum.SizeConstraint.RelativeYY
+    f.BackgroundTransparency, f.Visible = 1, false
+    Instance.new("UICorner", f).CornerRadius = UDim.new(1, 0)
+    local st = Instance.new("UIStroke")
+    st.Thickness, st.Parent = thick, f
+    f.Parent = screen
+    return f, st
+end
+local zoomDimFrame, zoomDimStroke = zoomCircle(4000)
+local zoomRingFrame, zoomRingStroke = zoomCircle(2)
 local infoLabel = label(0.74, 16)
 
 -- ============================== game state ==============================
@@ -596,6 +613,42 @@ local function mapEsp()
     end
 end
 
+-- ============================== aim zoom ==============================
+-- Real camera zoom while aiming (right mouse held with a gun out). Roblox has one camera, so the whole view zooms;
+-- the ring marks the center and the optional dim darkens outside it. Each frame takes whatever FOV the game set
+-- (equip, its own ADS tween) and narrows it; hands the game's FOV back when released.
+local UIS = game:GetService("UserInputService")
+local zoomNow, zoomBase, zoomSet = 1, nil, nil
+local baseSens = UIS.MouseDeltaSensitivity -- the game never writes this (grep), so it's ours to scale
+
+local function zoomStep(dt)
+    local cam = Workspace.CurrentCamera
+    local char = lp.Character
+    local want = CFG.aimZoom and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+        and char and char:FindFirstChildOfClass("Tool") ~= nil and lp:GetAttribute("InDrone") ~= true
+        and Workspace:GetAttribute("InMenu") ~= true and not UIS:GetFocusedTextBox()
+    local target = want and CFG.zoomLevel or 1
+    zoomNow += (target - zoomNow) * (1 - math.exp(-CFG.zoomSpeed * dt))
+    if math.abs(zoomNow - target) < 0.01 then zoomNow = target end
+    if zoomNow > 1.001 then
+        -- FieldOfView is stored as float32: compare with a tolerance or our own write reads as "the game changed it"
+        if not zoomSet or math.abs(cam.FieldOfView - zoomSet) > 0.01 then zoomBase = cam.FieldOfView end
+        zoomSet = 2 * math.deg(math.atan(math.tan(math.rad(zoomBase) / 2) / zoomNow))
+        cam.FieldOfView = zoomSet
+        UIS.MouseDeltaSensitivity = CFG.zoomSens and baseSens / zoomNow or baseSens
+    elseif zoomSet then
+        if math.abs(cam.FieldOfView - zoomSet) <= 0.01 then cam.FieldOfView = zoomBase end
+        zoomSet, zoomBase = nil, nil
+        UIS.MouseDeltaSensitivity = baseSens
+    end
+    local on = zoomNow > 1.001
+    local size = UDim2.fromScale(CFG.zoomSize / 100, CFG.zoomSize / 100)
+    zoomRingFrame.Visible, zoomRingFrame.Size = on and CFG.zoomRing, size
+    zoomRingStroke.Color, zoomRingStroke.Transparency = COL.zoomRing.c, COL.zoomRing.t
+    zoomDimFrame.Visible, zoomDimFrame.Size = on and COL.zoomDim.t < 1, size
+    zoomDimStroke.Color, zoomDimStroke.Transparency = COL.zoomDim.c, COL.zoomDim.t
+end
+
 local errs = {} -- feature -> last error; also appended to WarfareHUD/errors.txt once per distinct message
 local function guard(name, f, ...)
     local ok, err = pcall(f, ...)
@@ -610,6 +663,8 @@ local function guard(name, f, ...)
 end
 
 local filterChar
+Run:BindToRenderStep("WarfareAimZoom", 999, function(dt) guard("aimZoom", zoomStep, dt) end)
+
 table.insert(conns, Run.RenderStepped:Connect(function()
     local char = lp.Character
     if char ~= filterChar then filterChar = char; refreshFilter(char) end
@@ -641,6 +696,9 @@ local function unload()
     for _, c in ipairs(conns) do c:Disconnect() end
     for _, b in ipairs(Esp.list) do b:Destroy() end
     for _, L in pairs(mapLayers) do L.frame:Destroy() end
+    pcall(Run.UnbindFromRenderStep, Run, "WarfareAimZoom")
+    if zoomSet then Workspace.CurrentCamera.FieldOfView = zoomBase end
+    UIS.MouseDeltaSensitivity = baseSens
     root:Destroy(); screen:Destroy()
     if Library then pcall(Library.Unload, Library) end
 end
@@ -665,6 +723,7 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Drone    = Window:AddTab("Drone"),
     Threats  = Window:AddTab("Threats"),
+    Aim      = Window:AddTab("Aim"),
     Colors   = Window:AddTab("Colors"),
     Settings = Window:AddTab("Settings"),
 }
@@ -718,6 +777,16 @@ local Body = Tabs.Threats:AddRightGroupbox("Body guard")
 toggle(Body, "WF_Body", "bodyGuard", "Warn: enemy near body")
 slider(Body, "WF_BodyR", "bodyRadius", "Radius", 5, 60, "m")
 toggle(Body, "WF_BodyFly", "bodyOnlyFlying", "Only while flying a drone")
+
+local Zoom = Tabs.Aim:AddLeftGroupbox("Aim zoom")
+Zoom:AddLabel("Hold right mouse with a gun out to zoom. Roblox has one camera, so the whole view zooms; the ring marks the center (dim outside it in the Colors tab).", true)
+toggle(Zoom, "WF_AimZoom", "aimZoom", "Aim zoom")
+Zoom:AddSlider("WF_ZoomLevel", { Text = "Zoom", Default = CFG.zoomLevel, Min = 1.5, Max = 8, Rounding = 1, Suffix = "x",
+    Callback = function(v) CFG.zoomLevel = v end })
+slider(Zoom, "WF_ZoomSize", "zoomSize", "Ring size", 10, 90, "% of screen height")
+slider(Zoom, "WF_ZoomSpeed", "zoomSpeed", "Zoom speed", 4, 40, "")
+toggle(Zoom, "WF_ZoomRing", "zoomRing", "Show ring")
+toggle(Zoom, "WF_ZoomSens", "zoomSens", "Lower mouse sensitivity while zoomed", "Divides sensitivity by the zoom so aiming feels the same")
 
 local MapBox = Tabs.Threats:AddRightGroupbox("Map ESP")
 MapBox:AddLabel("Enemy dots on the in-match map and the minimap, placed with the map's own math.", true)
