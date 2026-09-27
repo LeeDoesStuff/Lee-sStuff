@@ -52,7 +52,11 @@ Two types, models in `ReplicatedStorage.DroneSystem` (Actor), live drones in `wo
 
 ## Other players: look direction + team
 
-- Head/torso aim replicates through BridgeNet2 `ReferenceBridge("HeadMovement")`: payload `{fromUserId, neck = CFrame, waist = CFrame}`. The HeadMovement client applies it to remote `Neck`/`Waist` Motor6Ds, so the **remote Head's CFrame.LookVector is their aim** after that step.
+- Head/torso aim replicates through BridgeNet2 `ReferenceBridge("HeadMovement")`: payload `{fromUserId, neck, waist, p = pitch, aim = Vector3}` every 0.1 s. `aim` is the **weapon muzzle's LookVector in the sender's HumanoidRootPart space**. It's only sent while a gun is equipped and the player isn't sprinting or jogging (`Core.SetAimSource`).
+- The receiving client keeps `{plr, aim, p, n, w, up = os.clock(), ...}` per UserId in upvalue 2 of the `OnRemoteData` closure; get it with `getgc` + `debug.getupvalue`. *Measured:* it only holds about 5–8 players at a time, the nearby ones, so the server culls by distance. Far players get no pitch at all. Neck C0 changes don't replicate, so their Head pose is animation only.
+- The remote `Head.CameraHead.Base` joint (3P gun mount) is aimed along `aim` for nearby players. *Measured:* it matched the head (0.0° apart).
+- **Head LookVector is NOT the aim** (*measured against BulletPool tracers*, 27 shots): 2–10° off in yaw and 6–31° off in pitch, because the weapon-hold animation pitches the head down. **HRP LookVector yaw was within ~1° of the bullet yaw** on most shots, prone included.
+- HUD aim model (v1.3): the muzzle `aim` when it's fresh (< 1.5 s), else HRP yaw with a level cone. Checks compare yaw only then, and the warning says "FACING" instead of "AIMING".
 - Team = **player attribute `Team`** (not `Player.Team`, which is nil). Drones: `model:GetAttribute("Team")`. Same check as `TeamTags.isSameTeam`.
 
 ## Feature ideas mapped to data

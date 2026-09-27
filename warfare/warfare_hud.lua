@@ -41,7 +41,7 @@ local CFG = {
     cones = true, coneLen = 60, coneAngle = 6, coneRange = 150, coneGradient = true, gradAngle = 90,
     esp = true, espNames = true, espRange = 500,
     chams = true, chamsWalls = true, chamsVisColor = true, chamsRange = 500,
-    watchWarn = true, watchLOS = true,
+    watchWarn = true, watchLOS = true, watchFacing = true,
     bodyGuard = true, bodyRadius = 15, bodyOnlyFlying = true,
     droneAlert = true, droneRange = 80, droneHighlight = true,
 }
@@ -264,28 +264,80 @@ local function coneEdges(origin, look, len, angle, key, fade)
     end
 end
 
+-- Where an enemy is aiming. Measured against live bullet tracers (2026-09-27):
+--   Head LookVector: 2-10 deg off in yaw, 6-31 deg off in pitch (weapon-hold animation) -> not used.
+--   HumanoidRootPart yaw: within ~2 deg of the bullet's yaw, prone included.
+--   HeadMovement state .aim (weapon muzzle direction in HRP space, via the HeadMovement bridge): exact,
+--   but the game only holds it for ~5-8 nearby players, and only while a gun is up (not sprinting).
+-- Far players' pitch never reaches this client, so for them the cone is level and checks compare yaw only.
+local aimState, aimScanAt = nil, 0
+local function aimTable()
+    if aimState then
+        for _, v in pairs(aimState) do
+            if type(v) == "table" and os.clock() - (v.up or 0) < 3 then return aimState end
+        end
+    end
+    -- ponytail: getgc scan is a small hitch, so at most every 15 s while the cached table is stale/empty
+    if not getgc or os.clock() < aimScanAt then return aimState end
+    aimScanAt = os.clock() + 15
+    for _, g in ipairs(getgc(false)) do
+        if type(g) == "function" and islclosure(g) and debug.getinfo(g).name == "OnRemoteData" then
+            local t = debug.getupvalue(g, 2)
+            if type(t) == "table" then aimState = t; break end
+        end
+    end
+    return aimState
+end
+
+-- returns direction, exact (true = muzzle, false = body yaw with unknown pitch)
+local function aimOf(pl, char, head, byPlr)
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return head.CFrame.LookVector, false end
+    local e = byPlr[pl]
+    if e and typeof(e.aim) == "Vector3" and e.aim.Magnitude > 0.5 and os.clock() - (e.up or 0) < 1.5 then
+        return hrp.CFrame:VectorToWorldSpace(e.aim.Unit), true
+    end
+    local l = hrp.CFrame.LookVector
+    return Vector3.new(l.X, 0, l.Z).Unit, false
+end
+
+-- how directly `look` points along d (1 = dead on); yaw only when the pitch is unknown
+local function facing(look, d, exact)
+    if exact then return look:Dot(d.Unit) end
+    local flat = Vector3.new(d.X, 0, d.Z)
+    if flat.Magnitude < 0.5 then return 1 end -- straight above/below them: can't rule it out
+    return look:Dot(flat.Unit)
+end
+
 local function threats(warns, body, droneMain)
     local camPos = Workspace.CurrentCamera.CFrame.Position
     local len, range = CFG.coneLen / M, CFG.coneRange / M
     local cosA = math.cos(math.rad(CFG.coneAngle))
     local flying = droneMain ~= nil
+    local byPlr = {}
+    for _, v in pairs(aimTable() or {}) do
+        if type(v) == "table" and v.plr then byPlr[v.plr] = v end
+    end
     for _, pl in ipairs(Players:GetPlayers()) do
         local char = isEnemy(pl) and pl.Character
         local head = char and char:FindFirstChild("Head")
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if head and hum and hum.Health > 0 then
-            local hp, look = head.Position, head.CFrame.LookVector
+            local hp = head.Position
+            local look, exact = aimOf(pl, char, head, byPlr)
             local hot, bestDot = false, -1 -- bestDot: how directly they face your body or drone (1 = dead on)
             for _, tgt in ipairs({ { body, "BODY" }, { droneMain, "DRONE" } }) do
                 local part = tgt[1]
                 if part then
                     local d = part.Position - hp
-                    local dot = look:Dot(d.Unit)
+                    local dot = facing(look, d, exact)
                     bestDot = math.max(bestDot, dot)
-                    if CFG.watchWarn and d.Magnitude < len and dot > cosA
+                    if CFG.watchWarn and (exact or CFG.watchFacing) and d.Magnitude < len and dot > cosA
                         and (not CFG.watchLOS or clearLOS(hp, part.Position, char)) then
                         hot = true
-                        warns[#warns + 1] = { 2, ("WATCHED: %s aiming at your %s (%dm)"):format(pl.Name, tgt[2], d.Magnitude * M) }
+                        warns[#warns + 1] = exact
+                            and { 2, ("AIMING: %s at your %s (%dm)"):format(pl.Name, tgt[2], d.Magnitude * M) }
+                            or { 1.5, ("FACING: %s toward your %s (%dm)"):format(pl.Name, tgt[2], d.Magnitude * M) }
                     end
                 end
             end
@@ -408,7 +460,7 @@ local function unload()
     root:Destroy(); screen:Destroy()
     if Library then pcall(Library.Unload, Library) end
 end
-getgenv().WARFARE_HUD = { unload = unload, cfg = CFG, learnedR = learnedR, errs = errs }
+getgenv().WARFARE_HUD = { unload = unload, cfg = CFG, learnedR = learnedR, errs = errs, aimOf = aimOf, aimTable = aimTable }
 
 -- ============================== Obsidian UI ==============================
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
@@ -453,7 +505,9 @@ toggle(Cones, "WF_Cones", "cones", "Draw aim cones")
 slider(Cones, "WF_ConeLen", "coneLen", "Cone length", 10, 300, "m")
 slider(Cones, "WF_ConeAngle", "coneAngle", "Cone half-angle", 2, 25, "°", "Also the WATCHED threshold")
 slider(Cones, "WF_ConeRange", "coneRange", "Draw for enemies within", 20, 600, "m", "Distance from your camera")
-toggle(Cones, "WF_Watch", "watchWarn", "WATCHED warning", "When an enemy's head points at your body or drone within cone length")
+Cones:AddLabel("Nearby enemies with a gun up: exact muzzle direction (AIMING). Others: body facing, level cone, yaw only (FACING); the game never sends their pitch.", true)
+toggle(Cones, "WF_Watch", "watchWarn", "Aim warning", "When an enemy points at your body or drone within cone length")
+toggle(Cones, "WF_WatchFacing", "watchFacing", "Also warn on FACING (pitch unknown)", "Yaw-only matches for far enemies; noisy when your drone hovers right above them")
 toggle(Cones, "WF_WatchLOS", "watchLOS", "Require line of sight", "Skip warnings through walls")
 toggle(Cones, "WF_ConeGrad", "coneGradient", "Color by aim",
     "Blend from 'looking away' to 'on you' as their aim swings toward your body or drone. Colors and opacity: Colors tab")

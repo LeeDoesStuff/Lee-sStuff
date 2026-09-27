@@ -82,6 +82,12 @@ Finding where money comes from is step one, not the analysis. Before writing cod
 - The first "Workshop first" bought station levels while the workshop was unaffordable and delayed it. The fix was a strict rebuild order: empty pads, then the next workshop level (saving for it), then station levels only once the workshop is maxed.
 - Per-unit scores (coins per fuel/s) undervalue unlocks, because a new slot opens a run of cheap follow-ups. Treat unlocks as gates, not as one more scored item.
 
+## 4c. PvP overlays: check every "where is X aiming/going" guess against ground truth
+
+- **A remote player's Head LookVector is not their aim.** On Warfare, weapon-hold animations pitched the head 6–31° away from where the bullets went. Aim usually replicates through the game's own channel (a bridge or remote that poses necks and guns). Find it, and find what it actually carries: that game sends the muzzle direction, but only for nearby players.
+- **Ground truth is the bullets.** Sample the tracer or bullet pool: take the direction between two frames, trace it back to the shooter's head, and compare each estimator's angle. Your own shots show up in the sample too, and they're a free calibration check.
+- Before deciding what to draw, measure how much of the data reaches this client: which fields, how many players, and at what distance. Say in the UI when a value is unknown ("FACING", yaw only) instead of drawing a confident wrong one.
+
 ## 5. Co-existing with a player who's playing
 
 - Assume the player plays while the farm runs. Detect manual commands (a transition you didn't cause) and **pause** instead of fighting them.
