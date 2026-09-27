@@ -826,13 +826,18 @@ local function bulletSpeed(tool)
     else
         learnOwnSpeed(tool.Name)
     end
+    -- memory scans on but this gun's settings not matched yet (mid-equip): wait up to 5 s rather than guess
+    if CFG.memScans and HAS_GC and os.clock() - (assetsWrongSince or 0) < 5 then
+        return nil, nil, "loading this gun's settings..."
+    end
+    learnOwnSpeed(tool.Name) -- also covers memory scans that never find this gun (throttled to 30 Hz)
     local l = ownSpeeds[tool.Name]
     if l and #l >= 3 then
         local c = table.clone(l)
         table.sort(c)
         return c[math.ceil(#c / 2)], 357, ("learned from %d shots"):format(#l)
     end
-    return 1500, 357, "estimate (fire a few shots to learn it)"
+    return nil, nil, "unknown: fire a few shots to learn it (dot hidden until then)"
 end
 
 local LeadDots = pool("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 8 }, function(d)
@@ -876,6 +881,7 @@ local function droneLead()
     if not tool then leadStatus = "no gun equipped"; return end
     if lp:GetAttribute("InDrone") == true then return end
     local v, zeroD, src, bd = bulletSpeed(tool)
+    if not v then leadStatus = ("%s: %s"):format(tool.Name, src); return end -- no guessed dot
     leadStatus = ("%s: %d studs/s (%s)"):format(tool.Name, v, src)
     if CFG.droneDotAimOnly and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
     local cam = Workspace.CurrentCamera
