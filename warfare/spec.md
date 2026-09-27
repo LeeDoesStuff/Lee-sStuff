@@ -31,7 +31,7 @@ Two types, models in `ReplicatedStorage.DroneSystem` (Actor), live drones in `wo
 | PG7VS | FPV | PG-7VS Shaped | FPVThermo | 280 | 65 | 1.1 | |
 | PG7VSwithWire | FPV | PG-7VS Thermo | FPVThermo | 220 | 95 | 1.2 | |
 
-`Distance` meaning unconfirmed (blast radius vs. something else). Verify by reading how DroneClient/ExplosionFX consume it before drawing rings from it.
+**`Distance` = blast radius r** (*measured* 2026-09-27 from `ExplosionFX.Replicate` broadcasts: FPVFrag r=110, FPVHeat r=150, FPVThermo r=65, M67 r=55). The client never reads it; the server passes it to `Explode`. Live drones also carry `MountedWarhead`, `DroneType`, `OwnerName`, `Team`, `FlightWeightMult` attributes.
 
 ## Built-in MAVIC drop predictor (game already has one)
 
@@ -46,7 +46,9 @@ Two types, models in `ReplicatedStorage.DroneSystem` (Actor), live drones in `wo
 - Called with radius `r` (default 45). Frag search radius = `max(r, min(55, r*2.5))`.
 - Shrapnel sim: 650 virtual frags, `BaseDamage 27`, falloff starts at **15 studs**, min falloff 0.3, head ×1.5, limbs ×0.6, max 6 frags/victim. Frags are **raycast**, so cover blocks them.
 - `Framework.Config`: `GrenadeStats.Radius = 55`; launchers RPG-7 45/130, RPG-26 40/120, AT4 48/145 (radius/damage).
-- So a useful ring pair is: inner = falloff start (15), outer = frag range (≤55), with line-of-sight shading if cheap.
+- **Blast damage** (`ComputeBlastDamage(d, r, dmg)`): full `dmg` inside `r/4`, then `dmg*(1-(d-r/4)/(r-r/4))^1.7`, 0 at r. Line of sight to the HumanoidRootPart is raycast; teammates are skipped (no friendly fire). Characters have **100 HP**, so one-shot radius = `r/4 + (3r/4)*(1-(100/dmg)^(1/1.7))`: M67 ≈ 18.8 studs, Standard Frag ≈ 49.6.
+- Default damage per type (`ExplosionFX` u13): M67 125, RDG5 110, F1 145, RGO 135. FPV damage = attachment `Damage` attr.
+- The server broadcasts every blast on `Framework.Modules.ExplosionFX.Replicate` as `{p = pos, t = type, r = radius, s = scale, u = ...}`. Listening to it learns radii live.
 
 ## Other players: look direction + team
 
@@ -57,8 +59,17 @@ Two types, models in `ReplicatedStorage.DroneSystem` (Actor), live drones in `wo
 
 | Feature | Data source | Status |
 |---|---|---|
-| Trajectory predict (MAVIC) | own drone velocity + gravity, reuse `MavicFlight.Predict` | planned |
-| FPV impact line | FPV `Main` velocity, raycast ahead | planned |
-| Explosion radius rings | payload attrs + ExplosionFX constants | planned |
-| Enemy aim cones / "being watched" | remote Head LookVector, `Team` attr | planned |
-| Enemy drone warning | `workspace.DroneWorkspace` children with other `Team` | idea |
+| Trajectory predict (MAVIC) | own drone velocity + gravity, `MavicFlight.GetPayload` for the start point | v1 |
+| FPV impact line | FPV `Main` velocity, raycast ahead | v1 |
+| Explosion radius rings (edge / one-shot / full) | payload attrs + ExplosionFX formula | v1 |
+| Enemy aim cones / "being watched" | remote Head LookVector, `Team` attr, LOS raycast | v1 |
+| Body guard (enemy near idle body) | enemy HRP distance while `InDrone` | v1 |
+| Enemy drone alert | `workspace.DroneWorkspace` children with other `Team`: distance, closing speed, ETA, Highlight | v1 |
+| Color + opacity per element | Obsidian color pickers with `Transparency` (saved by SaveManager) | v1 |
+
+## Script: `warfare_hud.lua` (v1, 2026-09-27)
+
+- Loader: `loadstring(readfile("warfare_hud.lua"))()` (file in the Potassium workspace). Re-exec safe via `getgenv().WARFARE_HUD.unload`.
+- Draws with HandleAdornments (Line/Cylinder, `Adornee = Terrain`, AlwaysOnTop) pooled in a Folder under `gethui()`; Highlights for enemy drones. Obsidian UI tabs: Drone, Threats, Colors, Settings. Config folder `WarfareHUD`.
+- Runtime errors per feature append to `WarfareHUD/errors.txt` (once per distinct message).
+- Not yet verified in flight (recon account wasn't flying): predictor arc/rings and the LineHandleAdornment direction need a real MAVIC/FPV run.

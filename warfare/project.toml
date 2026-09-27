@@ -1,5 +1,8 @@
 name = "Warfare"
 place_id = 81748781442029
 game_id = 10383565741
-status = "recon"
+status = "v1"
+script = "warfare_hud.lua"
+loader = 'loadstring(readfile("warfare_hud.lua"))()'
+ui = "Obsidian"
 notes = ["notes.md", "spec.md"]
