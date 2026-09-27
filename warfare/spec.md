@@ -1,0 +1,64 @@
+# Warfare — drone HUD spec (recon 2026-09-27)
+
+Place `81748781442029`, game `10383565741`. Squad PvP (tickets, capture points), ~40 players. Goal is a **drone HUD overlay**, not a farm. Everything below is read from the decompiled client unless marked *measured*.
+
+Source dump: `%USERPROFILE%\AppData\Local\Potassium\workspace\warfare_src\` (549 scripts, `decompile` works on Potassium).
+
+## Drones
+
+Two types, models in `ReplicatedStorage.DroneSystem` (Actor), live drones in `workspace.DroneWorkspace` named `<UserId>_<TYPE>` (e.g. `9953813191_FPV`). Every drone model carries a `Team` attribute.
+
+| Type | Role | Payload |
+|---|---|---|
+| **MAVIC** | hover + drop grenades | rack from `DroneSystem.Attachments`, chosen by player attr `SelectedWarheadMAVIC` |
+| **FPV** | kamikaze | warhead chosen by workspace attr `SelectedDroneAttachment` |
+
+- Client: `PlayerScripts.DroneClient.DroneClient` (4.5k lines). Talks to the server via BridgeNet2 `ReferenceBridge("DroneEvent")`, e.g. `{Action = "DropMavic"}`.
+- Drone state: player attr `InDrone == true`; `NoSignal` frame = jammed/out of range.
+- MAVIC flight = `BodyVelocity` + `BodyGyro` on `Main`; FPV = `VectorForce` Lift/AntiGravity/Aerodynamics + `AngularVelocity` Motion.
+
+### Payload attributes (on `DroneSystem.Attachments.<name>`)
+
+| Attachment | Type | DisplayName | Explosion | Damage | Distance | Weight | Pass |
+|---|---|---|---|---|---|---|---|
+| M67_HOLDER | MAVIC | M67 Rack (1) | M67 | — | — | 1 | free |
+| RGO_HOLDER | MAVIC | RGO Rack (1, impact fuse + timed backup) | RGO | — | — | 1 | free |
+| RGO_TRIPLE_HOLDER | MAVIC | RGO Triple Rack | RGO | — | — | 1.15 | 1905384578 |
+| RGD_HOLDER | MAVIC | RGD-5 Triple Rack | RDG5 | — | — | 1.15 | 1905384578 |
+| For_Kamikaze | FPV | Standard Frag (free default) | FPVFrag | 170 | 110 | 1 | |
+| Rocket | FPV | Light Rocket | FPVFrag | 160 | 105 | 0.9 | |
+| TBG7B | FPV | TBG-7B Thermobaric | FPVHeat | 190 | 150 | 1.4 | |
+| PG7VS | FPV | PG-7VS Shaped | FPVThermo | 280 | 65 | 1.1 | |
+| PG7VSwithWire | FPV | PG-7VS Thermo | FPVThermo | 220 | 95 | 1.2 | |
+
+`Distance` meaning unconfirmed (blast radius vs. something else). Verify by reading how DroneClient/ExplosionFX consume it before drawing rings from it.
+
+## Built-in MAVIC drop predictor (game already has one)
+
+`Framework.Modules.MavicFlight.Predict` / `Draw`, driven from DroneClient each frame:
+- Ballistic only: `pos + v*t + ½g t²`, step 1/30 s, 96 steps (3.2 s horizon), **no drag**, starts at the payload's position with the drone's `AssemblyLinearVelocity`.
+- Draws a fixed **7.5-stud** orange neon ring (64 parts, folder `MavicLandingEstimate`) at the hit. Ring size is cosmetic, not the blast.
+- Gated by workspace attr `ShowDroneLandingGuide ~= false` (settings toggle, currently true). MAVIC only; FPV has no predictor.
+- Our add-on value: draw the arc itself, extend past 3.2 s, real blast/frag rings instead of the 7.5 ring, and an FPV impact line.
+
+## Explosion model (`Framework.Modules.ExplosionFX.Explode`)
+
+- Called with radius `r` (default 45). Frag search radius = `max(r, min(55, r*2.5))`.
+- Shrapnel sim: 650 virtual frags, `BaseDamage 27`, falloff starts at **15 studs**, min falloff 0.3, head ×1.5, limbs ×0.6, max 6 frags/victim. Frags are **raycast**, so cover blocks them.
+- `Framework.Config`: `GrenadeStats.Radius = 55`; launchers RPG-7 45/130, RPG-26 40/120, AT4 48/145 (radius/damage).
+- So a useful ring pair is: inner = falloff start (15), outer = frag range (≤55), with line-of-sight shading if cheap.
+
+## Other players: look direction + team
+
+- Head/torso aim replicates through BridgeNet2 `ReferenceBridge("HeadMovement")`: payload `{fromUserId, neck = CFrame, waist = CFrame}`. The HeadMovement client applies it to remote `Neck`/`Waist` Motor6Ds, so the **remote Head's CFrame.LookVector is their aim** after that step.
+- Team = **player attribute `Team`** (not `Player.Team`, which is nil). Drones: `model:GetAttribute("Team")`. Same check as `TeamTags.isSameTeam`.
+
+## Feature ideas mapped to data
+
+| Feature | Data source | Status |
+|---|---|---|
+| Trajectory predict (MAVIC) | own drone velocity + gravity, reuse `MavicFlight.Predict` | planned |
+| FPV impact line | FPV `Main` velocity, raycast ahead | planned |
+| Explosion radius rings | payload attrs + ExplosionFX constants | planned |
+| Enemy aim cones / "being watched" | remote Head LookVector, `Team` attr | planned |
+| Enemy drone warning | `workspace.DroneWorkspace` children with other `Team` | idea |

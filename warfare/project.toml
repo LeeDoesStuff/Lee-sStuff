@@ -1,0 +1,5 @@
+name = "Warfare"
+place_id = 81748781442029
+game_id = 10383565741
+status = "recon"
+notes = ["notes.md", "spec.md"]
