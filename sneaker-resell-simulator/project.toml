@@ -1,0 +1,7 @@
+name = "Sneaker Resell Simulator"
+place_id = 12991635726
+status = "parked"
+script = "panel/panel_v2.lua"
+loader = 'loadstring(readfile("panel_v2.lua"))()'
+ui = "custom panel"
+notes = ["spec.md", "notes.md"]

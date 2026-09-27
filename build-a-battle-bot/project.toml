@@ -1,0 +1,9 @@
+name = "Build A Battle Bot"
+place_id = 106382692972340
+game_id = 10765666801
+status = "active"
+script = "bbb_farm.lua"
+loader = 'loadstring(readfile("bbb_farm.lua"))()'
+ui = "Obsidian (vendored in workspace BattleBotFarm/lib), SaveManager autoload config 'farm'"
+log = "bbb_farm_log.txt (workspace), 60 s status heartbeat"
+notes = ["spec.md", "notes.md"]

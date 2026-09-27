@@ -1,0 +1,7 @@
+name = "Needle in a Haystack"
+place_id = 73903875561291
+status = "parked"
+script = "needle_selldrop.lua"
+loader = 'loadstring(readfile("nih_selldrop.lua"))()'
+ui = "Obsidian"
+notes = ["notes.md"]

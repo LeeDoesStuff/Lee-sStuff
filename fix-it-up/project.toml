@@ -1,0 +1,8 @@
+name = "[BRAKES] Fix It Up!"
+place_id = 72712036210947
+game_id = 7673659635
+status = "parked"
+script = "fiu_hop.lua"
+loader = 'loadstring(readfile("fiu_hop.lua"))()  # re-queued with queue_on_teleport'
+ui = "Obsidian"
+notes = ["notes.md"]
