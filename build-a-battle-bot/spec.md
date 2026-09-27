@@ -159,6 +159,9 @@ Read the state from the server-written labels:
 | **Empty pad** (fresh / after rebirth) | `PlayerGui.PlotSignBillboard` | `ENERGY STATION` · `BUY` · `CostLabel 400` |
 | Workshop (pad count 2→6) | workspace `Sign.…WorkshopSignScreen` SurfaceGui | `WORKSHOP LV.3` · `UPGRADE` · `16.0K` (`MAX LEVEL` at LV.5) |
 | Scrapper | `PlayerGui.PlotSignBillboard` (Adornee = `ScrapperSignHolder`) | `SCRAPPER LV.9` · `25.6K` · `×5.59` |
+| **Scrapper at MAX** (LV.18) | same billboard | `SCRAPPER MAX` · `MAX LEVEL` · `×38.74`. `CostLabel` is `Visible = false` but **still holds the last price** (656.8K) |
+
+Labels round to one decimal (`1.2M` is 1,155,557), and hidden labels keep stale text. The farm reads a price only from a **visible** label, then replaces it with the exact config value (formulas in §4).
 
 ### Scrap
 
@@ -174,11 +177,13 @@ Materials sometimes sit at y≈20–33 (on pit structure); skip anything with `Y
 
 ### Alien Raid
 
-Config: every 600 s, lasts 240 s, drops a crate every 8 s (crates live 45 s), `CAPTURE_RADIUS 6`, `CAPTURE_TIME 60`. Lasers fire 3 at a time every 5 s: 35 damage, radius 6, 0.9 s warning. Server → `AlienShipRemote "start"/"state"/"end" {caught}`. Crates appear as `workspace.AlienShip.Crate_Alien_<n>`.
+Config (`AlienShipConfig`): `FIRST_DELAY 390`, `INTERVAL 600`, `DURATION 240`, a crate every 8 s (`FIRST_DROP 4`, crates live 45 s), `CAPTURE_RADIUS 6`, `CAPTURE_TIME 60`, `CARRY_SLOW 0.35`. Lasers fire 3 at a time every 5 s from 8 s in: 35 damage, radius 6, 0.9 s warning. Server → `AlienShipRemote "start"/"state"/"end" {caught}` (`state` carries `endsIn`). Crates appear as `workspace.AlienShip.Crate_Alien_<n>`.
+
+**The config is not the schedule.** One server (JobId `3d95326a…`) ran raids 20:54:39–20:58:39 and 22:14:39–22:18:39, but **no raid** came 600 s after the second one's start (22:24:39, 22:34:39) or its end (22:28:39). The client can't read server uptime (`DistributedGameTime` counts from your own join), so the farm doesn't predict raids: it reacts to the `start`/`state` pushes, which arrive anywhere on the map.
 
 **Measured live 2026-09-26:**
 
-- There is **one crate at a time**: `workspace.AlienShip.Crate_Alien_<n>` (parts `Body`, `Lid`, `Dome`, `Vein`). A BillboardGui on it shows a **mm:ss countdown** (60 s, `CAPTURE_TIME`). The raid board is a `Part` in the same folder: "ALIEN RAID · CATCH THE FALLING ALIEN CRATES · 2:23".
+- There was **one crate at a time** in both raids watched, despite `DROP_INTERVAL 8`: `workspace.AlienShip.Crate_Alien_<n>` (parts `Body`, `Lid`, `Dome`, `Vein`). A BillboardGui on it shows a **mm:ss countdown** (60 s, `CAPTURE_TIME`). The raid board is a `Part` in the same folder: "ALIEN RAID · CATCH THE FALLING ALIEN CRATES · 2:23".
 - **Catch by touching it.** Teleport onto it and fire `firetouchinterest(root, crate.Body, 0/1)`. The server then welds it to you: `WeldConstraint "CarryWeld"`, `Body → <you>.HumanoidRootPart`. The carrier can be read straight from that weld.
 - **Hold it in the Pit until the countdown ends**, and it's yours. You get `AlienShipRemote "end" {caught = 1}`, `counts.Alien` goes +1, and the `d_raid` quest ticks.
 - **Getting hit drops it**, and anyone can grab it:
@@ -186,7 +191,7 @@ Config: every 600 s, lasts 240 s, drops a crate every 8 s (crates live 45 s), `C
   - **Other players' bots:** their `PlotBot_<n>` models fighting in the Pit attack characters. Event bots (`BotSwarm`) and the Titan (`PitBoss`) count too.
 - **What didn't work:**
   - Touch-and-leave caught 0.
-  - Standing *near* the crate without touching lost it to a player who walked into it (`darkendshadow has Crate_Alien_1`).
+  - Standing *near* the crate without touching lost it to a player who walked into it (`<another player> has Crate_Alien_1`).
   - Small 2.5-stud hops don't clear a 6-stud laser.
 - **What worked:** a touch catch at 22:17:38, held to the end, then **caught 1** at 22:18:39.
 - **Current catcher:** every 0.1 s it scans the laser discs and enemy bots. It hops at once when one is in range, and at least every 0.8 s, each time to the Pit spot (best of 16 random samples) farthest from all threats. It pauses scrap and upgrade teleports while a raid is on.
@@ -215,7 +220,11 @@ Config: every 600 s, lasts 240 s, drops a crate every 8 s (crates live 45 s), `C
 
 - Rate `5 + (min(L,30)-1) + 5·max(0, L-30)` fuel/s. Matched the billboards (LV25 = 29/s, LV29 = 33/s).
 - Buffer = rate × **120 s**; the bot drains it only in `plot` mode. 1 fuel = 1 XP × energy mult.
-- Upgrade L→L+1 costs `300·1.25^(L-1)` (×1.18 per level past 40).
+- Upgrade L→L+1 costs `300·1.25^(L-1)` (×1.18 per level past 40), max LV.100.
+- Exact prices come from `WorkshopConfig`, and every one takes **the level being bought**:
+  - station: `stationUpgradeCost(L+1)` = `floor(300·1.25^(L-1))`, past 40 `floor(300·1.25^38·1.18^(L+1-40))`. LV.37→38 = 924,446 (label `924.4K`); LV.38→39 = 1,155,557 (label `1.2M`).
+  - workshop: `upgradeCost(L+1)` = `floor(4000·2^(L-1))` (LV.2→3 = 8,000), max LV.5.
+  - scrapper: `scrapperUpgradeCost(L+1)` = `floor(1000·1.5^(L-1) + 0.5)` (LV.9→10 = 25,629), max LV.18, gated on `BestDepthWave ≥ 2·L`.
 - **Buy order: cheapest cost per +1 fuel/s.** The step jumps from +1/s to **+5/s past LV30**, so 30→31 is 4× better value than 29→30:
 
 | upgrade | cost | +rate | cost per +1/s |
@@ -309,7 +318,7 @@ Deploy: `%USERPROFILE%\AppData\Local\Potassium\workspace\bbb_farm.lua`, run `loa
 | **Crates & Parts** | Auto Claim (from anywhere) · Auto Fabricator · Auto Open | Crate types to open (all) · Hide reveal animation (on) · Hold crates for CRATE LUCK events (off) + Hold crates from (Lava). Status: fabricator LV, pile, next delivery, luck bar, unopened crates |
 | | Auto Sell Junk (off; irreversible) + "Sell junk now" | Keep best per slot (2) · Never sell (Mythic+). Always keeps locked parts and parts on any build. Status: parts/slots and junk preview |
 | | Auto Equip Best, only while the bot is home | Slots to manage (all five) |
-| **Upgrades** | Auto Stations & Workshop: buys empty pads, workshop levels and station levels by lowest coins per fuel/s | Workshop first (on) · Station level cap (0 = none) · Keep in reserve (0 % of money) |
+| **Upgrades** | Auto Stations & Workshop: buys empty pads, workshop levels and station levels by lowest coins per fuel/s, priced exactly from `WorkshopConfig`. A sign that doesn't take is skipped 60 s (scrapper 120 s); a maxed sign has no price and is never tried | Workshop first (on) · Station level cap (0 = none) · Keep in reserve (0 % of money) |
 | | Auto Fabricator | shares the reserve |
 | | Auto Skill Tree | Focus (Economy / Combat / Crates / Cheapest) · Save points for top pick (on) |
 | | Auto Rebirth | Extra waves before rebirth (0) · Stop at rebirth (0 = no limit) |
@@ -317,6 +326,7 @@ Deploy: `%USERPROFILE%\AppData\Local\Potassium\workspace\bbb_farm.lua`, run `loa
 | **Scrap** | Auto Collect Scrap: sweep the Pit nearest-first → Scrapper → back | Only during Scrap Frenzy (off) · Start a trip at (1 piece) · Return to start (on) · Auto Upgrade Scrapper |
 | | Alien Raid catcher: touch-catch (`firetouchinterest`), then hold in the Pit for the countdown, dodging laser discs and enemy bots | Status: raid state, crates in the Pit, caught this session (verified: caught 1) |
 | **Status** | Live counters + log | — |
+| *(all tabs)* | Character teleports (upgrades, scrap) pause while a game panel is open (`PlayerGui` attr `OpenPanel`), but only for 90 s: the update log opens itself after an update and nobody closes it on an unattended client | — |
 | **Settings** | Anti-AFK (on) · Unload · configs · themes · **Infinite Yield**: AFK safety bundle (`staffwatch\noprompts\clearerror`), Stop 3D rendering (`norender`). Both are run through IY's own command bar. | IY toggles are off by default |
 
 Verified live with the farm: swarm joined, left the same second, 6 tiers paid; post-rebirth rebuild went 2 BUY pads → workshop LV.1→2→…→5 → new pads → upgrades; 51 scrap pieces delivered in ~3 min; scrapper LV.1→6; skills bought on rebirth.
@@ -325,6 +335,6 @@ Verified live with the farm: swarm joined, left the same second, 6 tiers paid; p
 
 ## 6. Open questions
 
-- Alien Raid capture rules (teleport vs stepped, carry-to-plot?). The farm logs the raid folder the first time it sees one.
+- Alien Raid schedule: what the server adds on top of `FIRST_DELAY 390` + `INTERVAL 600` (§3). Log every `alien raid started` with its JobId until a pattern shows.
 - Whether playtime `claimed` resets on rejoin (`elapsed` is per-session; if it does, rejoin-farming the 1-min 2× Cage tier is possible).
 - `GarageRemote "equip"` on the **deployed** build while it's in the Depths (only tested on idle build #2 — note build #2 now holds spare `CageWeapon2`).

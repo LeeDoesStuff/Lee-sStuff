@@ -13,5 +13,6 @@ Non-obvious findings (measured 2026-09-26):
 - A rebirth wipes the stations (pads show "ENERGY STATION · BUY · 400") and resets the workshop (2 pads) and the scrapper to LV.1, on top of what the panel lists. The fabricator survives.
 - Scrap is a parallel character farm. Hard teleports keep the load, unlike [needle-haystack-project](../needle-in-a-haystack/notes.md).
 - Pit event tiers are server-wide totals; `joined` survives leaving.
-
+- Sign labels round to one decimal, and a MAX sign hides its CostLabel but keeps the stale price. The farm prices every sign from `WorkshopConfig` (arg = the level being bought) and reads only visible labels.
+- Alien raids don't follow `AlienShipConfig` (390 + 600 s): no raid came at +600 s after the 22:14 raid. React to `AlienShipRemote` pushes; don't predict.
 Lessons from the first farm's misses: [game-recon-full-progression](../notes/game-recon-checklist.md). Other projects: [fix-it-up-project](../fix-it-up/notes.md), [sneaker-panel-project](../sneaker-resell-simulator/notes.md).

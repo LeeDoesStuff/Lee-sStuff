@@ -40,6 +40,7 @@ local RewardConfig   = require(Shared:WaitForChild("RewardConfig"))
 local RebirthConfig  = require(Shared:WaitForChild("RebirthConfig"))
 local SkillConfig    = require(Shared:WaitForChild("SkillConfig"))
 local MaterialConfig = require(Shared:WaitForChild("MaterialConfig"))
+local WorkshopConfig = require(Shared:WaitForChild("WorkshopConfig"))
 local compact        = require(Shared:WaitForChild("NumberFormat")).compact
 
 local R = {
@@ -88,7 +89,6 @@ local CFG = {
     antiAfk = true,
 }
 
-local weak = { __mode = "k" }
 local S = {
     alive = true, conns = {}, cfg = CFG,
     mode = "plot", modeAt = os.clock(),
@@ -96,7 +96,10 @@ local S = {
     garage = nil, counts = {}, gsync = nil,
     reward = nil, rewardAt = 0, quest = nil, guild = nil, rb = nil, sk = nil, raid = nil,
     lastCmd = {}, fullUntil = 0, lastErr = {},
-    failUntil = setmetatable({}, weak), skipMat = setmetatable({}, weak),
+    -- Backoffs keyed by Instance. Not weak tables: Roblox drops an Instance's Lua wrapper when no script
+    -- holds it, so weak-keyed entries vanished while the part still existed (a 2-min backoff lasted 16 s).
+    -- ponytail: never pruned; a few skipped parts per minute, fine for a session
+    failUntil = {}, skipMat = {},
     t0 = os.clock(), earned = 0, runs = 0, events = 0, opened = 0, equips = 0, upgrades = 0,
     scrapPieces = 0, scrapBase = 0,
     log = {}, logDirty = false,
@@ -174,8 +177,12 @@ local function myStations()
                 cur, cap = num(cur), num(cap)
                 if cur and cap and cap > 0 then e.fill = cur / cap end
             end
-            if cost then e.cost = num(cost.Text) or e.cost end
+            if cost and cost.Visible then e.cost = num(cost.Text) or e.cost end -- hidden = maxed (stale text)
         end
+    end
+    -- exact price from the config: labels round to 1 decimal ("1.2M" is 1,155,557)
+    for _, e in pairs(by) do
+        if e.lv and e.cost then e.cost = WorkshopConfig.stationUpgradeCost(e.lv + 1) end
     end
     return by
 end
@@ -195,16 +202,20 @@ local function workshop()
             w.cost = w.cost or num(d.Text)
         end
     end
+    if w.lv and w.cost then w.cost = WorkshopConfig.upgradeCost(w.lv + 1) end -- exact, not the rounded label
     return w
 end
 
--- Scrapper: PlotSignBillboard "SCRAPPER LV.9 · UPGRADE · 25.6K · ×5.59" (levels are wave-gated)
+-- Scrapper: PlotSignBillboard "SCRAPPER LV.9 · UPGRADE · 25.6K · ×5.59" (levels are wave-gated).
+-- At MAX (LV.18) the title reads "SCRAPPER MAX" and the CostLabel is hidden but keeps its old text.
 local function scrapper()
     for _, g in ipairs(PG:GetChildren()) do
         local a = g:IsA("BillboardGui") and g.Adornee
         if a and a.Name == "ScrapperSignHolder" and a:GetAttribute("PlotIndex") == plotIdx() then
             local title, cost = g:FindFirstChild("Title", true), g:FindFirstChild("CostLabel", true)
-            return { part = a, lv = title and tonumber(title.Text:match("LV%.(%d+)")), cost = cost and num(cost.Text) }
+            local lv = title and tonumber(title.Text:match("LV%.(%d+)"))
+            cost = cost and cost.Visible and (lv and WorkshopConfig.scrapperUpgradeCost(lv + 1) or num(cost.Text))
+            return { part = a, lv = lv, cost = cost }
         end
     end
 end
@@ -656,6 +667,20 @@ local function equipTick()
     R.garage:FireServer("request")
 end
 
+-- The player has a game panel open: don't yank the character around. Not forever, though: the update
+-- log opens itself on the first join after an update and holds OpenPanel until someone clicks X,
+-- which would stall an unattended (auto-rejoined) farm.
+local function panelOpen()
+    local p = PG:GetAttribute("OpenPanel")
+    if p ~= S.panel then S.panel, S.panelAt, S.panelIgnored = p, os.clock(), false end
+    if p == nil or os.clock() - S.panelAt < 90 then return p ~= nil end
+    if not S.panelIgnored then
+        S.panelIgnored = true
+        log(("panel %s open 90 s+ — carrying on"):format(tostring(p)))
+    end
+    return false
+end
+
 local function upgradeTick()
     local reserve = money.Value * CFG.reserve / 100
     local function afford(cost) return cost and money.Value - reserve >= cost end
@@ -667,7 +692,7 @@ local function upgradeTick()
     end
     local h = hrp()
     local raiding = S.raidBusy or (CFG.raid and S.raid) -- the character belongs to the raid catcher
-    if not h or raiding or PG:GetAttribute("OpenPanel") ~= nil then return end
+    if not h or raiding or panelOpen() then return end
     local home = h.CFrame
     if CFG.upgrades then
         for _ = 1, 25 do -- ponytail: cap per batch so the character is only away a few seconds
@@ -683,7 +708,9 @@ local function upgradeTick()
         end
     end
     local s = CFG.scrapper and scrapper()
-    if s and afford(s.cost) and os.clock() >= (S.failUntil[s.part] or 0) then
+    -- levels are gated on best Depths wave (WorkshopConfig): don't walk over to a sign that will say no
+    local gated = s and s.lv and (LP:GetAttribute("BestDepthWave") or 0) < WorkshopConfig.scrapperWaveRequirement(s.lv + 1)
+    if s and not gated and afford(s.cost) and os.clock() >= (S.failUntil[s.part] or 0) then
         local e = { part = s.part, cost = s.cost, lv = s.lv, what = "scrapper LV." .. tostring(s.lv) }
         if press(e) then
             log(("%s -> LV.%s (%s)"):format(e.what, tostring(levelOf(s.part)), compact(s.cost)))
@@ -790,7 +817,7 @@ end
 
 -- One scrap trip: sweep the Pit nearest-first until full (or empty), deposit at our Scrapper, go back.
 local function scrapTick()
-    if not CFG.scrap or (CFG.frenzyOnly and not S.evs.frenzy) or PG:GetAttribute("OpenPanel") ~= nil
+    if not CFG.scrap or (CFG.frenzyOnly and not S.evs.frenzy) or panelOpen()
         or S.raidBusy or (CFG.raid and S.raid) then return end
     local plot  = myPlot()
     local mouth = plot and plot:FindFirstChild("Scrapper") and plot.Scrapper:FindFirstChild("Mouth")
