@@ -58,6 +58,7 @@ Finding where money comes from is step one, not the analysis. Before writing cod
   - **Acquire** needs a real touch (`firetouchinterest` on the object's part). Standing near it lost the crate to a player who walked into it.
   - **Hold** means staying in the zone until a countdown ends. Read the countdown from the object's BillboardGui.
   - **Survive** means not getting hit, because a hit drops what you carry. Read ownership from how the server marks it, here a `WeldConstraint` from the object to the carrier's `HumanoidRootPart`.
+  - **Find out what the event's end does to a hold in progress.** BBB's raid end delivered a crate held for only 26 s of its 60, so the last crate is always worth grabbing, and a raid fits one more catch than full holds alone suggest (4, not 3).
 - **In hostile or contested zones, list every threat and its telegraph before building the hold loop:**
   - **Environmental attacks:** find their warning visuals (here, flat 12-stud discs spawned about 0.9 s before a 6-stud hit) and scan them at ≥10 Hz.
   - **Other players' units and event NPCs:** they attack characters, so keep distance.
@@ -707,7 +708,8 @@ Hit sparks and damage numbers are often drawn on the client before the server de
 - → **Progress resets (instead of pausing) when you step out** → never leave the zone, even to dodge; dodge *inside* it. *BBB:* the alien crate's 60 s `CAPTURE_TIME` needs the carrier in the Pit throughout. Lasers warn 0.9 s ahead (`LASER_WARNING`) and hit 6 studs (`LASER_RADIUS`) for 35; other players' bots, `BotSwarm` and `PitBoss` also hit characters, and any hit drops the crate. The catcher scans threats at 10 Hz and hops to the safest of 16 sampled Pit spots when one comes in range.
 - → **`Touched`-based zones need continuous contact.** A hovering or anchored character, or a single `firetouchinterest` "begin", flickers in and out. Stand on the floor inside the part (`Humanoid.FloorMaterial ~= Enum.Material.Air`). Never run `;firetouchinterests` *(replicated)* without a name: it touches every TouchTransmitter in workspace, including kill bricks and queue pads.
 - → **The zone requires you alive, on the ground and not seated** → dying or sitting (`Humanoid.SeatPart` set) resets the capture.
-- **Verify:** the progress value only goes up in the log, and then the delivery signal arrives.
+- → **The event's end completes a capture in progress** (BBB: a 26 s hold paid at raid end) → never skip a late pickup. Plan the round as "full holds + one at the end".
+- **Verify:** the progress value only goes up in the log, and then the delivery signal arrives. *BBB:* 4 of 4 possible crates in one raid with the threat-aware catcher.
 
 #### C12 · Death and respawn inside farm loops
 - **Never cache the character.** Look up `Character`, `HumanoidRootPart`, `Humanoid` and the equipped `Tool` on every tick. On `LocalPlayer.CharacterAdded`, reconnect `Humanoid.Died` and re-equip with `Humanoid:EquipTool(tool)`; the Backpack is rebuilt on every spawn.
@@ -1157,7 +1159,7 @@ Every system here is a clock, a counter or other players. Before automating any 
   - remotes (`"start"` / `"state"` / `"end"` / `"rewards"`);
   - config (`FIRST_DELAY` + `INTERVAL`, or `os.time() % CYCLE`).
 - → **`FIRST_DELAY` + `INTERVAL`** usually means a **server-uptime clock**: each server runs its own phase. Re-read the board after every hop; a hopper can pick a server whose wanted event starts within a minute.
-  - → **But log real start times before scheduling around config constants.** BBB's `AlienShipConfig` says `FIRST_DELAY = 390`, `INTERVAL = 600`, `DURATION = 240`, yet after the 22:14:39 raid no raid came 600 s after its start (22:24:39, 22:34:39) or 600 s after its end (22:28:39). The server's loop adds rules the client config doesn't show. The client can't read server uptime either: `workspace.DistributedGameTime` counts from *your* join, not the server's start.
+  - → **But log real start times before scheduling around config constants.** BBB's `AlienShipConfig` says `FIRST_DELAY = 390`, `INTERVAL = 600`, `DURATION = 240`, yet one server's raids started at 20:54:39, 22:14:39 and 22:54:39: **every 2400 s**, 4 × `INTERVAL`, with none at the 600 s marks between. The server's loop adds rules the client config doesn't show (here probably a rotation of four events). Two consecutive starts give you the real period. The client can't read server uptime either: `workspace.DistributedGameTime` counts from *your* join, not the server's start.
 - → **`os.time()`-based** ("every hour at :00") → a global clock. Schedule by wall clock; hopping gains nothing.
 - **Join rules:**
   - Find the minimum that pays: a `joined` flag, one hit, N seconds in the zone, or a damage share.

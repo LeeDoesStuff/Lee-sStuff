@@ -179,13 +179,14 @@ Materials sometimes sit at y≈20–33 (on pit structure); skip anything with `Y
 
 Config (`AlienShipConfig`): `FIRST_DELAY 390`, `INTERVAL 600`, `DURATION 240`, a crate every 8 s (`FIRST_DROP 4`, crates live 45 s), `CAPTURE_RADIUS 6`, `CAPTURE_TIME 60`, `CARRY_SLOW 0.35`. Lasers fire 3 at a time every 5 s from 8 s in: 35 damage, radius 6, 0.9 s warning. Server → `AlienShipRemote "start"/"state"/"end" {caught}` (`state` carries `endsIn`). Crates appear as `workspace.AlienShip.Crate_Alien_<n>`.
 
-**The config is not the schedule.** One server (JobId `3d95326a…`) ran raids 20:54:39–20:58:39 and 22:14:39–22:18:39, but **no raid** came 600 s after the second one's start (22:24:39, 22:34:39) or its end (22:28:39). The client can't read server uptime (`DistributedGameTime` counts from your own join), so the farm doesn't predict raids: it reacts to the `start`/`state` pushes, which arrive anywhere on the map.
+**The config is not the schedule.** One server (JobId `3d95326a…`) started raids at 20:54:39, 22:14:39 and 22:54:39: **every 2400 s (40 min) = 4 × `INTERVAL`**, with none at the 600 s marks between (22:24:39, 22:34:39 checked). The client can't read server uptime (`DistributedGameTime` counts from your own join), so the farm doesn't predict raids: it reacts to the `start`/`state` pushes, which arrive anywhere on the map.
 
 **Measured live 2026-09-26:**
 
-- There was **one crate at a time** in both raids watched, despite `DROP_INTERVAL 8`: `workspace.AlienShip.Crate_Alien_<n>` (parts `Body`, `Lid`, `Dome`, `Vein`). A BillboardGui on it shows a **mm:ss countdown** (60 s, `CAPTURE_TIME`). The raid board is a `Part` in the same folder: "ALIEN RAID · CATCH THE FALLING ALIEN CRATES · 2:23".
+- There is **one crate at a time**, and each new one reuses the name `Crate_Alien_1`. The first drops 4 s into the raid (`FIRST_DROP`); each next one ~7 s after the previous is caught. A 240 s raid therefore fits **4 crates**: three full 60 s holds plus a fourth held when the raid ends. `workspace.AlienShip.Crate_Alien_<n>` (parts `Body`, `Lid`, `Dome`, `Vein`). A BillboardGui on it shows a **mm:ss countdown** (60 s, `CAPTURE_TIME`). The raid board is a `Part` in the same folder: "ALIEN RAID · CATCH THE FALLING ALIEN CRATES · 2:23".
 - **Catch by touching it.** Teleport onto it and fire `firetouchinterest(root, crate.Body, 0/1)`. The server then welds it to you: `WeldConstraint "CarryWeld"`, `Body → <you>.HumanoidRootPart`. The carrier can be read straight from that weld.
 - **Hold it in the Pit until the countdown ends**, and it's yours. You get `AlienShipRemote "end" {caught = 1}`, `counts.Alien` goes +1, and the `d_raid` quest ticks.
+- **The raid's end delivers the crate you're holding, whatever its countdown.** The fourth crate of the 22:54 raid was held only 26 s, yet `end` said `caught = 4` and `counts.Alien` went +1 a second later. Always go for the last crate.
 - **Getting hit drops it**, and anyone can grab it:
   - **Ship lasers:** a flat warning disc (`Part`, size 0.2×12×12, at y≈1, inside `workspace.AlienShip`) appears about 0.9 s before a 6-stud, 35-damage hit. 2–3 come at a time.
   - **Other players' bots:** their `PlotBot_<n>` models fighting in the Pit attack characters. Event bots (`BotSwarm`) and the Titan (`PitBoss`) count too.
@@ -193,7 +194,7 @@ Config (`AlienShipConfig`): `FIRST_DELAY 390`, `INTERVAL 600`, `DURATION 240`, a
   - Touch-and-leave caught 0.
   - Standing *near* the crate without touching lost it to a player who walked into it (`<another player> has Crate_Alien_1`).
   - Small 2.5-stud hops don't clear a 6-stud laser.
-- **What worked:** a touch catch at 22:17:38, held to the end, then **caught 1** at 22:18:39.
+- **What worked:** a touch catch at 22:17:38, held to the end, then **caught 1** at 22:18:39. Then the threat-aware catcher below took **4 of 4** in the 22:54 raid (caught 22:55:48, 22:56:59, 22:58:07, and the fourth at the 22:58:39 end), never dropping one.
 - **Current catcher:** every 0.1 s it scans the laser discs and enemy bots. It hops at once when one is in range, and at least every 0.8 s, each time to the Pit spot (best of 16 random samples) farthest from all threats. It pauses scrap and upgrade teleports while a raid is on.
 
 ---
@@ -324,7 +325,7 @@ Deploy: `%USERPROFILE%\AppData\Local\Potassium\workspace\bbb_farm.lua`, run `loa
 | | Auto Rebirth | Extra waves before rebirth (0) · Stop at rebirth (0 = no limit) |
 | **Rewards** | Playtime · Daily login · Quests · Guild chests, each its own toggle | Redeem BUILDABOT button |
 | **Scrap** | Auto Collect Scrap: sweep the Pit nearest-first → Scrapper → back | Only during Scrap Frenzy (off) · Start a trip at (1 piece) · Return to start (on) · Auto Upgrade Scrapper |
-| | Alien Raid catcher: touch-catch (`firetouchinterest`), then hold in the Pit for the countdown, dodging laser discs and enemy bots | Status: raid state, crates in the Pit, caught this session (verified: caught 1) |
+| | Alien Raid catcher: touch-catch (`firetouchinterest`), then hold in the Pit for the countdown, dodging laser discs and enemy bots | Status: raid state, crates in the Pit, caught this session (verified: 4 of 4 in one raid) |
 | **Status** | Live counters + log | — |
 | *(all tabs)* | Character teleports (upgrades, scrap) pause while a game panel is open (`PlayerGui` attr `OpenPanel`), but only for 90 s: the update log opens itself after an update and nobody closes it on an unattended client | — |
 | **Settings** | Anti-AFK (on) · Unload · configs · themes · **Infinite Yield**: AFK safety bundle (`staffwatch\noprompts\clearerror`), Stop 3D rendering (`norender`). Both are run through IY's own command bar. | IY toggles are off by default |
@@ -335,6 +336,6 @@ Verified live with the farm: swarm joined, left the same second, 6 tiers paid; p
 
 ## 6. Open questions
 
-- Alien Raid schedule: what the server adds on top of `FIRST_DELAY 390` + `INTERVAL 600` (§3). Log every `alien raid started` with its JobId until a pattern shows.
+- Alien Raid schedule: why raids come every 2400 s instead of `INTERVAL 600` (§3). Likely one slot in a 4-event rotation; check whether other servers share the 40-min period and what fills the other slots.
 - Whether playtime `claimed` resets on rejoin (`elapsed` is per-session; if it does, rejoin-farming the 1-min 2× Cage tier is possible).
 - `GarageRemote "equip"` on the **deployed** build while it's in the Depths (only tested on idle build #2 — note build #2 now holds spare `CageWeapon2`).

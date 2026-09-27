@@ -14,5 +14,5 @@ Non-obvious findings (measured 2026-09-26):
 - Scrap is a parallel character farm. Hard teleports keep the load, unlike [needle-haystack-project](../needle-in-a-haystack/notes.md).
 - Pit event tiers are server-wide totals; `joined` survives leaving.
 - Sign labels round to one decimal, and a MAX sign hides its CostLabel but keeps the stale price. The farm prices every sign from `WorkshopConfig` (arg = the level being bought) and reads only visible labels.
-- Alien raids don't follow `AlienShipConfig` (390 + 600 s): no raid came at +600 s after the 22:14 raid. React to `AlienShipRemote` pushes; don't predict.
+- Alien raids don't follow `AlienShipConfig` (390 + 600 s): one server raided every 2400 s. React to `AlienShipRemote` pushes; don't predict. The threat-aware catcher went 4/4 in a raid (verified 2026-09-26), and the raid's end delivers a crate held only partway, so the last crate always pays.
 Lessons from the first farm's misses: [game-recon-full-progression](../notes/game-recon-checklist.md). Other projects: [fix-it-up-project](../fix-it-up/notes.md), [sneaker-panel-project](../sneaker-resell-simulator/notes.md).
