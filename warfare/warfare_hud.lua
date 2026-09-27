@@ -68,6 +68,7 @@ local CFG = {
     mapEsp = true, mapNames = true, mapDrones = true, mapDotSize = 7, mapSpawn = true,
     aimZoom = false, zoomLevel = 3, zoomSize = 35, zoomSpeed = 14, zoomSens = true,
     droneDot = true, droneDotAimOnly = false, droneDotRange = 150, droneDotSize = 8, droneDotLine = true,
+    hitMarker = true, hitMarkerSize = 22, droneDotArea = true,
     memScans = HAS_GC,
 }
 
@@ -96,9 +97,12 @@ local COL = {
     zoomDim   = { c = Color3.fromRGB(0, 0, 0),       t = 1,    name = "Zoom: outside the ring (1 = no dim)", group = "Aim zoom" },
     leadDot   = { c = Color3.fromRGB(170, 255, 0),   t = 0,    name = "Drone aim dot (lead)",      group = "Enemy drones" },
     leadLine  = { c = Color3.fromRGB(170, 255, 0),   t = 0.5,  name = "Drone -> aim dot line",     group = "Enemy drones" },
+    leadArea  = { c = Color3.fromRGB(170, 255, 0),   t = 0.7,  name = "Drone hit area (at the lead)", group = "Enemy drones" },
+    hitMark   = { c = Color3.fromRGB(255, 255, 255), t = 0,    name = "Drone hit marker",          group = "Enemy drones" },
+    killMark  = { c = Color3.fromRGB(255, 50, 50),   t = 0,    name = "Drone kill marker",         group = "Enemy drones" },
 }
 local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "espText", "espStroke", "chamFill", "chamVis",
-    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomDim", "leadDot", "leadLine" }
+    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomDim", "leadDot", "leadLine", "leadArea", "hitMark", "killMark" }
 local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text", "Map", "Aim zoom" }
 for _, col in pairs(COL) do col.c0, col.t0 = col.c, col.t end -- defaults for the reset button
 
@@ -674,24 +678,91 @@ end
 -- gravity 35.04 studs/s^2, launch speed = the weapon's SettingsGun.BSpeed (server-sent; e.g. SVD 2554, AK-74 ~3000,
 -- AS Val ~1000), sights zeroed at SettingsGun.ZeroDistance or 357 studs (launch angle atan(0.5*g*Z/v^2) up).
 local BULLET_G = 35.04
-local function leadPoint(origin, p, vel, v, zeroD)
-    -- ponytail: ignores drag (a few % over drone ranges) and the drone's acceleration
-    local aim, t = p, (p - origin).Magnitude / v
-    for _ = 1, 4 do
-        aim = p + vel * t
-        t = (aim - origin).Magnitude / v
+-- G1 drag table {Mach, Cd} copied from BulletSimulator (u29); every BulletData ammo type uses G1 (none sets DragModel)
+local G1 = { {0,0.2629},{0.05,0.2558},{0.1,0.2487},{0.15,0.2413},{0.2,0.2344},{0.25,0.2278},{0.3,0.2214},{0.35,0.2155},
+    {0.4,0.2104},{0.45,0.2061},{0.5,0.2032},{0.55,0.202},{0.6,0.2034},{0.65,0.2165},{0.7,0.223},{0.75,0.2313},{0.8,0.2417},
+    {0.85,0.2546},{0.875,0.2706},{0.9,0.2866},{0.925,0.3091},{0.95,0.3379},{0.975,0.3785},{1,0.4032},{1.025,0.4147},
+    {1.05,0.4201},{1.075,0.4278},{1.1,0.4338},{1.125,0.4373},{1.15,0.4392},{1.2,0.4403},{1.25,0.4406},{1.3,0.4401},
+    {1.35,0.4386},{1.4,0.4362},{1.45,0.4328},{1.5,0.4286},{1.55,0.4237},{1.6,0.4182},{1.65,0.4121},{1.7,0.4057},
+    {1.75,0.3991},{1.8,0.3926},{1.85,0.3861},{1.9,0.38},{1.95,0.3741},{2,0.3684},{2.05,0.363},{2.1,0.3578},{2.15,0.3529},
+    {2.2,0.3481},{2.25,0.3435},{2.3,0.3391},{2.35,0.3349},{2.4,0.3269},{2.5,0.3147},{2.6,0.3049},{2.7,0.2956},{2.8,0.288},
+    {2.9,0.2809},{3,0.2725},{3.5,0.2449},{4,0.2257},{4.5,0.2108},{5,0.2003} }
+local function g1Cd(mach)
+    if mach <= G1[1][1] then return G1[1][2] end
+    for i = 2, #G1 do
+        if mach <= G1[i][1] then
+            local a, b = G1[i - 1], G1[i]
+            return a[2] + (b[2] - a[2]) * (mach - a[1]) / (b[1] - a[1])
+        end
     end
-    local rise = (aim - origin).Magnitude * (0.5 * BULLET_G * zeroD / (v * v)) -- the zero angle lifts the bullet
-    return aim + Vector3.new(0, 0.5 * BULLET_G * t * t - rise, 0), t
+    return G1[#G1][2]
 end
-do -- self-check: still target 100 studs out at v=1000 -> drop 0.175, zero rise 0.625; moving 10 studs/s -> ~1 stud lead
+-- BulletSimulator air model: ISA temperature lapse by altitude (studs * 0.28 = m), density, speed of sound
+local AIR_M, AIR_R, LAPSE, T0 = 0.0289644, 8.31447, 0.0065, 288.15
+local RHO_EXP, M_OVER_R, GAMMA_R = 9.80665 * AIR_M / (AIR_R * LAPSE), AIR_M / AIR_R, 1.4 * AIR_R / AIR_M
+local function ammoData(t) -- BulletSimulator.BuildBulletData
+    local mass, bc, cal = tonumber(t.Mass) or 0.004, tonumber(t.Drag) or 0.295, tonumber(t.Caliber) or 0.00556
+    return { mass = mass, cross = math.pi * (cal * 0.5) ^ 2, form = mass / (703.0674 * bc * cal * cal) }
+end
+local GRAV = Vector3.new(0, -BULLET_G, 0)
+local function accel(pos, vel, bd)
+    if not bd then return GRAV end
+    local sp = vel.Magnitude
+    if sp <= 1 then return GRAV end
+    local T = T0 - LAPSE * (pos.Y > 0 and pos.Y * 0.28 or 0)
+    local rho = 101325 * (T / T0) ^ RHO_EXP * M_OVER_R / T
+    local cd = g1Cd(sp * 0.28 / math.sqrt(T * GAMMA_R))
+    return GRAV - vel * (0.5 * rho * (sp * 0.28) * cd * bd.cross * bd.form / bd.mass)
+end
+-- Fly a bullet from origin with velocity v0 until it has gone `dist` along u; returns time and position there.
+local STEP = 1 / 240
+local function fly(origin, v0, u, dist, bd)
+    local pos, vel, t = origin, v0, 0
+    while t < 3 do
+        local a = accel(pos, vel, bd)
+        local np = pos + vel * STEP + a * (0.5 * STEP * STEP)
+        local nd = (np - origin):Dot(u)
+        if nd >= dist then
+            local pd = (pos - origin):Dot(u)
+            local f = (dist - pd) / math.max(nd - pd, 1e-6)
+            return t + STEP * f, pos:Lerp(np, f)
+        end
+        pos, vel, t = np, vel + a * STEP, t + STEP
+    end
+    return nil
+end
+-- Where to put your sights so the bullet meets a target at p moving at vel. The game launches along the sights
+-- pitched up by its zero angle atan(0.5*g*Z/v^2); this flies that bullet with gravity + drag and corrects the aim
+-- point by the miss until they meet. bd = nil -> no drag.
+local function leadPoint(origin, p, vel, v, zeroD, bd)
+    -- ponytail: assumes the drone keeps its velocity (no acceleration); spin drift / transonic wobble ignored
+    local theta = math.atan(0.5 * BULLET_G * zeroD / (v * v))
+    local q, t = p, 0
+    for _ = 1, 4 do
+        local u = (q - origin).Unit
+        local up = math.abs(u.Y) > 0.99 and Vector3.xAxis or Vector3.yAxis
+        local w = (CFrame.lookAt(origin, origin + u, up) * CFrame.Angles(theta, 0, 0)).LookVector
+        local tt, b = fly(origin, w * v, u, (q - origin).Magnitude, bd)
+        if not tt then return nil end
+        t = tt
+        q += (p + vel * t) - b
+    end
+    return q, t
+end
+do -- self-checks: vacuum matches the closed form (still target 100 studs, v=1000: -0.45; moving 10 studs/s: ~1 stud);
+   -- drag makes a real round slower (7.62x54mmR-like at 2554 studs/s needs more time than vacuum over 400 studs)
     local a = leadPoint(Vector3.zero, Vector3.new(0, 0, -100), Vector3.zero, 1000, 357)
     local b = leadPoint(Vector3.zero, Vector3.new(0, 0, -100), Vector3.new(10, 0, 0), 1000, 357)
-    assert(math.abs(a.Y + 0.45) < 0.01 and math.abs(b.X - 1.0) < 0.02, "leadPoint self-check")
+    assert(math.abs(a.Y + 0.45) < 0.02 and math.abs(b.X - 1.0) < 0.03, "leadPoint vacuum self-check")
+    local bd = ammoData({ Mass = 0.0096, Caliber = 0.00782, Drag = 0.4 })
+    local _, tv = leadPoint(Vector3.zero, Vector3.new(0, 0, -400), Vector3.zero, 2554, 357)
+    local _, td = leadPoint(Vector3.zero, Vector3.new(0, 0, -400), Vector3.zero, 2554, 357, bd)
+    assert(td > tv * 1.01 and td < tv * 1.5, "leadPoint drag self-check")
 end
 
 -- bullet speed: exact from the weapon client's Assets table (memory scan), else learned from your own tracers
 local weaponAssets, assetsScanAt, assetsMiss, assetsWrongSince = nil, 0, nil, nil
+local ammoTypes, ammoCache = nil, {} -- BulletSimulator.BulletData.Types (per-ammo Mass/Caliber/Drag), from the same scan
 local ownSpeeds, bulletSeen, learnAt = {}, {}, 0
 local function learnOwnSpeed(toolName)
     -- ponytail: median of your own tracer speeds per weapon (BulletPool parts, 30 Hz); only runs without memory scans
@@ -726,20 +797,31 @@ local function bulletSpeed(tool)
         local match = gm and typeof(gm) == "Instance" and gm.Name == tool.Name
         if match then assetsWrongSince = nil else assetsWrongSince = assetsWrongSince or os.clock() end
         -- rescan only when nothing is cached, or it has pointed at another gun for 5 s (e.g. a new life's table)
-        if (not weaponAssets or os.clock() - (assetsWrongSince or math.huge) > 5) and os.clock() >= assetsScanAt then
+        if (not weaponAssets or not ammoTypes or os.clock() - (assetsWrongSince or math.huge) > 5) and os.clock() >= assetsScanAt then
             assetsMiss = math.min((assetsMiss or 2.5) * 2, 120)
             assetsScanAt = os.clock() + assetsMiss
             for _, t in ipairs(getgc(true)) do
-                if type(t) == "table" and rawget(t, "SettingsGun") ~= nil and rawget(t, "GunModel") ~= nil then
-                    weaponAssets = t
-                    assetsMiss = nil
-                    break
+                if type(t) == "table" then
+                    if rawget(t, "SettingsGun") ~= nil and rawget(t, "GunModel") ~= nil then
+                        weaponAssets = t
+                        assetsMiss = nil
+                    elseif type(rawget(t, "Types")) == "table" and rawget(t, "DamageScale") ~= nil then
+                        ammoTypes = rawget(t, "Types")
+                    end
+                    if weaponAssets and ammoTypes then break end
                 end
             end
         end
         local sg = match and rawget(weaponAssets, "SettingsGun")
         if type(sg) == "table" and tonumber(sg.BSpeed) then
-            return tonumber(sg.BSpeed), tonumber(sg.ZeroDistance) or 357, "weapon settings"
+            local ammo = sg.BulletType
+            local bd = ammoCache[ammo]
+            if bd == nil and ammoTypes and type(ammoTypes[ammo]) == "table" then
+                bd = ammoData(ammoTypes[ammo])
+                ammoCache[ammo] = bd
+            end
+            return tonumber(sg.BSpeed), tonumber(sg.ZeroDistance) or 357,
+                bd and ("%s, drag on"):format(tostring(ammo)) or "weapon settings, no ammo data", bd
         end
     else
         learnOwnSpeed(tool.Name)
@@ -759,6 +841,32 @@ local LeadDots = pool("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(
     st.Thickness, st.Color, st.Parent = 1, Color3.new(0, 0, 0), d
 end, screen)
 local LeadLines = pool("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 7 }, nil, screen)
+local LeadAreas = pool("Frame", { BorderSizePixel = 0, ZIndex = 6 }, function(d)
+    Instance.new("UICorner", d).CornerRadius = UDim.new(0, 3)
+end, screen)
+
+-- On-screen area a bullet can hit: the drone's DroneHitbox parts (bullets only register on those; measured FPV
+-- DroneBase 3x1x4 + Warhead 1x1x4, MAVIC DroneBase 2.5x1x2.5 studs) moved to the lead point and projected.
+-- ponytail: screen-space bounding box of the corners; slightly generous at the corners of a tilted plate
+local CORNERS = {}
+for _, x in ipairs({ -0.5, 0.5 }) do for _, y in ipairs({ -0.5, 0.5 }) do for _, z in ipairs({ -0.5, 0.5 }) do
+    CORNERS[#CORNERS + 1] = Vector3.new(x, y, z)
+end end end
+local function hitArea(cam, m, shift)
+    local x0, y0, x1, y1
+    for _, d in ipairs(m:GetDescendants()) do
+        if d:IsA("BasePart") and d:GetAttribute("DroneHitbox") ~= nil then
+            local cf = d.CFrame + shift
+            for _, c in ipairs(CORNERS) do
+                local sp, on = cam:WorldToViewportPoint(cf * (c * d.Size))
+                if not on then return nil end
+                x0, y0 = math.min(x0 or sp.X, sp.X), math.min(y0 or sp.Y, sp.Y)
+                x1, y1 = math.max(x1 or sp.X, sp.X), math.max(y1 or sp.Y, sp.Y)
+            end
+        end
+    end
+    return x0 and { x0, y0, x1, y1 }
+end
 local leadStatus = "no gun equipped"
 
 local function droneLead()
@@ -767,7 +875,7 @@ local function droneLead()
     local tool = char and char:FindFirstChildOfClass("Tool")
     if not tool then leadStatus = "no gun equipped"; return end
     if lp:GetAttribute("InDrone") == true then return end
-    local v, zeroD, src = bulletSpeed(tool)
+    local v, zeroD, src, bd = bulletSpeed(tool)
     leadStatus = ("%s: %d studs/s (%s)"):format(tool.Name, v, src)
     if CFG.droneDotAimOnly and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
     local cam = Workspace.CurrentCamera
@@ -775,8 +883,15 @@ local function droneLead()
     for _, m in ipairs(DroneWS:GetChildren()) do
         local main = m:FindFirstChild("Other") and m.Other:FindFirstChild("Main")
         if main and m:GetAttribute("Team") ~= team and (main.Position - origin).Magnitude < CFG.droneDotRange / M then
-            local aim = leadPoint(origin, main.Position, main.AssemblyLinearVelocity, v, zeroD)
-            local s, on = cam:WorldToViewportPoint(aim)
+            local aim = leadPoint(origin, main.Position, main.AssemblyLinearVelocity, v, zeroD, bd)
+            local s, on
+            if aim then s, on = cam:WorldToViewportPoint(aim) end
+            local box = on and CFG.droneDotArea and hitArea(cam, m, aim - main.Position)
+            if box then
+                local a = LeadAreas.get()
+                a.Position, a.Size = UDim2.fromOffset(box[1], box[2]), UDim2.fromOffset(box[3] - box[1], box[4] - box[2])
+                a.BackgroundColor3, a.BackgroundTransparency = COL.leadArea.c, COL.leadArea.t
+            end
             if on then
                 local d = LeadDots.get()
                 d.Position, d.Size = UDim2.fromOffset(s.X, s.Y), UDim2.fromOffset(CFG.droneDotSize, CFG.droneDotSize)
@@ -790,6 +905,90 @@ local function droneLead()
                     l.Size, l.Rotation = UDim2.fromOffset(len, 1.5), math.deg(math.atan2(dy, dx))
                     l.BackgroundColor3, l.BackgroundTransparency = COL.leadLine.c, COL.leadLine.t
                 end
+            end
+        end
+    end
+end
+
+-- ============================== drone hit marker ==============================
+-- The game has no drone health or hit confirm: the shooter's own (non-cosmetic) bullet claims the hit on a part with
+-- a DroneHitbox attribute (BulletSimulator -> "GlassShatter" bridge) and a downed drone gets attribute Crashing = true.
+-- So: track your own tracers in workspace.BulletPool (appear at your camera, fly along your view), ray-test each
+-- frame's travel against enemy drone hitboxes, and upgrade to a kill marker if that drone starts Crashing.
+local TweenSvc = game:GetService("TweenService")
+local markHolder = Instance.new("Frame")
+markHolder.AnchorPoint, markHolder.Position, markHolder.BackgroundTransparency = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), 1
+markHolder.ZIndex, markHolder.Parent = 20, screen
+local markBars = {}
+for i, rot in ipairs({ 45, -45 }) do
+    local b = Instance.new("Frame")
+    b.AnchorPoint, b.Position, b.BorderSizePixel, b.Rotation = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), 0, rot
+    b.BackgroundTransparency, b.ZIndex, b.Parent = 1, 20, markHolder
+    markBars[i] = b
+end
+local hitLog = {} -- recent hits, for probes
+local function showMarker(kill)
+    local col = kill and COL.killMark or COL.hitMark
+    local size = CFG.hitMarkerSize * (kill and 1.5 or 1)
+    markHolder.Size = UDim2.fromOffset(size, size)
+    for _, b in ipairs(markBars) do
+        b.Size, b.BackgroundColor3, b.BackgroundTransparency = UDim2.fromOffset(size, kill and 3 or 2), col.c, col.t
+        TweenSvc:Create(b, TweenInfo.new(kill and 0.6 or 0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            { BackgroundTransparency = 1 }):Play()
+    end
+end
+
+local myBullets = {} -- pooled tracer part -> {p, t, mine (nil = unconfirmed), hit}
+local hitParams = RaycastParams.new()
+hitParams.FilterType = Enum.RaycastFilterType.Include
+local function droneHits()
+    if not CFG.hitMarker then return end
+    local pool = Workspace:FindFirstChild("BulletPool")
+    local char = lp.Character
+    if not (pool and char and char:FindFirstChildOfClass("Tool")) then return end
+    local cam = Workspace.CurrentCamera
+    local camPos, look, now, team = cam.CFrame.Position, cam.CFrame.LookVector, os.clock(), myTeam()
+    local boxes, owner = {}, {}
+    for _, m in ipairs(DroneWS:GetChildren()) do
+        if m:GetAttribute("Team") ~= team and m:GetAttribute("Crashing") ~= true then
+            for _, d in ipairs(m:GetDescendants()) do
+                if d:IsA("BasePart") and d:GetAttribute("DroneHitbox") ~= nil then boxes[#boxes + 1] = d; owner[d] = m end
+            end
+        end
+    end
+    hitParams.FilterDescendantsInstances = boxes
+    for _, b in ipairs(pool:GetChildren()) do
+        if b:IsA("BasePart") then
+            local pos, st = b.Position, myBullets[b]
+            if st then
+                local seg = pos - st.p
+                local d = seg.Magnitude
+                if st.mine == nil and d > 0.5 then st.mine = seg.Unit:Dot(look) > 0.8 end -- first move: along my view?
+                if st.mine and not st.hit and d > 0.05 and d < 3000 and #boxes > 0 then
+                    local r = Workspace:Raycast(st.p, seg, hitParams)
+                    if r then
+                        st.hit = true
+                        local m = owner[r.Instance]
+                        showMarker(false)
+                        table.insert(hitLog, 1, { t = now, drone = m and m.Name, part = r.Instance.Name })
+                        if #hitLog > 10 then table.remove(hitLog) end
+                        task.spawn(function()
+                            local t0 = os.clock()
+                            while m and os.clock() - t0 < 1.5 do
+                                if m.Parent == nil or m:GetAttribute("Crashing") == true then
+                                    showMarker(true)
+                                    hitLog[1].kill = true
+                                    return
+                                end
+                                task.wait(0.05)
+                            end
+                        end)
+                    end
+                end
+                st.p = pos
+                if now - st.t > 3 or st.mine == false then myBullets[b] = nil end
+            elseif (pos - camPos).Magnitude < 12 then
+                myBullets[b] = { p = pos, t = now } -- a tracer at my muzzle; ownership decided by its first move
             end
         end
     end
@@ -824,6 +1023,7 @@ table.insert(conns, Run.RenderStepped:Connect(function()
     guard("mapEsp", mapEsp)
     guard("spawnMapEsp", spawnMapEsp)
     guard("droneLead", droneLead)
+    guard("droneHits", droneHits)
     table.sort(warns, function(a, b) return a[1] > b[1] end)
     local out = {}
     for i = 1, math.min(#warns, 5) do out[i] = warns[i][2] end
@@ -850,7 +1050,7 @@ local function unload()
     if Library then pcall(Library.Unload, Library) end
 end
 getgenv().WARFARE_HUD = { unload = unload, cfg = CFG, learnedR = learnedR, errs = errs, aimOf = aimOf, aimTable = aimTable,
-    mapViews = function() return mapViews end }
+    mapViews = function() return mapViews end, hitLog = hitLog, showMarker = function(k) showMarker(k) end }
 
 -- ============================== Obsidian UI ==============================
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
@@ -926,8 +1126,12 @@ slider(Body, "WF_BodyR", "bodyRadius", "Radius", 5, 60, "m")
 toggle(Body, "WF_BodyFly", "bodyOnlyFlying", "Only while flying a drone")
 
 local Zoom = Tabs.Aim:AddLeftGroupbox("Aim zoom")
-Zoom:AddLabel("Hold right mouse with a gun out to zoom. Roblox has one camera, so the whole view zooms (optional dim outside a center circle: Colors tab).", true)
+Zoom:AddLabel("Hold right mouse with a gun out to zoom (CapsLock turns Aim zoom on/off; click the key box to change it). Roblox has one camera, so the whole view zooms (optional dim outside a center circle: Colors tab).", true)
 toggle(Zoom, "WF_AimZoom", "aimZoom", "Aim zoom")
+-- keybind flips the Aim zoom toggle (SyncToggleState); change the key or clear it in the picker, saved with the config
+Library.Toggles.WF_AimZoom:AddKeyPicker("WF_AimZoomKey", {
+    Default = "CapsLock", Mode = "Toggle", SyncToggleState = true, Text = "Aim zoom",
+})
 Zoom:AddSlider("WF_ZoomLevel", { Text = "Zoom", Default = CFG.zoomLevel, Min = 1.5, Max = 8, Rounding = 1, Suffix = "x",
     Callback = function(v) CFG.zoomLevel = v end })
 slider(Zoom, "WF_ZoomSize", "zoomSize", "Dim circle size", 10, 90, "% of screen height")
@@ -951,6 +1155,9 @@ toggle(Drones, "WF_DroneDotAim", "droneDotAimOnly", "Only while aiming (right mo
 toggle(Drones, "WF_DroneDotLine", "droneDotLine", "Line from drone to its dot")
 slider(Drones, "WF_DroneDotRange", "droneDotRange", "Aim dot range", 20, 400, "m")
 slider(Drones, "WF_DroneDotSize", "droneDotSize", "Aim dot size", 4, 20, "px")
+toggle(Drones, "WF_DroneDotArea", "droneDotArea", "Show the hittable area", "The drone's real hitbox, shifted to the lead point: anywhere inside it hits. The dot is its center")
+toggle(Drones, "WF_HitMarker", "hitMarker", "Hit marker on drone hits", "White X when your bullet hits an enemy drone, big red X if it goes down")
+slider(Drones, "WF_HitMarkerSize", "hitMarkerSize", "Hit marker size", 10, 60, "px")
 local leadLabel = Drones:AddLabel("Bullet speed: -", true)
 task.spawn(function()
     while getgenv().WARFARE_HUD do
