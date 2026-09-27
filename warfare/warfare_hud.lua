@@ -69,6 +69,7 @@ local CFG = {
     aimZoom = false, zoomLevel = 3, zoomSize = 35, zoomSpeed = 14, zoomSens = true,
     droneDot = true, droneDotAimOnly = false, droneDotRange = 150, droneDotSize = 8, droneDotLine = true,
     hitMarker = true, hitMarkerSize = 22, droneDotArea = true,
+    droneCd = true, droneReadyAlert = true, droneReadySound = true,
     memScans = HAS_GC,
 }
 
@@ -92,6 +93,8 @@ local COL = {
     warnText  = { c = Color3.fromRGB(255, 80, 60),   t = 0,    name = "Warning text",              group = "HUD text" },
     infoText  = { c = Color3.fromRGB(255, 220, 120), t = 0,    name = "Predictor text",            group = "HUD text" },
     hudStroke = { c = Color3.fromRGB(0, 0, 0),       t = 0.3,  name = "HUD text outline",          group = "HUD text" },
+    cdText    = { c = Color3.fromRGB(230, 230, 230), t = 0,    name = "Drone cooldown timer",      group = "HUD text" },
+    readyText = { c = Color3.fromRGB(120, 255, 90),  t = 0,    name = "Drone ready alert",         group = "HUD text" },
     mapDot    = { c = Color3.fromRGB(255, 50, 50),   t = 0,    name = "Map: enemy dot",            group = "Map" },
     mapDrone  = { c = Color3.fromRGB(255, 60, 200),  t = 0,    name = "Map: enemy drone",          group = "Map" },
     zoomDim   = { c = Color3.fromRGB(0, 0, 0),       t = 1,    name = "Zoom: outside the ring (1 = no dim)", group = "Aim zoom" },
@@ -102,7 +105,7 @@ local COL = {
     killMark  = { c = Color3.fromRGB(255, 50, 50),   t = 0,    name = "Drone kill marker",         group = "Enemy drones" },
 }
 local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "espText", "espStroke", "chamFill", "chamVis",
-    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomDim", "leadDot", "leadLine", "leadArea", "hitMark", "killMark" }
+    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomDim", "leadDot", "leadLine", "leadArea", "hitMark", "killMark", "cdText", "readyText" }
 local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text", "Map", "Aim zoom" }
 for _, col in pairs(COL) do col.c0, col.t0 = col.c, col.t end -- defaults for the reset button
 
@@ -197,6 +200,7 @@ local function zoomCircle(thick)
 end
 local zoomDimFrame, zoomDimStroke = zoomCircle(4000)
 local infoLabel = label(0.74, 16)
+local cdLabel = label(0.055, 17)
 
 -- ============================== game state ==============================
 table.insert(conns, RS.Framework.Modules.ExplosionFX:WaitForChild("Replicate").OnClientEvent:Connect(function(d)
@@ -1000,6 +1004,34 @@ local function droneHits()
     end
 end
 
+-- ============================== your drone's cooldown ==============================
+-- Server-set player attribute DroneCooldownUntil (server clock). Same formula as the game's deploy UI
+-- (UIClient.Loader.PointsModule.DroneCooldownRemaining): ceil(until - workspace:GetServerTimeNow()).
+local cdWas, readyUntil = 0, 0
+local function droneCooldown()
+    local untilT = lp:GetAttribute("DroneCooldownUntil")
+    local left = type(untilT) == "number" and untilT == untilT and math.max(0, math.ceil(untilT - Workspace:GetServerTimeNow())) or 0
+    if cdWas > 0 and left == 0 and CFG.droneReadyAlert then
+        readyUntil = os.clock() + 3
+        if CFG.droneReadySound then
+            local snd = Instance.new("Sound")
+            snd.SoundId, snd.Volume = "rbxasset://sounds/electronicpingshort.wav", 0.6
+            snd.Parent = game:GetService("SoundService")
+            snd:Play()
+            game:GetService("Debris"):AddItem(snd, 3)
+        end
+    end
+    cdWas = left
+    local col, text = COL.cdText, ""
+    if os.clock() < readyUntil then
+        col, text = COL.readyText, "DRONE READY"
+    elseif CFG.droneCd and left > 0 then
+        text = ("Drone ready in %d:%02d"):format(left // 60, left % 60)
+    end
+    cdLabel.Text, cdLabel.TextColor3, cdLabel.TextTransparency = text, col.c, col.t
+    cdLabel.TextStrokeColor3, cdLabel.TextStrokeTransparency = COL.hudStroke.c, COL.hudStroke.t
+end
+
 local errs = {} -- feature -> last error; also appended to WarfareHUD/errors.txt once per distinct message
 local function guard(name, f, ...)
     local ok, err = pcall(f, ...)
@@ -1030,6 +1062,7 @@ table.insert(conns, Run.RenderStepped:Connect(function()
     guard("spawnMapEsp", spawnMapEsp)
     guard("droneLead", droneLead)
     guard("droneHits", droneHits)
+    guard("droneCooldown", droneCooldown)
     table.sort(warns, function(a, b) return a[1] > b[1] end)
     local out = {}
     for i = 1, math.min(#warns, 5) do out[i] = warns[i][2] end
@@ -1151,6 +1184,12 @@ toggle(MapBox, "WF_MapNames", "mapNames", "Names when zoomed in", "Same zoom lev
 toggle(MapBox, "WF_MapDrones", "mapDrones", "Enemy drones on map")
 toggle(MapBox, "WF_MapSpawn", "mapSpawn", "Also on the spawn map", "Deploy screen overhead map")
 slider(MapBox, "WF_MapDot", "mapDotSize", "Dot size", 3, 16, "px")
+
+local MyDrone = Tabs.Drone:AddLeftGroupbox("Your drone cooldown")
+MyDrone:AddLabel("Reads the game's own cooldown (server-set). Top of the screen.", true)
+toggle(MyDrone, "WF_DroneCd", "droneCd", "Cooldown timer")
+toggle(MyDrone, "WF_DroneReady", "droneReadyAlert", "\"DRONE READY\" alert")
+toggle(MyDrone, "WF_DroneReadySnd", "droneReadySound", "Ping sound on ready")
 
 local Drones = Tabs.Threats:AddRightGroupbox("Enemy drones")
 toggle(Drones, "WF_DroneAlert", "droneAlert", "Enemy drone alert", "Distance, closing speed and ETA to your body or drone")
