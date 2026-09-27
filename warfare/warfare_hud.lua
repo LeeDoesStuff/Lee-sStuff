@@ -44,6 +44,7 @@ local CFG = {
     watchWarn = true, watchLOS = true, watchFacing = true,
     bodyGuard = true, bodyRadius = 15, bodyOnlyFlying = true,
     droneAlert = true, droneRange = 80, droneHighlight = true,
+    mapEsp = true, mapNames = true, mapDrones = true, mapDotSize = 7,
 }
 
 -- every drawn element: color c + transparency t (0 = solid, 1 = invisible); edited by the pickers in the Colors tab
@@ -66,10 +67,12 @@ local COL = {
     warnText  = { c = Color3.fromRGB(255, 80, 60),   t = 0,    name = "Warning text",              group = "HUD text" },
     infoText  = { c = Color3.fromRGB(255, 220, 120), t = 0,    name = "Predictor text",            group = "HUD text" },
     hudStroke = { c = Color3.fromRGB(0, 0, 0),       t = 0.3,  name = "HUD text outline",          group = "HUD text" },
+    mapDot    = { c = Color3.fromRGB(255, 50, 50),   t = 0,    name = "Map: enemy dot",            group = "Map" },
+    mapDrone  = { c = Color3.fromRGB(255, 60, 200),  t = 0,    name = "Map: enemy drone",          group = "Map" },
 }
 local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "espText", "espStroke", "chamFill", "chamVis",
-    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke" }
-local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text" }
+    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone" }
+local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text", "Map" }
 for _, col in pairs(COL) do col.c0, col.t0 = col.c, col.t end -- defaults for the reset button
 
 -- ============================== drawing ==============================
@@ -92,13 +95,13 @@ local function pool(class, props, init, parent)
             a.Parent = parent or root
             p.list[p.n] = a
         end
-        if a:IsA("HandleAdornment") then a.Visible = true else a.Enabled = true end
+        if a:IsA("HandleAdornment") or a:IsA("GuiObject") then a.Visible = true else a.Enabled = true end
         return a
     end
     function p.flush()
         for i = p.n + 1, #p.list do
             local a = p.list[i]
-            if a:IsA("HandleAdornment") then a.Visible = false else a.Enabled = false end
+            if a:IsA("HandleAdornment") or a:IsA("GuiObject") then a.Visible = false else a.Enabled = false end
         end
         p.n = 0
     end
@@ -452,6 +455,81 @@ local function enemyDrones(warns, body, droneMain)
 end
 
 -- ============================== loop ==============================
+-- ============================== map ESP ==============================
+-- PlayerScripts.TacticalMap keeps one view table per map widget (minimap + full in-match map):
+-- {clip, cx, cz, spp (studs per pixel), rot, iconLayer, mates, ...}. Teammate dots are placed with its toView();
+-- enemy dots below use the same math, in an overlay frame inside each view's clip.
+local mapViews, mapScanAt, mapLayers = {}, 0, {}
+local function findMapViews()
+    if not getgc or os.clock() < mapScanAt then return end
+    mapScanAt = os.clock() + 10 -- ponytail: getgc(true) is a one-off hitch; only rescans while no live view is known
+    local found = {}
+    for _, t in ipairs(getgc(true)) do
+        if type(t) == "table" and rawget(t, "spp") and rawget(t, "mates") and rawget(t, "iconLayer")
+            and typeof(rawget(t, "clip")) == "Instance" then
+            found[#found + 1] = t
+        end
+    end
+    mapViews = found
+end
+
+local function mapLayer(v)
+    local L = mapLayers[v]
+    if L and L.frame.Parent then return L end
+    local f = Instance.new("Frame")
+    f.Name, f.BackgroundTransparency, f.Size, f.ZIndex = "WFEnemies", 1, UDim2.fromScale(1, 1), 5
+    f.Parent = v.clip
+    L = pool("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 6 }, function(d)
+        Instance.new("UICorner", d).CornerRadius = UDim.new(1, 0)
+        local n = Instance.new("TextLabel")
+        n.Name, n.ZIndex, n.BackgroundTransparency, n.TextScaled = "N", 6, 1, true
+        n.Size, n.AnchorPoint, n.Position = UDim2.new(0, 120, 0, 12), Vector2.new(0.5, 0), UDim2.new(0.5, 0, 1, 1)
+        n.Font, n.TextStrokeTransparency = Enum.Font.GothamBold, 0.3
+        n.Parent = d
+    end, f)
+    L.frame = f
+    mapLayers[v] = L
+    return L
+end
+
+local function mapEsp()
+    local live = #mapViews > 0
+    for _, v in ipairs(mapViews) do
+        if not v.clip.Parent then live = false end
+    end
+    if not live then findMapViews() end
+    if not CFG.mapEsp then return end
+    local team = myTeam()
+    for _, v in ipairs(mapViews) do
+        local L = mapLayer(v)
+        local w, h = math.max(v.clip.AbsoluteSize.X, 1), math.max(v.clip.AbsoluteSize.Y, 1)
+        local c, sn = math.cos(v.rot or 0), math.sin(v.rot or 0)
+        local function put(pos, col, text, size)
+            -- TacticalMap.toView
+            local x, y = (pos.X - v.cx) / v.spp, (pos.Z - v.cz) / v.spp
+            x, y = w / 2 + x * c - y * sn, h / 2 + x * sn + y * c
+            if x < -8 or y < -8 or x > w + 8 or y > h + 8 then return end
+            local d = L.get()
+            d.Position, d.Size = UDim2.fromScale(x / w, y / h), UDim2.fromOffset(size, size)
+            d.BackgroundColor3, d.BackgroundTransparency = col.c, col.t
+            d.N.Text, d.N.TextColor3 = text, col.c
+            d.N.Visible = CFG.mapNames and text ~= "" and v.spp < 2.2 -- same zoom rule as the game's teammate names
+        end
+        for _, pl in ipairs(Players:GetPlayers()) do
+            local char = isEnemy(pl) and pl.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then put(hrp.Position, COL.mapDot, pl.DisplayName:upper(), CFG.mapDotSize) end
+        end
+        if CFG.mapDrones then
+            for _, m in ipairs(DroneWS:GetChildren()) do
+                local main = m:FindFirstChild("Other") and m.Other:FindFirstChild("Main")
+                if main and m:GetAttribute("Team") ~= team then put(main.Position, COL.mapDrone, "", CFG.mapDotSize + 2) end
+            end
+        end
+    end
+end
+
 local errs = {} -- feature -> last error; also appended to WarfareHUD/errors.txt once per distinct message
 local function guard(name, f, ...)
     local ok, err = pcall(f, ...)
@@ -476,6 +554,7 @@ table.insert(conns, Run.RenderStepped:Connect(function()
     if m then guard("predictor", predictor, m, droneMain) end
     guard("threats", threats, warns, body, droneMain)
     guard("enemyDrones", enemyDrones, warns, body, droneMain)
+    guard("mapEsp", mapEsp)
     table.sort(warns, function(a, b) return a[1] > b[1] end)
     local out = {}
     for i = 1, math.min(#warns, 5) do out[i] = warns[i][2] end
@@ -494,10 +573,12 @@ local function unload()
     getgenv().WARFARE_HUD = nil
     for _, c in ipairs(conns) do c:Disconnect() end
     for _, b in ipairs(Esp.list) do b:Destroy() end
+    for _, L in pairs(mapLayers) do L.frame:Destroy() end
     root:Destroy(); screen:Destroy()
     if Library then pcall(Library.Unload, Library) end
 end
-getgenv().WARFARE_HUD = { unload = unload, cfg = CFG, learnedR = learnedR, errs = errs, aimOf = aimOf, aimTable = aimTable }
+getgenv().WARFARE_HUD = { unload = unload, cfg = CFG, learnedR = learnedR, errs = errs, aimOf = aimOf, aimTable = aimTable,
+    mapViews = function() return mapViews end }
 
 -- ============================== Obsidian UI ==============================
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
@@ -570,6 +651,13 @@ local Body = Tabs.Threats:AddRightGroupbox("Body guard")
 toggle(Body, "WF_Body", "bodyGuard", "Warn: enemy near body")
 slider(Body, "WF_BodyR", "bodyRadius", "Radius", 5, 60, "m")
 toggle(Body, "WF_BodyFly", "bodyOnlyFlying", "Only while flying a drone")
+
+local MapBox = Tabs.Threats:AddRightGroupbox("Map ESP")
+MapBox:AddLabel("Enemy dots on the in-match map and the minimap, placed with the map's own math.", true)
+toggle(MapBox, "WF_MapEsp", "mapEsp", "Enemies on map")
+toggle(MapBox, "WF_MapNames", "mapNames", "Names when zoomed in", "Same zoom level where the game shows teammate names")
+toggle(MapBox, "WF_MapDrones", "mapDrones", "Enemy drones on map")
+slider(MapBox, "WF_MapDot", "mapDotSize", "Dot size", 3, 16, "px")
 
 local Drones = Tabs.Threats:AddRightGroupbox("Enemy drones")
 toggle(Drones, "WF_DroneAlert", "droneAlert", "Enemy drone alert", "Distance, closing speed and ETA to your body or drone")
