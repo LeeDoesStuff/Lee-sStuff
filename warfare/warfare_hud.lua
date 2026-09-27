@@ -67,6 +67,7 @@ local CFG = {
     droneAlert = true, droneRange = 80, droneHighlight = true,
     mapEsp = true, mapNames = true, mapDrones = true, mapDotSize = 7, mapSpawn = true,
     aimZoom = false, zoomLevel = 3, zoomSize = 35, zoomSpeed = 14, zoomSens = true,
+    droneDot = true, droneDotAimOnly = false, droneDotRange = 150, droneDotSize = 8, droneDotLine = true,
     memScans = HAS_GC,
 }
 
@@ -93,9 +94,11 @@ local COL = {
     mapDot    = { c = Color3.fromRGB(255, 50, 50),   t = 0,    name = "Map: enemy dot",            group = "Map" },
     mapDrone  = { c = Color3.fromRGB(255, 60, 200),  t = 0,    name = "Map: enemy drone",          group = "Map" },
     zoomDim   = { c = Color3.fromRGB(0, 0, 0),       t = 1,    name = "Zoom: outside the ring (1 = no dim)", group = "Aim zoom" },
+    leadDot   = { c = Color3.fromRGB(170, 255, 0),   t = 0,    name = "Drone aim dot (lead)",      group = "Enemy drones" },
+    leadLine  = { c = Color3.fromRGB(170, 255, 0),   t = 0.5,  name = "Drone -> aim dot line",     group = "Enemy drones" },
 }
 local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "espText", "espStroke", "chamFill", "chamVis",
-    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomDim" }
+    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke", "mapDot", "mapDrone", "zoomDim", "leadDot", "leadLine" }
 local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text", "Map", "Aim zoom" }
 for _, col in pairs(COL) do col.c0, col.t0 = col.c, col.t end -- defaults for the reset button
 
@@ -666,6 +669,132 @@ local function zoomStep(dt)
     zoomDimStroke.Color, zoomDimStroke.Transparency = COL.zoomDim.c, COL.zoomDim.t
 end
 
+-- ============================== enemy drone aim dot ==============================
+-- Where to put your sights so the bullet meets a moving enemy drone. Game ballistics (Framework.Modules.BulletSimulator):
+-- gravity 35.04 studs/s^2, launch speed = the weapon's SettingsGun.BSpeed (server-sent; e.g. SVD 2554, AK-74 ~3000,
+-- AS Val ~1000), sights zeroed at SettingsGun.ZeroDistance or 357 studs (launch angle atan(0.5*g*Z/v^2) up).
+local BULLET_G = 35.04
+local function leadPoint(origin, p, vel, v, zeroD)
+    -- ponytail: ignores drag (a few % over drone ranges) and the drone's acceleration
+    local aim, t = p, (p - origin).Magnitude / v
+    for _ = 1, 4 do
+        aim = p + vel * t
+        t = (aim - origin).Magnitude / v
+    end
+    local rise = (aim - origin).Magnitude * (0.5 * BULLET_G * zeroD / (v * v)) -- the zero angle lifts the bullet
+    return aim + Vector3.new(0, 0.5 * BULLET_G * t * t - rise, 0), t
+end
+do -- self-check: still target 100 studs out at v=1000 -> drop 0.175, zero rise 0.625; moving 10 studs/s -> ~1 stud lead
+    local a = leadPoint(Vector3.zero, Vector3.new(0, 0, -100), Vector3.zero, 1000, 357)
+    local b = leadPoint(Vector3.zero, Vector3.new(0, 0, -100), Vector3.new(10, 0, 0), 1000, 357)
+    assert(math.abs(a.Y + 0.45) < 0.01 and math.abs(b.X - 1.0) < 0.02, "leadPoint self-check")
+end
+
+-- bullet speed: exact from the weapon client's Assets table (memory scan), else learned from your own tracers
+local weaponAssets, assetsScanAt, assetsMiss, assetsWrongSince = nil, 0, nil, nil
+local ownSpeeds, bulletSeen, learnAt = {}, {}, 0
+local function learnOwnSpeed(toolName)
+    -- ponytail: median of your own tracer speeds per weapon (BulletPool parts, 30 Hz); only runs without memory scans
+    local now = os.clock()
+    if now < learnAt then return end
+    learnAt = now + 1 / 30
+    local head = lp.Character and lp.Character:FindFirstChild("Head")
+    local pool = Workspace:FindFirstChild("BulletPool")
+    if not (head and pool) then return end
+    for _, b in ipairs(pool:GetChildren()) do
+        if b:IsA("BasePart") then
+            local prev, pos = bulletSeen[b], b.Position
+            local d = prev and (pos - prev.p).Magnitude or 0
+            if prev and not prev.done and d > 5 and d < 3000 then
+                local dir = (pos - prev.p).Unit
+                local rel = head.Position - prev.p
+                local along = rel:Dot(dir)
+                if along < 2 and along > -200 and (rel - dir * along).Magnitude < 2 then
+                    local l = ownSpeeds[toolName] or {}
+                    l[#l + 1] = d / (now - prev.t)
+                    if #l > 15 then table.remove(l, 1) end
+                    ownSpeeds[toolName] = l
+                end
+            end
+            bulletSeen[b] = { p = pos, t = now, done = prev and (prev.done or d > 5) and d > 1 }
+        end
+    end
+end
+local function bulletSpeed(tool)
+    if CFG.memScans and HAS_GC then
+        local gm = weaponAssets and rawget(weaponAssets, "GunModel")
+        local match = gm and typeof(gm) == "Instance" and gm.Name == tool.Name
+        if match then assetsWrongSince = nil else assetsWrongSince = assetsWrongSince or os.clock() end
+        -- rescan only when nothing is cached, or it has pointed at another gun for 5 s (e.g. a new life's table)
+        if (not weaponAssets or os.clock() - (assetsWrongSince or math.huge) > 5) and os.clock() >= assetsScanAt then
+            assetsMiss = math.min((assetsMiss or 2.5) * 2, 120)
+            assetsScanAt = os.clock() + assetsMiss
+            for _, t in ipairs(getgc(true)) do
+                if type(t) == "table" and rawget(t, "SettingsGun") ~= nil and rawget(t, "GunModel") ~= nil then
+                    weaponAssets = t
+                    assetsMiss = nil
+                    break
+                end
+            end
+        end
+        local sg = match and rawget(weaponAssets, "SettingsGun")
+        if type(sg) == "table" and tonumber(sg.BSpeed) then
+            return tonumber(sg.BSpeed), tonumber(sg.ZeroDistance) or 357, "weapon settings"
+        end
+    else
+        learnOwnSpeed(tool.Name)
+    end
+    local l = ownSpeeds[tool.Name]
+    if l and #l >= 3 then
+        local c = table.clone(l)
+        table.sort(c)
+        return c[math.ceil(#c / 2)], 357, ("learned from %d shots"):format(#l)
+    end
+    return 1500, 357, "estimate (fire a few shots to learn it)"
+end
+
+local LeadDots = pool("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 8 }, function(d)
+    Instance.new("UICorner", d).CornerRadius = UDim.new(1, 0)
+    local st = Instance.new("UIStroke")
+    st.Thickness, st.Color, st.Parent = 1, Color3.new(0, 0, 0), d
+end, screen)
+local LeadLines = pool("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 7 }, nil, screen)
+local leadStatus = "no gun equipped"
+
+local function droneLead()
+    if not CFG.droneDot then return end
+    local char = lp.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if not tool then leadStatus = "no gun equipped"; return end
+    if lp:GetAttribute("InDrone") == true then return end
+    local v, zeroD, src = bulletSpeed(tool)
+    leadStatus = ("%s: %d studs/s (%s)"):format(tool.Name, v, src)
+    if CFG.droneDotAimOnly and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
+    local cam = Workspace.CurrentCamera
+    local origin, team = cam.CFrame.Position, myTeam()
+    for _, m in ipairs(DroneWS:GetChildren()) do
+        local main = m:FindFirstChild("Other") and m.Other:FindFirstChild("Main")
+        if main and m:GetAttribute("Team") ~= team and (main.Position - origin).Magnitude < CFG.droneDotRange / M then
+            local aim = leadPoint(origin, main.Position, main.AssemblyLinearVelocity, v, zeroD)
+            local s, on = cam:WorldToViewportPoint(aim)
+            if on then
+                local d = LeadDots.get()
+                d.Position, d.Size = UDim2.fromOffset(s.X, s.Y), UDim2.fromOffset(CFG.droneDotSize, CFG.droneDotSize)
+                d.BackgroundColor3, d.BackgroundTransparency = COL.leadDot.c, COL.leadDot.t
+                local s2, on2 = cam:WorldToViewportPoint(main.Position)
+                local dx, dy = s.X - s2.X, s.Y - s2.Y
+                local len = math.sqrt(dx * dx + dy * dy)
+                if CFG.droneDotLine and on2 and len > 3 then
+                    local l = LeadLines.get()
+                    l.Position = UDim2.fromOffset((s.X + s2.X) / 2, (s.Y + s2.Y) / 2)
+                    l.Size, l.Rotation = UDim2.fromOffset(len, 1.5), math.deg(math.atan2(dy, dx))
+                    l.BackgroundColor3, l.BackgroundTransparency = COL.leadLine.c, COL.leadLine.t
+                end
+            end
+        end
+    end
+end
+
 local errs = {} -- feature -> last error; also appended to WarfareHUD/errors.txt once per distinct message
 local function guard(name, f, ...)
     local ok, err = pcall(f, ...)
@@ -694,6 +823,7 @@ table.insert(conns, Run.RenderStepped:Connect(function()
     guard("enemyDrones", enemyDrones, warns, body, droneMain)
     guard("mapEsp", mapEsp)
     guard("spawnMapEsp", spawnMapEsp)
+    guard("droneLead", droneLead)
     table.sort(warns, function(a, b) return a[1] > b[1] end)
     local out = {}
     for i = 1, math.min(#warns, 5) do out[i] = warns[i][2] end
@@ -816,6 +946,18 @@ local Drones = Tabs.Threats:AddRightGroupbox("Enemy drones")
 toggle(Drones, "WF_DroneAlert", "droneAlert", "Enemy drone alert", "Distance, closing speed and ETA to your body or drone")
 slider(Drones, "WF_DroneRange", "droneRange", "Alert range", 20, 300, "m")
 toggle(Drones, "WF_DroneHL", "droneHighlight", "Highlight + velocity line")
+toggle(Drones, "WF_DroneDot", "droneDot", "Aim dot (lead) on enemy drones", "Put your sights on the dot: it leads the drone by your bullet's flight time, plus drop")
+toggle(Drones, "WF_DroneDotAim", "droneDotAimOnly", "Only while aiming (right mouse)")
+toggle(Drones, "WF_DroneDotLine", "droneDotLine", "Line from drone to its dot")
+slider(Drones, "WF_DroneDotRange", "droneDotRange", "Aim dot range", 20, 400, "m")
+slider(Drones, "WF_DroneDotSize", "droneDotSize", "Aim dot size", 4, 20, "px")
+local leadLabel = Drones:AddLabel("Bullet speed: -", true)
+task.spawn(function()
+    while getgenv().WARFARE_HUD do
+        pcall(function() leadLabel:SetText("Bullet speed: " .. leadStatus) end)
+        task.wait(1)
+    end
+end)
 
 local colorBoxes = {}
 for i, g in ipairs(COL_GROUPS) do
