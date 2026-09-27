@@ -48,22 +48,29 @@ local CFG = {
 
 -- every drawn element: color c + transparency t (0 = solid, 1 = invisible); edited by the pickers in the Colors tab
 local COL = {
-    arc      = { c = Color3.fromRGB(255, 200, 70),  t = 0,    name = "Predictor arc / line" },
-    edge     = { c = Color3.fromRGB(255, 170, 40),  t = 0.25, name = "Blast edge ring" },
-    lethal   = { c = Color3.fromRGB(255, 60, 40),   t = 0.25, name = "Lethal ring" },
-    core     = { c = Color3.fromRGB(150, 0, 0),     t = 0.25, name = "Full-damage ring" },
-    cone     = { c = Color3.fromRGB(255, 220, 90),  t = 0.3,  name = "Aim cone" },
-    coneHot  = { c = Color3.fromRGB(255, 40, 40),   t = 0,    name = "Aim cone (on you)" },
-    coneAway = { c = Color3.fromRGB(60, 255, 110),  t = 0.4,  name = "Aim cone (looking away)" },
-    espText  = { c = Color3.fromRGB(255, 255, 255), t = 0,    name = "ESP text" },
-    chamFill = { c = Color3.fromRGB(255, 50, 50),   t = 0.6,  name = "Chams fill (behind cover)" },
-    chamVis  = { c = Color3.fromRGB(255, 220, 60),  t = 0.5,  name = "Chams fill (in sight)" },
-    chamLine = { c = Color3.fromRGB(255, 255, 255), t = 0.2,  name = "Chams outline" },
-    drone    = { c = Color3.fromRGB(255, 60, 200),  t = 0.4,  name = "Enemy drone highlight" },
-    warnText = { c = Color3.fromRGB(255, 80, 60),   t = 0,    name = "Warning text" },
-    infoText = { c = Color3.fromRGB(255, 220, 120), t = 0,    name = "Predictor text" },
+    arc       = { c = Color3.fromRGB(255, 200, 70),  t = 0,    name = "Predictor arc / line",      group = "Predictor" },
+    edge      = { c = Color3.fromRGB(255, 170, 40),  t = 0.25, name = "Blast edge ring",           group = "Predictor" },
+    lethal    = { c = Color3.fromRGB(255, 60, 40),   t = 0.25, name = "Lethal ring",               group = "Predictor" },
+    core      = { c = Color3.fromRGB(150, 0, 0),     t = 0.25, name = "Full-damage ring",          group = "Predictor" },
+    cone      = { c = Color3.fromRGB(255, 220, 90),  t = 0.3,  name = "Aim cone (no gradient)",    group = "Aim cones" },
+    coneHot   = { c = Color3.fromRGB(255, 40, 40),   t = 0,    name = "Aim cone (on you)",         group = "Aim cones" },
+    coneAway  = { c = Color3.fromRGB(60, 255, 110),  t = 0.4,  name = "Aim cone (looking away)",   group = "Aim cones" },
+    espText   = { c = Color3.fromRGB(255, 255, 255), t = 0,    name = "ESP text",                  group = "ESP & chams" },
+    espStroke = { c = Color3.fromRGB(0, 0, 0),       t = 0.4,  name = "ESP text outline",          group = "ESP & chams" },
+    chamFill  = { c = Color3.fromRGB(255, 50, 50),   t = 0.6,  name = "Chams fill (behind cover)", group = "ESP & chams" },
+    chamVis   = { c = Color3.fromRGB(255, 220, 60),  t = 0.5,  name = "Chams fill (in sight)",     group = "ESP & chams" },
+    chamLine  = { c = Color3.fromRGB(255, 255, 255), t = 0.2,  name = "Chams outline",             group = "ESP & chams" },
+    drone     = { c = Color3.fromRGB(255, 60, 200),  t = 0.4,  name = "Enemy drone fill",          group = "Enemy drones" },
+    droneLine = { c = Color3.fromRGB(255, 255, 255), t = 0,    name = "Enemy drone outline",       group = "Enemy drones" },
+    droneVel  = { c = Color3.fromRGB(255, 60, 200),  t = 0,    name = "Enemy drone heading line",  group = "Enemy drones" },
+    warnText  = { c = Color3.fromRGB(255, 80, 60),   t = 0,    name = "Warning text",              group = "HUD text" },
+    infoText  = { c = Color3.fromRGB(255, 220, 120), t = 0,    name = "Predictor text",            group = "HUD text" },
+    hudStroke = { c = Color3.fromRGB(0, 0, 0),       t = 0.3,  name = "HUD text outline",          group = "HUD text" },
 }
-local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "drone", "espText", "chamFill", "chamVis", "chamLine", "warnText", "infoText" }
+local COL_ORDER = { "arc", "edge", "lethal", "core", "cone", "coneHot", "coneAway", "espText", "espStroke", "chamFill", "chamVis",
+    "chamLine", "drone", "droneLine", "droneVel", "warnText", "infoText", "hudStroke" }
+local COL_GROUPS = { "Predictor", "Aim cones", "ESP & chams", "Enemy drones", "HUD text" }
+for _, col in pairs(COL) do col.c0, col.t0 = col.c, col.t end -- defaults for the reset button
 
 -- ============================== drawing ==============================
 local conns = {}
@@ -100,7 +107,7 @@ end
 local terrain = Workspace.Terrain
 local Lines = pool("LineHandleAdornment", { Adornee = terrain, AlwaysOnTop = true, ZIndex = 1, Thickness = 3 })
 local Rings = pool("CylinderHandleAdornment", { Adornee = terrain, AlwaysOnTop = true, ZIndex = 0, Height = 0.4 })
-local Marks = pool("Highlight", { DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, OutlineColor = Color3.new(1, 1, 1) })
+local Marks = pool("Highlight", { DepthMode = Enum.HighlightDepthMode.AlwaysOnTop })
 -- ponytail: Roblox renders at most 31 Highlights (chams + enemy drones share it); ~20 enemies fits. Nearest-first cap if it ever overflows
 local Chams = pool("Highlight", {})
 
@@ -288,6 +295,7 @@ local function threats(warns, body, droneMain)
                 b.Adornee = head
                 b.T.Text = CFG.espNames and ("%s  %dm"):format(pl.Name, camDist * M) or ("%dm"):format(camDist * M)
                 b.T.TextColor3, b.T.TextTransparency = COL.espText.c, COL.espText.t
+                b.T.TextStrokeColor3, b.T.TextStrokeTransparency = COL.espStroke.c, COL.espStroke.t
             end
             if CFG.chams and camDist < CFG.chamsRange / M then
                 local hl = Chams.get()
@@ -346,7 +354,8 @@ local function enemyDrones(warns, body, droneMain)
                 if CFG.droneHighlight then
                     local hl = Marks.get()
                     hl.Adornee, hl.FillColor, hl.FillTransparency = m, COL.drone.c, COL.drone.t
-                    if v.Magnitude > 3 then line(main.Position, main.Position + v * 2, "drone", 2) end
+                    hl.OutlineColor, hl.OutlineTransparency = COL.droneLine.c, COL.droneLine.t
+                    if v.Magnitude > 3 then line(main.Position, main.Position + v * 2, "droneVel", 2) end
                 end
             end
         end
@@ -384,6 +393,9 @@ table.insert(conns, Run.RenderStepped:Connect(function()
     warnLabel.Text = table.concat(out, "\n")
     warnLabel.TextColor3, warnLabel.TextTransparency = COL.warnText.c, COL.warnText.t
     infoLabel.TextColor3, infoLabel.TextTransparency = COL.infoText.c, COL.infoText.t
+    for _, l in ipairs({ warnLabel, infoLabel }) do
+        l.TextStrokeColor3, l.TextStrokeTransparency = COL.hudStroke.c, COL.hudStroke.t
+    end
     for _, pl in ipairs(pools) do pl.flush() end
 end))
 
@@ -468,11 +480,14 @@ toggle(Drones, "WF_DroneAlert", "droneAlert", "Enemy drone alert", "Distance, cl
 slider(Drones, "WF_DroneRange", "droneRange", "Alert range", 20, 300, "m")
 toggle(Drones, "WF_DroneHL", "droneHighlight", "Highlight + velocity line")
 
-local Colors = Tabs.Colors:AddLeftGroupbox("Colors & opacity")
-Colors:AddLabel("Click a swatch. The bar on the picker's right sets transparency.", true)
+local colorBoxes = {}
+for i, g in ipairs(COL_GROUPS) do
+    colorBoxes[g] = i % 2 == 1 and Tabs.Colors:AddLeftGroupbox(g) or Tabs.Colors:AddRightGroupbox(g)
+end
+colorBoxes.Predictor:AddLabel("Click a swatch. The bar on the picker's right sets transparency.", true)
 for _, key in ipairs(COL_ORDER) do
     local col, idx = COL[key], "WF_Col_" .. key
-    Colors:AddLabel(col.name):AddColorPicker(idx, {
+    colorBoxes[col.group]:AddLabel(col.name):AddColorPicker(idx, {
         Default = col.c, Transparency = col.t, Title = col.name,
         Callback = function(c)
             col.c = c
@@ -481,6 +496,14 @@ for _, key in ipairs(COL_ORDER) do
         end,
     })
 end
+
+colorBoxes["HUD text"]:AddButton({ Text = "Reset all colors", Func = function()
+    for _, key in ipairs(COL_ORDER) do
+        local col, opt = COL[key], Library.Options["WF_Col_" .. key]
+        if opt then opt:SetValueRGB(col.c0, col.t0) end
+        col.c, col.t = col.c0, col.t0
+    end
+end })
 
 local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
