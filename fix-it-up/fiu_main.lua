@@ -676,6 +676,13 @@ local function sellCar(e, manual)
         local c = carOf(o)
         if o ~= e and c and (c:GetPivot().Position - pr.Position).Magnitude < 40 then return false, entryModel(o) .. " is parked at the sell zone, move it first" end
     end
+    -- afterwards you go back where you were (sold or not)
+    local backMe = hrp() and hrp().CFrame
+    local function back(...)
+        confirmFn = nil
+        if backMe then tpTo(backMe) end
+        return ...
+    end
     local want, offer = entryModel(e), nil
     local o = OWNED[e.Name]
     local cost = (o and o.price) or tonumber(entryVal(e, "BuyPrice")) or 0
@@ -687,7 +694,7 @@ local function sellCar(e, manual)
     local lastMsg = "no sell offer"
     for _, gap in ipairs({ 9, 6 }) do -- a fresh spawn sometimes settles out of the zone: second try closer
         local car = spawnCar(e, CFrame.lookAt(pr.Position + pr.CFrame.LookVector * gap + Vector3.new(0, 3, 0), pr.Position))
-        if not car then confirmFn = nil; return false, "spawn failed" end
+        if not car then return back(false, "spawn failed") end
         tpTo(pr.CFrame * CFrame.new(0, 0, -4))
         task.wait(1)
         local nt0, gone = os.clock(), false
@@ -704,7 +711,7 @@ local function sellCar(e, manual)
                 STATE.profitSales = (STATE.profitSales or 0) + 1
             end
             saveState()
-            return true, ("sold %s for %s"):format(want, money(offer))
+            return back(true, ("sold %s for %s"):format(want, money(offer)))
         end
         if lastNotify.t >= nt0 then
             lastMsg = "server: " .. lastNotify.text
@@ -720,8 +727,7 @@ local function sellCar(e, manual)
             if not lastNotify.text:find("too far", 1, true) then break end
         end
     end
-    confirmFn = nil
-    return false, lastMsg
+    return back(false, lastMsg)
 end
 
 -- ============================== buy ==============================
