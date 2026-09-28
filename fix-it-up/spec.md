@@ -129,3 +129,5 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 
   The script's Players tab shows any player's garage from this data: tier, price, condition, and whether the car is spawned.
 - Spawned cars in `workspace.Vehicles` carry `Owner=<Name>`, `Model` and `SpawnChance`. That's enough to title other players' cars with their tier.
+- **Hood after spawn:** a freshly RemoteLoad-spawned car ignores hood clicks for about 4.5 s (measured twice: 4.8 s and 4.4 s). The script clicks every 0.5 s for up to 10 s.
+- **Junk offer timing:** after a teleport, wait about 0.8 s before clicking. At 0.3 s one of five offers didn't come; at 0.8 s all did (offers arrive about 0.05 s after the click). Junk cars vanish when another player buys them, so re-check `model.Parent`.

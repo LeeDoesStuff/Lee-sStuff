@@ -285,11 +285,11 @@ local function spawnCar(e, cf)
     local t = os.clock()
     repeat
         local c = carOf(e)
-        if c and c ~= old and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") then task.wait(0.5); return c end
+        if c and c ~= old and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") and c.Values:FindFirstChild("Engine") then task.wait(0.5); return c end
         task.wait(0.1)
     until os.clock() - t > 8
     local c = carOf(e)
-    if c and c:FindFirstChild("PartsEvent") then return c end
+    if c and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") and c.Values:WaitForChild("Engine", 3) then return c end
     log("spawned car didn't load: " .. entryModel(e))
     return nil
 end
@@ -400,7 +400,7 @@ local function buyStore(model, isTool)
 end
 
 -- ============================== repair ==============================
-local busy, busyWhat = false, nil
+local busy, busyWhat, manualBuy = false, nil, false
 local INSTALL_FIRST = { EngineBlock = 1 }
 
 local function repairCar(e)
@@ -416,18 +416,15 @@ local function repairCar(e)
     local hood = car:WaitForChild("Misc", 5) and car.Misc:WaitForChild("Hood", 5)
     local det = hood and hood:WaitForChild("Detector", 5)
     local cd = det and det:FindFirstChildWhichIsA("ClickDetector")
-    for try = 1, 3 do
-        if hoodOpen() or not cd then break end
-        task.wait(0.6)
+    -- measured 2026-09-28: a freshly spawned car ignores hood clicks for ~4.5 s, so keep clicking for up to 10 s
+    if cd and not hoodOpen() then
         tpTo(hoodSpot(car))
-        task.wait(0.4)
-        fireclickdetector(cd)
         local t = os.clock()
-        repeat task.wait(0.1) until hoodOpen() or os.clock() - t > 2
-        if not hoodOpen() then
-            local r = hrp()
-            log(("hood try %d failed, %.1f studs from it"):format(try, r and (r.Position - det.Position).Magnitude or -1))
-        end
+        repeat
+            fireclickdetector(cd)
+            task.wait(0.5)
+            if not hoodOpen() and os.clock() - t > 3 then tpTo(hoodSpot(car)) end -- re-stand in case the car shifted
+        until hoodOpen() or os.clock() - t > 10
     end
     if not hoodOpen() then return false, "couldn't open the hood" end
 
@@ -660,34 +657,58 @@ local function sellCar(e, manual)
 end
 
 -- ============================== buy ==============================
-local function buyJunk(info)
+-- manual = the player confirms in the game's own dialog; otherwise answer by the Auto limits
+local function buyJunk(info, manual)
     local m = info.model
     if not m.Parent or not m:FindFirstChild("ClickDetector") then return nil, "car gone" end
     if #entries() >= garageSlots() then return nil, ("garage full (%d/%d)"):format(#entries(), garageSlots()) end
-    if myMoney() - info.lo < CFG.reserve then return nil, "reserve" end
+    if not manual and myMoney() - info.lo < CFG.reserve then return nil, "reserve" end
     local before = {}
     for _, g in ipairs(entries()) do before[g] = true end
-    tpTo(m:GetPivot() * CFrame.new(0, 3, 8))
-    task.wait(0.5)
-    local asked, price = false, nil
+    local asked, answered, price, yes = false, false, nil, false
     confirmFn = function(text)
         asked, price = true, parsePrice(text)
-        return price ~= nil and price <= CFG.buyMaxPrice and myMoney() - price >= CFG.reserve
+        if manual then
+            local fr = LP.PlayerGui:FindFirstChild("HUD") and LP.PlayerGui.HUD.Frames:FindFirstChild("Confirmation")
+            if fr and fr.Visible then fr.Visible = false; task.wait(0.3) end -- a stale dialog makes the game's prompt return nil at once
+            local r = origConfirm(text)
+            if r == nil then task.wait(0.3); r = origConfirm(text) end
+            yes = r == true
+        else yes = price ~= nil and price <= CFG.buyMaxPrice and myMoney() - price >= CFG.reserve end
+        answered = true
+        return yes
     end
-    fireclickdetector(m.ClickDetector)
-    local new, t = nil, os.clock()
-    repeat
-        task.wait(0.1)
-        for _, g in ipairs(entries()) do if not before[g] then new = g end end
-    until new or os.clock() - t > 5
+    -- the server checks where it thinks you are: give the teleport time to replicate, retry the click
+    for _ = 1, 3 do
+        tpTo(m:GetPivot() * CFrame.new(0, 3, 8))
+        task.wait(0.8)
+        if not m.Parent then break end
+        fireclickdetector(m.ClickDetector)
+        local t = os.clock()
+        repeat task.wait(0.1) until asked or os.clock() - t > 2.5
+        if asked then break end
+    end
+    if asked and not answered then -- the player is still looking at the dialog
+        local t = os.clock()
+        repeat task.wait(0.1) until answered or os.clock() - t > 60
+    end
+    local new
+    if yes then
+        local t = os.clock()
+        repeat
+            task.wait(0.1)
+            for _, g in ipairs(entries()) do if not before[g] then new = g end end
+        until new or os.clock() - t > 5
+    end
     confirmFn = nil
     if new then
         OWNED[new.Name] = { model = entryModel(new), boughtAt = os.time(), price = price }
         saveOwned()
         return new, ("bought %s for %s"):format(entryModel(new), money(price))
     end
-    if not asked then return nil, "no confirm (garage full or click cooldown)" end
-    return nil, ("declined at %s"):format(money(price))
+    if not asked then return nil, "the server never offered the car (someone else bought it, or you're too far)" end
+    if not yes then return nil, manual and "cancelled" or ("declined at %s"):format(money(price)) end
+    return nil, "confirmed but the car didn't arrive"
 end
 
 -- ============================== junk scan + ESP ==============================
@@ -785,7 +806,7 @@ local function sortedJunk()
     return list
 end
 
-local function junkLabel(j) return ("[%s] %s  %s–%s"):format(j.tier, j.name, money(j.lo), money(j.hi)) end
+local function junkLabel(j) return ("[%s] %s  %s–%s  #%s"):format(j.tier, j.name, money(j.lo), money(j.hi), j.model.Name:sub(1, 4)) end
 
 -- my loose parts: wear + game's delete countdown
 local partEsp = {}
@@ -800,10 +821,31 @@ local function carTier(c)
     local sc = c:GetAttribute("SpawnChance")
     return tierOf(sc, (sc or 0) <= 0)
 end
+local function soldText(p)
+    local ls = p:FindFirstChild("leaderstats")
+    local v = ls and ls:FindFirstChild("Cars Sold")
+    return v and tostring(v.Value) or "?"
+end
+-- labels ride the player's root part / the car's seat, so they follow every frame; re-found each scan after streaming
+local function carAnchorPart(c) return c:FindFirstChild("DriveSeat") or c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true) end
+-- an attachment welded (by being a child) to the seat, placed once above the roof: the engine moves it with the car
+-- every frame, so a title on it never trails a moving car. Re-made when the car streams back in (new seat part).
+local function titleAttachment(c, old)
+    local part = carAnchorPart(c)
+    if not part then return nil end
+    if old and old.Parent == part then return old end
+    if old then old:Destroy() end
+    local ok, cf, size = pcall(c.GetBoundingBox, c)
+    local top = (ok and size.Magnitude > 2) and (cf.Position + Vector3.new(0, size.Y / 2 + 1, 0)) or (part.Position + Vector3.new(0, 4, 0))
+    local a = Instance.new("Attachment")
+    a.Name = "FIU_Title"
+    a.Position = part.CFrame:PointToObjectSpace(top)
+    a.Parent = part
+    return a
+end
 local function scanPlayers()
     local cp = camPos()
-    -- spawned cars by owner
-    local byOwner = {}
+    local byOwner, driving = {}, {} -- owner name -> cars; car -> driver
     for _, c in ipairs(Vehicles:GetChildren()) do
         local owner = c:GetAttribute("Owner")
         if owner and owner ~= LP.Name and not c:GetAttribute("Junkyard") then
@@ -811,6 +853,7 @@ local function scanPlayers()
             table.insert(byOwner[owner], c)
         end
     end
+    local titles = CFG.playerEsp and CFG.playerCarTitles
     -- player labels
     for p in pairs(plEsp) do if not p.Parent or not CFG.playerEsp then dropEsp(plEsp, p) end end
     if CFG.playerEsp then
@@ -818,9 +861,9 @@ local function scanPlayers()
             if p ~= LP then
                 local e = plEsp[p]
                 if not e then
-                    e = { anchor = newAnchor() }
+                    e = {}
                     e.bb, e.txt = makeLabel(240, 60)
-                    e.bb.Adornee = e.anchor
+                    e.bb.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
                     e.hl = Instance.new("Highlight")
                     e.hl.FillTransparency, e.hl.OutlineTransparency, e.hl.DepthMode = 1, 0, Enum.HighlightDepthMode.AlwaysOnTop
                     e.hl.Parent = espRoot
@@ -828,19 +871,28 @@ local function scanPlayers()
                 end
                 local ch = p.Character
                 local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                local h = ch and ch:FindFirstChildOfClass("Humanoid")
+                local seat = h and h.SeatPart
+                local car = seat and seat:IsDescendantOf(Vehicles) and seat or nil
+                while car and car.Parent ~= Vehicles do car = car.Parent end
+                if car then driving[car] = p end
                 local dist = root and (root.Position - cp).Magnitude or math.huge
-                local on = root ~= nil and dist <= CFG.playerMaxDist and placeAnchor(e.anchor, ch)
-                e.bb.Enabled = on == true
-                e.hl.Adornee, e.hl.Enabled = ch, on == true and CFG.playerOutline
-                e.hl.OutlineColor = CFG.playerColor
+                -- a driver's info moves onto the car title instead of stacking a second label on top of it
+                local on = root ~= nil and dist <= CFG.playerMaxDist and not (car and titles)
+                e.bb.Adornee = root
+                e.bb.Enabled = on
+                e.hl.Adornee, e.hl.Enabled, e.hl.OutlineColor = ch, root ~= nil and dist <= CFG.playerMaxDist and CFG.playerOutline, CFG.playerColor
                 if on then
-                    local cars = {}
-                    for _, c in ipairs(byOwner[p.Name] or {}) do
-                        cars[#cars + 1] = ('<font color="%s">%s</font>'):format(hex(CFG.color[carTier(c)]), tostring(c:GetAttribute("Model")))
+                    local extra = ""
+                    if not titles then -- no car titles: list their cars here instead
+                        local cars = {}
+                        for _, c in ipairs(byOwner[p.Name] or {}) do
+                            cars[#cars + 1] = ('<font color="%s">%s</font>'):format(hex(CFG.color[carTier(c)]), tostring(c:GetAttribute("Model")))
+                        end
+                        if #cars > 0 then extra = ('\n<font size="%d">%s</font>'):format(CFG.textSize - 3, table.concat(cars, ", ")) end
                     end
                     e.txt.TextSize, e.txt.TextColor3 = CFG.textSize, CFG.playerColor
-                    e.txt.Text = ('%s\n<font size="%d" color="#dddddd">%s sold · %dm</font>%s'):format(p.DisplayName, CFG.textSize - 3,
-                        tostring((function() local ls = p:FindFirstChild("leaderstats"); local v = ls and ls:FindFirstChild("Cars Sold"); return v and v.Value or "?" end)()), dist, #cars > 0 and ('\n<font size="%d">%s</font>'):format(CFG.textSize - 3, table.concat(cars, ", ")) or "")
+                    e.txt.Text = ('%s\n<font size="%d" color="#dddddd">%s sold · %dm</font>%s'):format(p.DisplayName, CFG.textSize - 3, soldText(p), dist, extra)
                 end
             end
         end
@@ -848,28 +900,31 @@ local function scanPlayers()
     -- titles over their cars
     for c in pairs(carEsp) do
         local owner = c:GetAttribute("Owner")
-        if not c.Parent or not (CFG.playerEsp and CFG.playerCarTitles) or not owner or owner == LP.Name then dropEsp(carEsp, c) end
+        if not c.Parent or not titles or not owner or owner == LP.Name or c:GetAttribute("Junkyard") then dropEsp(carEsp, c) end
     end
-    if CFG.playerEsp and CFG.playerCarTitles then
+    if titles then
         for owner, list in pairs(byOwner) do
             for _, c in ipairs(list) do
                 local e = carEsp[c]
                 if not e then
-                    e = { anchor = newAnchor() }
-                    e.bb, e.txt = makeLabel(220, 34)
-                    e.bb.Adornee = e.anchor
+                    e = {}
+                    e.bb, e.txt = makeLabel(240, 40)
                     carEsp[c] = e
                 end
                 local dist = (c:GetPivot().Position - cp).Magnitude
-                local on = dist <= CFG.playerMaxDist and placeAnchor(e.anchor, c)
-                e.bb.Enabled = on == true
+                e.anchor = titleAttachment(c, e.anchor)
+                local on = e.anchor ~= nil and dist <= CFG.playerMaxDist
+                e.bb.Adornee = e.anchor
                 if on then
                     local tier = carTier(c)
-                    e.txt.TextSize, e.txt.TextColor3 = CFG.textSize - 1, CFG.color[tier]
                     local pl = Players:FindFirstChild(owner)
-                    e.txt.Text = ('[%s] %s\n<font size="%d" color="#dddddd">%s</font>'):format(tier, tostring(c:GetAttribute("Model")),
-                        CFG.textSize - 4, pl and pl.DisplayName or owner)
+                    local driver = driving[c]
+                    local who = driver and (driver.DisplayName .. " · " .. soldText(driver) .. " sold" .. (driver.Name ~= owner and (" · owner " .. (pl and pl.DisplayName or owner)) or ""))
+                        or (pl and pl.DisplayName or owner)
+                    e.txt.TextSize, e.txt.TextColor3 = CFG.textSize - 1, CFG.color[tier]
+                    e.txt.Text = ('[%s] %s\n<font size="%d" color="#dddddd">%s</font>'):format(tier, tostring(c:GetAttribute("Model")), CFG.textSize - 4, who)
                 end
+                e.bb.Enabled = on
             end
         end
     end
@@ -932,7 +987,7 @@ local function wantedJunk()
 end
 
 local function autoStep()
-    if busy then return end
+    if busy or manualBuy then return end
     -- 1) finish cars we bought: repair, then sell
     for _, e in ipairs(entries()) do
         local o = not isFav(e) and OWNED[e.Name]
@@ -1235,6 +1290,7 @@ local function unload()
     CONFIRM.OnClientInvoke = origConfirm
     espRoot:Destroy()
     anchorRoot:Destroy()
+    for _, d in ipairs(Vehicles:GetDescendants()) do if d.Name == "FIU_Title" and d:IsA("Attachment") then d:Destroy() end end
     if Library then pcall(Library.Unload, Library) end
 end
 getgenv().FIU_MAIN = { unload = unload, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
@@ -1246,8 +1302,13 @@ task.spawn(function()
     while running do
         guard("scan", scanJunk)
         guard("parts", scanParts)
-        guard("players", scanPlayers)
         task.wait(0.5)
+    end
+end)
+task.spawn(function() -- players move: their labels refresh 4x a second (positions follow every frame)
+    while running do
+        guard("players", scanPlayers)
+        task.wait(0.25)
     end
 end)
 task.spawn(function()
@@ -1318,12 +1379,27 @@ List:AddButton({ Text = "Teleport to car", Func = run("tp junk", function()
     local j = junkByLabel[junkDrop.Value]
     if j and j.model.Parent then tpTo(j.model:GetPivot() * CFrame.new(0, 3, 8)) end
 end) })
-List:AddButton({ Text = "Buy car", Tooltip = "Buys at the real price if it's under Auto > max price and above your reserve", Func = run("buy", function()
+List:AddButton({ Text = "Buy car", Tooltip = "Teleports to the car and opens the game's buy dialog with the real price", Func = function()
     local j = junkByLabel[junkDrop.Value]
-    if not j then return end
-    local e, msg = buyJunk(j)
-    log(msg); notify(msg)
-end) })
+    if not j then notify("Pick a car in the list first") return end
+    if manualBuy then notify("Already buying a car") return end
+    manualBuy = true -- the auto loop starts nothing new while this is pending
+    task.spawn(function()
+        if busy then
+            notify("Waiting for " .. tostring(busyWhat) .. " to finish, then buying")
+            local t = os.clock()
+            repeat task.wait(0.5) until not busy or os.clock() - t > 180
+        end
+        if not busy then
+            busy, busyWhat = true, "buying " .. j.name
+            local ok, e, msg = pcall(buyJunk, j, true)
+            busy = false
+            msg = ok and msg or ("buy error: " .. tostring(e))
+            log(msg); notify(msg)
+        end
+        manualBuy = false
+    end)
+end })
 local junkLabelBox = List:AddLabel("-", true)
 
 -- Auto
@@ -1535,13 +1611,15 @@ local function sellLine(e)
     return ('<font color="#ff9b5e">sell in %d:%02d</font>'):format(left // 60, left % 60)
 end
 
-local selAnchor = newAnchor()
-selTag.Adornee = selAnchor
+local selAtt
 selTag.SizeOffset = Vector2.new(0, 0.5)
-selTag.StudsOffsetWorldSpace = Vector3.new(0, 1.5, 0)
+selTag.StudsOffsetWorldSpace = Vector3.new(0, 0.5, 0)
 local function updateSelTag()
     local c = selectedCar and carOf(selectedCar)
-    selTag.Enabled = c ~= nil and placeAnchor(selAnchor, c)
+    if selAtt and (not c or not selAtt:IsDescendantOf(c)) then selAtt:Destroy(); selAtt = nil end
+    selAtt = c and titleAttachment(c, selAtt)
+    selTag.Adornee = selAtt
+    selTag.Enabled = selAtt ~= nil
     if not selTag.Enabled then return end
     selText.Text = ("%s · %d%%\n%s"):format(entryModel(selectedCar), condition(c) or 0, sellLine(selectedCar))
 end
