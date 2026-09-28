@@ -1673,7 +1673,8 @@ local function updateSelTag()
     selTag.Adornee = selAtt
     selTag.Enabled = selAtt ~= nil
     if not selTag.Enabled then return end
-    selText.Text = ("%s · %d%%\n%s"):format(entryModel(selectedCar), condition(c) or 0, sellLine(selectedCar))
+    local tier = modelTier(entryModel(selectedCar))
+    selText.Text = ('<font color="%s">[%s] %s</font> · %d%%\n%s'):format(hex(CFG.color[tier]), tier, entryModel(selectedCar), condition(c) or 0, sellLine(selectedCar))
 end
 
 -- ============================== label refresh ==============================
@@ -1707,7 +1708,12 @@ task.spawn(function()
             local e = selectedCar
             if e then
                 local c = carOf(e)
-                local lines2 = { ("<b>%s</b> · %s"):format(entryModel(e), isFav(e) and '<font color="#ffd24a">★ favorite (locked)</font>' or isFlip(e) and '<font color="#5ee07a">flip car</font>' or '<font color="#aaaaaa">not locked</font>') }
+                local tier = modelTier(entryModel(e))
+                local cat = RS.Cache.CarList:FindFirstChild(entryModel(e))
+                local sc = cat and cat:GetAttribute("SpawnChance")
+                local lines2 = { ('<font color="%s"><b>[%s] %s</b></font> · %s'):format(hex(CFG.color[tier]), tier, entryModel(e), isFav(e) and '<font color="#ffd24a">★ favorite (locked)</font>' or isFlip(e) and '<font color="#5ee07a">flip car</font>' or '<font color="#aaaaaa">not locked</font>') }
+                lines2[#lines2 + 1] = ('Rarity <font color="%s">%s</font>%s'):format(hex(CFG.color[tier]), TIER_TEXT[tier] or tier,
+                    sc and sc > 0 and (" · %s%% spawn chance"):format(tostring(sc)) or " · doesn't spawn in the junkyard")
                 local buy = tonumber(entryVal(e, "BuyPrice")) or 0
                 local pm = c and c:GetAttribute("ProfitMultiplier")
                 lines2[#lines2 + 1] = ("Bought %s%s"):format(money(buy), pm and (" · sells for %s at 100%%"):format(money(buy * (1 + pm))) or "")
