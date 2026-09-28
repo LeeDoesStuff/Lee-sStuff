@@ -165,3 +165,4 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 - **Selling locked cars:** the script's confirm hook now also answers the game's *own* sell prompt (a player at the Used Cars NPC). It declines if the car named in the prompt is a favorite that's out within 60 studs of the NPC.
 
 - 2026-09-28: sellCar saves the player CFrame before the sell and teleports back afterwards, whether the sale succeeds or fails (auto and manual). The "Car" tab is renamed "Garage".
+- 2026-09-28: a separate "Auto lock by spawn chance" toggle plus a % input (default 0.5) locks script-bought cars at or under that SpawnChance, independent of the tier lock. Five A-tier cars sit between 0.1 and 0.25%: Four Mustank Relby SP500, Lanca Status FR4 and Fia-Te 10026p at 0.2, Merquis Maibac S650 at 0.25, Merquis 560 SEC Koenig at 0.15. The Drive farm has a "No limit" toggle that ignores the debt and extra km.

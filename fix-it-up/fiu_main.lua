@@ -155,8 +155,8 @@ local CFG = {
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
-    autoLock = false, autoLockTier = "A", autoLockModels = {},
-    driveSpeed = 85, driveExtra = 2, farmYield = false, driveRoute = "Highway", swapOld = "Store in inventory",
+    autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
+    driveSpeed = 85, driveExtra = 2, driveNoLimit = false, farmYield = false, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
@@ -286,12 +286,16 @@ local function modelTier(model)
     return "D"
 end
 local function maybeAutoLock(e)
-    if not CFG.autoLock or FAV[e.Name] or not OWNED[e.Name] then return false end
+    if not (CFG.autoLock or CFG.autoLockPctOn) or FAV[e.Name] or not OWNED[e.Name] then return false end
     local mv = e:FindFirstChild("Model")
     local model = mv and mv.Value
     if not model then return false end
     local tier = modelTier(model)
-    if CFG.autoLockModels[model] or TIER_ORDER[tier] <= TIER_ORDER[CFG.autoLockTier] then
+    local cat = RS.Cache.CarList:FindFirstChild(tostring(model))
+    local sc = cat and cat:GetAttribute("SpawnChance")
+    local byTier = CFG.autoLock and (CFG.autoLockModels[model] or TIER_ORDER[tier] <= TIER_ORDER[CFG.autoLockTier])
+    local byPct = CFG.autoLockPctOn and sc ~= nil and sc <= CFG.autoLockPct
+    if byTier or byPct then
         FAV[e.Name] = model
         saveFav()
         log(("auto-locked [%s] %s"):format(tier, model))
@@ -1612,6 +1616,15 @@ FavBox:AddDropdown("FIU_AutoLockTier", { Text = "Lock tier and rarer", Values = 
     Callback = function(v) CFG.autoLockTier = v; for _, e in ipairs(entries()) do maybeAutoLock(e) end end })
 FavBox:AddDropdown("FIU_AutoLockModels", { Text = "Also lock these models", Values = CAT_NAMES, Multi = true, Default = {},
     Callback = function(v) CFG.autoLockModels = v; for _, e in ipairs(entries()) do maybeAutoLock(e) end end })
+FavBox:AddToggle("FIU_AutoLockPctOn", { Text = "Auto lock by spawn chance", Default = CFG.autoLockPctOn,
+    Tooltip = "Separate from the tier lock: cars the script buys at or under this spawn % are locked right away",
+    Callback = function(v)
+        CFG.autoLockPctOn = v
+        if v then for _, e in ipairs(entries()) do maybeAutoLock(e) end end
+    end })
+FavBox:AddInput("FIU_AutoLockPct", { Text = "Lock at or under (%)", Default = tostring(CFG.autoLockPct), Numeric = true, Finished = true,
+    Tooltip = "e.g. 0.25 catches the rare end of A tier (A goes up to 1%)",
+    Callback = function(v) CFG.autoLockPct = math.max(0, tonumber(v) or 0); for _, e in ipairs(entries()) do maybeAutoLock(e) end end })
 local favLabel = FavBox:AddLabel("-", true)
 
 do
@@ -2969,13 +2982,14 @@ do
                 farm.moved += step
             end
             local km, _, owed = numbers()
-            if owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
+            if not CFG.driveNoLimit and owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
             if farm.chosen and farm.car ~= e then farm.yielded = true; farm.status = "switching car"; break end -- picked another car mid-run
             if CFG.farmYield and os.clock() - (farm.lastCheck or 0) > 1 then
                 farm.lastCheck = os.clock()
                 if farm.pending() then farm.yielded = true; farm.status = "paused: auto flip has work"; break end
             end
-            farm.status = ("driving · moved %.2f km · counted %.2f km · %.2f km to go"):format(farm.moved / 3937, km - farm.startKm, math.max(0, owed + CFG.driveExtra))
+            farm.status = ("driving · moved %.2f km · counted %.2f km · %s"):format(farm.moved / 3937, km - farm.startKm,
+                CFG.driveNoLimit and "no limit" or ("%.2f km to go"):format(math.max(0, owed + CFG.driveExtra)))
         end
         pcall(function() seat.AssemblyLinearVelocity = Vector3.zero end)
         if not farm.yielded then farm.on = false end
@@ -3051,6 +3065,9 @@ do
         Tooltip = "3937 studs = 1 km. Faster finishes sooner but looks less like real driving.", Callback = set("driveSpeed") })
     FarmBox:AddSlider("FIU_DriveExtra", { Text = "Keep driving past the debt", Default = CFG.driveExtra, Min = 0, Max = 50, Rounding = 0, Suffix = " km",
         Callback = set("driveExtra") })
+    FarmBox:AddToggle("FIU_DriveNoLimit", { Text = "No limit", Default = CFG.driveNoLimit,
+        Tooltip = "Keep driving until you turn the farm off or get out, ignoring the debt and the extra km",
+        Callback = set("driveNoLimit") })
     local farmLabel = FarmBox:AddLabel("-", true)
 
     task.spawn(function()
