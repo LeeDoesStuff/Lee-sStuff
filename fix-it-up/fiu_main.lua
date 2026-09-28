@@ -155,7 +155,7 @@ local CFG = {
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
-    autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
+    homeReturn = false, homeAfterTp = false, autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
     driveSpeed = 85, driveExtra = 2, driveNoLimit = false, farmYield = false, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
@@ -245,6 +245,7 @@ local function tpTo(target) -- CFrame or Vector3
     pcall(function() LP:RequestStreamAroundAsync(cf.Position, 3) end)
     r.AssemblyLinearVelocity, r.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
     char():PivotTo(cf)
+    CFG.lastTp = os.clock() -- "Return after tp" goes home only after actions that moved you
     return true
 end
 
@@ -1071,6 +1072,17 @@ local function wantedJunk()
     return best
 end
 
+-- home: a quiet spot you park at between auto actions (STATE.home = { x, y, z, lookX, lookZ })
+local function goHome(force)
+    local h = STATE.home
+    if not (h and (force or CFG.homeReturn or CFG.homeAfterTp)) then return end
+    local pos = Vector3.new(h[1], h[2], h[3])
+    local r = hrp()
+    if r and (r.Position - pos).Magnitude < 10 then return end
+    pcall(function() LP:RequestStreamAroundAsync(pos, 5) end)
+    tpTo(CFrame.lookAt(pos, pos + Vector3.new(h[4], 0, h[5])))
+end
+
 local function autoStep()
     if busy or manualBuy then return end
     -- 1) finish cars we bought: repair, then sell
@@ -1087,6 +1099,7 @@ local function autoStep()
                 log(msg)
                 if o.repaired and CFG.cleanAfter then local _, m2 = cleanCar(e); log(m2) end
                 if o.repaired and CFG.paintAfter then local _, m3 = paintCar(e, paintColor(), CFG.paintMaterial); log(m3) end
+                goHome()
                 busy = false
                 return
             end
@@ -1098,6 +1111,7 @@ local function autoStep()
                     busy, busyWhat = true, "selling " .. entryModel(e)
                     local ok, msg = sellCar(e)
                     log(msg)
+                    goHome()
                     busy = false
                     if not ok and OWNED[e.Name] then OWNED[e.Name].nextTry = os.time() + 30 end -- don't respawn it at the NPC every 2 s
                     return
@@ -1113,6 +1127,7 @@ local function autoStep()
         busy, busyWhat = true, "buying " .. j.name
         local e, msg = buyJunk(j)
         log(msg)
+        if not (e and CFG.autoRepair) then goHome() end -- a repair is next anyway: go straight there
         busy = false
     end
 end
@@ -1442,12 +1457,16 @@ local Tabs = {
     Settings = Window:AddTab("Settings"),
 }
 local function set(key) return function(v) CFG[key] = v end end
+-- buttons that exist to move you somewhere: never sent home after
+local STAY = { ["tp junk"] = true, spawn = true, ["tp car"] = true, tp = true, ["tp garage"] = true, ["tp player"] = true, hood = true }
 local function run(name, f) -- buttons: one action at a time, off the UI thread
     return function()
         if busy then notify("Busy: " .. tostring(busyWhat)) return end
         task.spawn(function()
             busy, busyWhat = true, name
+            local t0 = os.clock()
             local ok = guard(name, f)
+            if CFG.homeAfterTp and not STAY[name] and (CFG.lastTp or 0) >= t0 then goHome(true) end
             busy = false
         end)
     end
@@ -1490,7 +1509,9 @@ local function queued(what, f) -- one job at a time: wait for a running repair/s
         end
         if not busy then
             busy, busyWhat = true, what
+            local t0 = os.clock()
             local ok, err = pcall(f)
+            if CFG.homeAfterTp and (CFG.lastTp or 0) >= t0 then goHome(true) end
             busy = false
             if not ok then log("buy error: " .. tostring(err)); notify("buy error: " .. tostring(err)) end
         end
@@ -1556,6 +1577,33 @@ AutoBox:AddToggle("FIU_AutoBuy", { Text = "Auto buy", Default = CFG.autoBuy, Cal
 AutoBox:AddToggle("FIU_AutoRepair", { Text = "Auto repair after buy", Default = CFG.autoRepair, Callback = set("autoRepair") })
 AutoBox:AddToggle("FIU_AutoSell", { Text = "Auto sell", Tooltip = "Only sells cars this script bought", Default = CFG.autoSell, Callback = set("autoSell") })
 local autoLabel = AutoBox:AddLabel("-", true)
+
+do
+local HomeBox = Tabs.Auto:AddLeftGroupbox("Home")
+HomeBox:AddLabel("A quiet spot of your choosing. After each auto buy, repair or sell you're sent back here instead of standing around the junkyard or the sell NPC.", true)
+local homeLabel = HomeBox:AddLabel("-", true)
+local function showHome()
+    local h = STATE.home
+    homeLabel:SetText(h and ("Home set at %d, %d, %d"):format(h[1], h[2], h[3]) or "No home set")
+end
+HomeBox:AddToggle("FIU_HomeReturn", { Text = "Return home after auto actions", Default = CFG.homeReturn, Callback = set("homeReturn") })
+HomeBox:AddToggle("FIU_HomeAfterTp", { Text = "Return after tp", Default = CFG.homeAfterTp,
+    Tooltip = "Back home after anything that teleported you: auto buy/repair/sell, Buy car, Sell, Repair, Clean, Paint, swaps, and when the distance farm stops. Teleport buttons and Hood are left alone.",
+    Callback = set("homeAfterTp") })
+HomeBox:AddButton({ Text = "Set home here", Func = function()
+    local r = hrp()
+    if not r then return end
+    local p, l = r.Position, r.CFrame.LookVector
+    STATE.home = { p.X, p.Y, p.Z, l.X, l.Z }
+    saveState(); showHome(); notify("Home set")
+end })
+HomeBox:AddButton({ Text = "Go home", Func = function()
+    if not STATE.home then notify("No home set") return end
+    goHome(true)
+end })
+HomeBox:AddButton({ Text = "Clear home", DoubleClick = true, Func = function() STATE.home = nil; saveState(); showHome() end })
+showHome()
+end
 
 do
 local Filt = Tabs.Auto:AddRightGroupbox("Buy filters")
@@ -3031,6 +3079,7 @@ do
                 end
                 farm.on = false
                 CFG.farmCarGuid = nil
+                if CFG.homeAfterTp then goHome(true) end
             end)
         elseif not v then
             farm.on = false
