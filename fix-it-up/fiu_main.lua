@@ -2754,6 +2754,27 @@ ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
+-- autosave: settings changes go into your autoload config within ~5 s, so nothing needs a manual "Save config"
+-- (no autoload set = an "autosave" config is made and set as autoload). Polls the encoded config instead of hooking
+-- OnChanged, which in Obsidian replaces an element's one callback.
+task.spawn(function()
+    task.wait(5) -- let the autoload apply first
+    local last
+    while running do
+        local name = SaveManager.AutoloadConfig
+        if type(name) ~= "string" or name == "" or name == "none" then name = nil end
+        local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, name or "autosave")
+        if ok and good then
+            data = data:gsub('"timestamp":"[^"]*",?', "")
+            if last and data ~= last then
+                SaveManager:Save(name or "autosave")
+                if not name then SaveManager:SaveAutoloadConfig("autosave") end
+            end
+            last = data
+        end
+        task.wait(5)
+    end
+end)
 
 -- ============================== selected car tag ==============================
 -- floating tag over the car picked in the Garage tab: name, condition, and how long until it can be sold
@@ -3301,6 +3322,7 @@ do
             if farm.refreshing then return end -- the list being rebuilt isn't a new pick
             farm.chosen = v ~= nil and v ~= PICK
             farm.car = farm.chosen and carByLabel[v] or nil
+            D.car = farm.car and farm.car.Name or nil; saveD() -- remembered by car id (labels change when a car is locked)
         end })
     task.spawn(function() -- keep the list in step with your garage, keeping the pick
         local lastKey = ""
@@ -3312,6 +3334,9 @@ do
             if key ~= lastKey then
                 lastKey = key
                 local keep = farm.car
+                if not keep and D.car and Garage:FindFirstChild(D.car) then -- the pick saved last session
+                    keep = Garage[D.car]; farm.chosen, farm.car = true, keep
+                end
                 table.insert(labels, 1, PICK)
                 farm.refreshing = true
                 carDropF:SetValues(labels)
