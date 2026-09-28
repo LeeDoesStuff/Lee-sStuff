@@ -15,6 +15,8 @@ Started 2026-09-27. The user's first question was where **MRKET** is. They typed
   - v1 rack ESP: items are the children of parts with `Main=true` that carry `ItemKey`. Defaults: Rare and up shown, outline from Epic, Finds list from Legendary.
   - v2 (2026-09-27, the user asked for these): a **Matcha tab** (auto buy + collect at Kat by teleporting there and back) and a **Laundry tab** (auto buy picked pods on restock; auto pop bubbles). A spending reserve sits in Settings.
   - All three were verified live with one small real buy each. Bubbles were only tested with a fake button; a real wash is untested.
+  - v3 adds a **MRKET tab**: auto pack (enter the apartment with `ApartmentEvent "Enter"`, fire the station prompt) and auto deliver (go to the meeting place, equip the box, `ToolEvent(box, true)`). **Not yet run on a live order.** It needs the user to list an item and accept an offer; then watch the tab's status line and warnings.
+  - The user's autoload config has pods and bubbles on (seen 2026-09-27).
 - User pattern: they asked for features mid-build ("add a category for matcha", then laundry). Each system gets its own tab.
 - Decompiled sources: Potassium workspace `thrift_src_*.lua`.
 

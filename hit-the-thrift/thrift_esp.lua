@@ -10,6 +10,7 @@
     from ClothingModule.Items. A restock swaps the slot models; buying one deletes it locally, so its dot goes too.
     Matcha: auto buy + collect drinks at Kat (teleports there and back).
     Laundry: auto buy picked detergent pods after each restock; auto pop washer bubbles.
+    MRKET: auto pack accepted orders at your apartment station; auto deliver boxes to the buyers.
     Spec: hit-the-thrift-spec.md
 ]]
 
@@ -78,6 +79,7 @@ local CFG = {
     matchaAuto = false, matchaDrink = "Ceremonial Matcha", matchaKeep = 15, matchaReturn = true,
     podAuto = false, podMax = 15, bubbles = false,
     pods = { ["Amethyst Pod"] = true, ["Phoenix Pod"] = true, ["Supreme Pod"] = true, ["Onyx Pod"] = true, ["Gold Pod"] = true },
+    mkPack = false, mkDeliver = false, mkReturn = true,
     reserve = 1, -- $M never spent by matcha / pods
 }
 for _, r in ipairs(RARITIES) do -- default colors = the game's rarity colors
@@ -470,6 +472,156 @@ local function hookBubbles() -- the game's own pop handler: BubbleEvent + 1 s of
 end
 task.spawn(guard, "bubbles", hookBubbles)
 
+-- ============================== MRKET ==============================
+-- Read from code 2026-09-27 (no live order yet): an accepted offer puts an order on your apartment's pack station
+-- (Packaging attribute HasOrder). The station's client prompt runs RopopEvent("PackOrder") and gives a box tool
+-- (attributes MRKETBox, MRKETListingId). The box's only script sends ToolEvent(box, true) when used; the server
+-- then delivers if you're at the listing's MeetingPlace (MRKETDeliveryComplete / MRKETDeliveryWarning).
+local RopopEvent = Events:WaitForChild("DataEvents"):WaitForChild("RopopEvent")
+local ApartmentEvent = Events:WaitForChild("DataEvents"):WaitForChild("ApartmentEvent")
+local ToolEvent = Events:WaitForChild("RackEvents"):WaitForChild("ToolEvent")
+local mk = { busy = false, status = "off", listings = {}, packed = 0, delivered = 0, earned = 0, warn = nil, pausedUntil = 0 }
+
+table.insert(conns, RopopEvent.OnClientEvent:Connect(function(kind, a)
+    if kind == "Listings" and type(a) == "table" then
+        mk.listings = type(a.listings) == "table" and a.listings or {}
+    elseif kind == "MRKETDeliveryComplete" and type(a) == "table" then
+        mk.delivered += 1
+        mk.earned += tonumber(a.Price) or 0
+    elseif kind == "MRKETDeliveryWarning" and type(a) == "string" then
+        mk.warn = a
+    end
+end))
+
+local function myStation()
+    local apts = Workspace:FindFirstChild("Apartments")
+    local mine = apts and apts:FindFirstChild(lp.Name)
+    local st = mine and mine:FindFirstChild("Structure")
+    local ropop = st and st:FindFirstChild("Ropop")
+    return ropop and ropop:FindFirstChild("Packaging"), st
+end
+local function boxes()
+    local list = {}
+    for _, holder in ipairs({ lp:FindFirstChild("Backpack"), lp.Character }) do
+        for _, t in ipairs(holder and holder:GetChildren() or {}) do
+            if t:IsA("Tool") and t:GetAttribute("MRKETBox") then list[#list + 1] = t end
+        end
+    end
+    return list
+end
+local function placeFor(listingId)
+    for _, l in ipairs(mk.listings) do
+        if l.Id == listingId then return l.MeetingPlace end
+    end
+end
+
+local function waitFor(cond, timeout)
+    local t0 = os.clock()
+    while not cond() and os.clock() - t0 < timeout do task.wait(0.1) end
+    return cond()
+end
+
+local function packAll(char, pk)
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not (hrp and (hrp.Position - pk.PlrPos.Position).Magnitude < 30) then
+        -- the game's own way in (Teleport app): the server answers "Entered" and the apartment module moves you inside
+        ApartmentEvent:FireServer("Enter")
+        if not waitFor(function() return (hrp.Position - pk.PlrPos.Position).Magnitude < 30 end, 4) then
+            char:PivotTo(pk.PlrPos.CFrame) -- fallback: straight to the station
+        end
+        task.wait(0.5)
+    end
+    local prompt = pk:FindFirstChild("BoxPos") and pk.BoxPos:FindFirstChildOfClass("ProximityPrompt")
+    for _ = 1, 10 do
+        if not (running and CFG.mkPack and pk:GetAttribute("HasOrder")) then break end
+        if not prompt then mk.status = "pack prompt missing"; break end
+        char:PivotTo(pk.PlrPos.CFrame) -- the game's pack handler puts you here too
+        task.wait(0.3)
+        local n0 = #boxes()
+        mk.status = "packing"
+        fireproximityprompt(prompt) -- the station's own handler: PackOrder + animation
+        if not waitFor(function() return #boxes() > n0 end, 8) then mk.status = "packing gave no box"; break end
+        mk.packed += 1
+        task.wait(0.5)
+    end
+end
+
+local function deliver(char, box)
+    local id = box:GetAttribute("MRKETListingId")
+    local place = placeFor(id)
+    if not place then
+        RopopEvent:FireServer("GetListings")
+        waitFor(function() return placeFor(id) ~= nil end, 3)
+        place = placeFor(id)
+    end
+    local mp = place and Workspace:FindFirstChild("MeetingPlaces") and Workspace.MeetingPlaces:FindFirstChild(place)
+    if not (mp and mp:FindFirstChild("Final") and mp:FindFirstChild("Start")) then
+        mk.status = "no meeting place for " .. tostring(box.Name)
+        return false
+    end
+    local final, dir = mp.Final.Position, mp.Start.Position - mp.Final.Position
+    dir = Vector3.new(dir.X, 0, dir.Z).Unit
+    local pos = final + dir * 4 + Vector3.new(0, 3, 0) -- in front of where the buyer stands
+    char:PivotTo(CFrame.lookAt(pos, Vector3.new(final.X, pos.Y, final.Z)))
+    task.wait(0.5)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and box.Parent ~= char then hum:EquipTool(box); task.wait(0.3) end
+    local d0 = mk.delivered
+    mk.warn, mk.status = nil, "delivering to " .. place
+    ToolEvent:FireServer(box, true) -- what using the box sends
+    local ok = waitFor(function() return mk.delivered > d0 or mk.warn ~= nil or not box.Parent end, 6)
+    if mk.warn then mk.status = "server: " .. mk.warn end
+    return ok and mk.warn == nil
+end
+
+local function mrketRun()
+    if os.clock() < mk.pausedUntil then return end
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local pk = myStation()
+    local needPack = CFG.mkPack and pk and pk:GetAttribute("HasOrder")
+    local needDeliver = CFG.mkDeliver and #boxes() > 0
+    if not (needPack or needDeliver) then mk.status = "waiting for orders"; return end
+    mk.busy = true
+    local saved = hrp.CFrame
+    local startedInside = pk and (hrp.Position - pk.PlrPos.Position).Magnitude < 60
+    local inside = startedInside
+    local function leave() -- tell the server, like touching the apartment's exit does
+        if inside then ApartmentEvent:FireServer("LeftApartment", lp.Name); inside = false end
+    end
+    if needPack then packAll(char, pk); inside = true end
+    if CFG.mkDeliver and #boxes() > 0 then
+        leave()
+        RopopEvent:FireServer("GetListings")
+        task.wait(1)
+        for _, box in ipairs(boxes()) do
+            if not (running and CFG.mkDeliver) then break end
+            if not deliver(char, box) then mk.pausedUntil = os.clock() + 60; break end
+        end
+    end
+    if CFG.mkReturn and lp.Character == char then -- otherwise you stay where the run ended
+        if startedInside then
+            if inside then char:PivotTo(saved) else ApartmentEvent:FireServer("Enter") end -- back in the game's way
+        else
+            leave()
+            char:PivotTo(saved)
+        end
+    end
+    if mk.status == "packing" or mk.status:find("^delivering") then mk.status = "done" end
+    mk.busy = false
+end
+
+task.spawn(function() -- MRKET: pack new orders, deliver held boxes
+    while running do
+        if (CFG.mkPack or CFG.mkDeliver) and not mk.busy then
+            guard("mrket", mrketRun)
+            mk.busy = false
+        end
+        task.wait(3)
+    end
+end)
+
 task.spawn(function() -- pods: after each restock, whenever new stock shows up, and when switched on
     while running do
         if CFG.podAuto then
@@ -493,7 +645,7 @@ task.spawn(function() -- matcha: top up whenever you're below the target
     end
 end)
 
-local Library, statusLabel, findsLabel, matchaLabel, podLabel, bubbleLabel
+local Library, statusLabel, findsLabel, matchaLabel, podLabel, bubbleLabel, mrketLabel
 local function unload()
     if getgenv().THRIFT_ESP == nil then return end
     getgenv().THRIFT_ESP = nil
@@ -504,7 +656,7 @@ local function unload()
     if Library then pcall(Library.Unload, Library) end
 end
 getgenv().THRIFT_ESP = { unload = unload, cfg = CFG, containers = containers, finds = finds, totals = totals, errs = errs,
-    matcha = matcha, pod = pod, bubbles = bubbles }
+    matcha = matcha, pod = pod, bubbles = bubbles, mk = mk }
 
 task.spawn(function()
     local lastFinds
@@ -534,6 +686,20 @@ task.spawn(function()
                     #pod.last > 0 and ("Bought: " .. table.concat(pod.last, ", ")) or ""))
             end
             if bubbleLabel then bubbleLabel:SetText(("Popped this session: %d"):format(bubbles.popped)) end
+            if mrketLabel then
+                local counts = {}
+                for _, l in ipairs(mk.listings) do
+                    local s = l.DeliveryStatus or (l.HasOffer and "offer") or "listed"
+                    counts[s] = (counts[s] or 0) + 1
+                end
+                local parts = {}
+                for s, n in pairs(counts) do parts[#parts + 1] = n .. " " .. s end
+                local pk = myStation()
+                mrketLabel:SetText(("%s\nListings: %s · station order: %s · boxes: %d\nPacked %d · delivered %d (%s)%s"):format(
+                    (CFG.mkPack or CFG.mkDeliver) and mk.status or "off",
+                    #parts > 0 and table.concat(parts, ", ") or "none", pk and (pk:GetAttribute("HasOrder") and "yes" or "no") or "no apartment",
+                    #boxes(), mk.packed, mk.delivered, money(mk.earned), mk.warn and ("\nLast warning: " .. mk.warn) or ""))
+            end
         end)
         task.wait(0.5)
     end
@@ -551,7 +717,7 @@ local ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
 local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
 
 local Window = Library:CreateWindow({
-    Title = "Hit The Thrift", Footer = "rack ESP · matcha · laundry",
+    Title = "Hit The Thrift", Footer = "rack ESP · matcha · laundry · MRKET",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -559,6 +725,7 @@ local Tabs = {
     Finds    = Window:AddTab("Finds"),
     Matcha   = Window:AddTab("Matcha"),
     Laundry  = Window:AddTab("Laundry"),
+    MRKET    = Window:AddTab("MRKET"),
     Settings = Window:AddTab("Settings"),
 }
 local function set(key) return function(v) CFG[key] = v; dirty = true end end
@@ -625,6 +792,15 @@ local BubbleBox = Tabs.Laundry:AddRightGroupbox("Bubbles")
 BubbleBox:AddLabel("Pops every bubble while you wash; each pop takes 1 s off the wash timer. Bubbles only spawn while you stay within 20 studs of your machine.", true)
 BubbleBox:AddToggle("LA_Bubbles", { Text = "Auto pop bubbles", Default = CFG.bubbles, Callback = function(v) CFG.bubbles = v end })
 bubbleLabel = BubbleBox:AddLabel("-", true)
+
+local MkBox = Tabs.MRKET:AddLeftGroupbox("Orders")
+MkBox:AddLabel("You still list items and accept offers on your phone. Auto pack goes to your apartment's pack station and packs every accepted order. Auto deliver takes each box to its buyer's meeting spot and hands it over. Then it takes you back.", true)
+MkBox:AddToggle("MK_Pack", { Text = "Auto pack orders", Default = CFG.mkPack,
+    Callback = function(v) CFG.mkPack = v; mk.pausedUntil = 0 end })
+MkBox:AddToggle("MK_Deliver", { Text = "Auto deliver (fulfill)", Default = CFG.mkDeliver,
+    Callback = function(v) CFG.mkDeliver = v; mk.pausedUntil = 0 end })
+MkBox:AddToggle("MK_Return", { Text = "Go back after", Default = CFG.mkReturn, Callback = function(v) CFG.mkReturn = v end })
+mrketLabel = MkBox:AddLabel("-", true)
 
 local Spend = Tabs.Settings:AddRightGroupbox("Spending")
 Spend:AddSlider("SP_Reserve", { Text = "Always keep", Default = CFG.reserve, Min = 0, Max = 100, Rounding = 1, Suffix = "M",

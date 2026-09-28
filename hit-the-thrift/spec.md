@@ -33,6 +33,13 @@ When a Craig sale is over $1M, the client pops "Craig can't afford this! … Ric
 6. **Pack:** go to your apartment's pack station (`Ropop.Packaging.BoxPos`, prompt "Pack Orders", object text MRKET). With no accepted offer it says "Accept an offer on your phone first!". Packing fires `RopopEvent "PackOrder"` and gives you a box tool (attributes `MRKETBox`, `MRKETListingId`).
 7. **Deliver:** the buyer NPC waits at one of the `workspace.MeetingPlaces`: Matcha Shop, Apartments, Jewelry, Furniture Shop or Laundromat. While you hold their box, the buyer gets an orange highlight. The server sends `MRKETDeliveryWarning` and `MRKETDeliveryComplete`.
 
+**Automation (script v3, 2026-09-27). Read from code, not yet run on a live order:**
+- **Pack:** your station is `Workspace.Apartments.<you>.Structure.Ropop.Packaging`. Its attribute `HasOrder` is set from the server's `Station` push. The "Pack Orders" prompt at `BoxPos` is created client-side by `MRKETModule.SetupApartment`, 5 studs, only for your own apartment. Its handler checks `HasOrder`, fires `RopopEvent("PackOrder")`, moves you to `PlrPos` and plays the pack animation. The result is a box tool (`MRKETBox`, `OrderId`, `MRKETListingId`).
+- **Getting in:** the game's own route is `ApartmentEvent:FireServer("Enter")` (the Teleport app). The server answers `"Entered"` and `TpToApartment` moves you inside. Leaving through the exit fires `ApartmentEvent("LeftApartment", owner)`.
+- **Deliver:** the box tool's only script (`toolHandler`) fires `ToolEvent:FireServer(box, true)` on use. There's no other client delivery call, so the server decides by where you are: `MRKETDeliveryComplete {Buyer, Price}` or `MRKETDeliveryWarning "<text>"`. Buyer NPCs are client-only models (`workspace.MRKETBuyerNPCs_Local`, prompts stripped) that walk from the `MeetingPlaces[place].Start` part to `Final`.
+- **Offers** (Messages): `{Id, Buyer, BuyerId, BuyerType, Price, ItemValue, ItemName, Status (Accepted/Packaged/Sold/HeldOut/Lost), MeetingPlace, FinalPrice}`. Accept with `AcceptMRKETOffer id`, hold out with `HoldMRKETOffer`, counter with the timing minigame `StartMRKETCounter` → `ResolveMRKETCounter {Id, ClickTime = GetServerTimeNow()}`.
+- **State on 2026-09-27:** you own Apartment1, your MRKET store is "OFN", and you have 0 listings and 0 offers. MRKET slots: 3, plus 3 more for Robux.
+
 `ReplicatedStorage.Events.DataEvents.RopopEvent` carries all of it, in both directions. Server → client verbs:
 - `Data`
 - `Listings{listings, maxListings, purchasedSlots, maxPurchasableSlots}`
@@ -75,7 +82,7 @@ When a Craig sale is over $1M, the client pops "Craig can't afford this! … Ric
 - **Script:** `%USERPROFILE%\rblx\thrift_esp.lua` (v2). Loader: `loadstring(readfile("thrift_esp.lua"))()`. Config folder: `ThriftESP`.
   - ESP tab: a dot per item colored by rarity, a per-rack summary and an outline in the best rarity's color, with toggles and colors per rarity.
   - Finds tab: a list of items at or above a chosen rarity.
-  - Matcha and Laundry tabs: see below.
+  - Matcha, Laundry and MRKET tabs: see their sections.
   - Settings: a spending reserve.
 
 ## Matcha *(code + measured 2026-09-27)*
