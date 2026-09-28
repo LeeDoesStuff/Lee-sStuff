@@ -149,6 +149,7 @@ local CFG = {
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
+    autoLock = false, autoLockTier = "A", autoLockModels = {},
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
@@ -262,6 +263,29 @@ local function hoodSpot(car)
     return CFrame.lookAt(det.Position + out * 4 + Vector3.new(0, 1, 0), det.Position)
 end
 local function isFav(e) return FAV[e.Name] ~= nil end
+-- auto lock: a car the script bought that is rare enough (or a picked model) becomes a favorite, so it's never sold
+local TIER_ORDER = { EX = 1, S = 2, A = 3, B = 4, C = 5, D = 6 }
+local function modelTier(model)
+    local cat = RS.Cache.CarList:FindFirstChild(tostring(model))
+    local sc = cat and cat:GetAttribute("SpawnChance")
+    if not sc or sc <= 0 then return "EX" end
+    if sc <= 0.1 then return "S" elseif sc <= 1 then return "A" elseif sc <= 5 then return "B" elseif sc <= 15 then return "C" end
+    return "D"
+end
+local function maybeAutoLock(e)
+    if not CFG.autoLock or FAV[e.Name] or not OWNED[e.Name] then return false end
+    local mv = e:FindFirstChild("Model")
+    local model = mv and mv.Value
+    if not model then return false end
+    local tier = modelTier(model)
+    if CFG.autoLockModels[model] or TIER_ORDER[tier] <= TIER_ORDER[CFG.autoLockTier] then
+        FAV[e.Name] = model
+        saveFav()
+        log(("auto-locked [%s] %s"):format(tier, model))
+        return true
+    end
+    return false
+end
 local function isFlip(e) return OWNED[e.Name] ~= nil and not isFav(e) end
 
 local function condition(car)
@@ -700,6 +724,7 @@ local function buyJunk(info, opts)
     end
     if new then
         OWNED[new.Name] = { model = entryModel(new), boughtAt = os.time(), price = price }
+        if maybeAutoLock(new) then notify(("Auto-locked %s: rare, it will not be sold"):format(entryModel(new))) end
         saveOwned()
         return new, ("bought %s for %s"):format(entryModel(new), money(price))
     end
@@ -990,6 +1015,7 @@ local function autoStep()
     if busy or manualBuy then return end
     -- 1) finish cars we bought: repair, then sell
     for _, e in ipairs(entries()) do
+        maybeAutoLock(e) -- also catches cars bought before auto lock was turned on
         local o = not isFav(e) and OWNED[e.Name]
         if o and os.time() >= (o.nextTry or 0) then
             if CFG.autoRepair and not o.repaired then
@@ -1379,7 +1405,6 @@ List:AddButton({ Text = "Teleport to car", Func = run("tp junk", function()
     local j = junkByLabel[junkDrop.Value]
     if j and j.model.Parent then tpTo(j.model:GetPivot() * CFrame.new(0, 3, 8)) end
 end) })
-local quote -- { j, price, t }: the price you saw, valid for 60 s
 local quoteLabel
 local function queued(what, f) -- one job at a time: wait for a running repair/sell instead of refusing
     if manualBuy then notify("Already busy with a buy") return end
@@ -1399,31 +1424,15 @@ local function queued(what, f) -- one job at a time: wait for a running repair/s
         manualBuy = false
     end)
 end
-List:AddButton({ Text = "Get price", Tooltip = "Teleports to the car and reads its real price (buys nothing)", Func = function()
+List:AddButton({ Text = "Buy car", Tooltip = "Teleports to the car and buys it at its real price, confirming for you", Func = function()
     local j = junkByLabel[junkDrop.Value]
     if not j then notify("Pick a car in the list first") return end
-    queued("getting a price", function()
-        local _, price, why = buyJunk(j, { quote = true })
-        if price then
-            quote = { j = j, price = price, t = os.clock() }
-            local msg = ("%s: %s (+%s at 100%%). Press Confirm purchase."):format(j.name, money(price), money(price * j.pm))
-            quoteLabel:SetText(msg); notify(msg); log("price " .. msg)
-        else
-            quote = nil
-            quoteLabel:SetText(tostring(why)); notify(tostring(why))
-        end
-    end)
-end })
-List:AddButton({ Text = "Confirm purchase", Tooltip = "Buys the car you just priced, at that price or lower", Func = function()
-    if not quote or os.clock() - quote.t > 60 or not quote.j.model.Parent then notify("Get a price first (it's good for 60 s)") return end
-    local q = quote
-    queued("buying " .. q.j.name, function()
-        local _, msg = buyJunk(q.j, { max = q.price })
-        quote = nil
+    queued("buying " .. j.name, function()
+        local _, msg = buyJunk(j, { max = math.huge }) -- you picked it: accept whatever it costs
         quoteLabel:SetText(msg); log(msg); notify(msg)
     end)
 end })
-quoteLabel = List:AddLabel("Pick a car, Get price, then Confirm purchase.", true)
+quoteLabel = List:AddLabel("", true)
 local junkLabelBox = List:AddLabel("-", true)
 
 -- Auto
@@ -1485,6 +1494,17 @@ end })
 FavBox:AddButton({ Text = "Unlock selected car", DoubleClick = true, Func = function()
     if selectedCar and FAV[selectedCar.Name] then FAV[selectedCar.Name] = nil; saveFav(); log("unlocked " .. entryModel(selectedCar)) end
 end })
+FavBox:AddToggle("FIU_AutoLock", { Text = "Auto lock rare cars", Default = CFG.autoLock,
+    Tooltip = "Cars the script buys at this tier or rarer (or the models below) are locked right away and never sold",
+    Callback = function(v)
+        CFG.autoLock = v
+        if v then for _, e in ipairs(entries()) do maybeAutoLock(e) end end
+    end })
+FavBox:AddDropdown("FIU_AutoLockTier", { Text = "Lock tier and rarer", Values = { "EX", "S", "A", "B", "C" }, Default = CFG.autoLockTier,
+    Tooltip = "EX exclusive, S up to 0.1%, A up to 1%, B up to 5%, C up to 15%",
+    Callback = function(v) CFG.autoLockTier = v; for _, e in ipairs(entries()) do maybeAutoLock(e) end end })
+FavBox:AddDropdown("FIU_AutoLockModels", { Text = "Also lock these models", Values = CAT_NAMES, Multi = true, Default = {},
+    Callback = function(v) CFG.autoLockModels = v; for _, e in ipairs(entries()) do maybeAutoLock(e) end end })
 local favLabel = FavBox:AddLabel("-", true)
 
 do
@@ -1573,9 +1593,17 @@ ToolBox:AddButton({ Text = "Buy", Func = run("tool", function()
 end) })
 
 -- Teleport
+local shopNames, garageNames = {}, {}
+for _, n in ipairs(PLACE_NAMES) do
+    if n:find("^My garage") or n:find("^Garage ") or n:find("^Auction") then garageNames[#garageNames + 1] = n else shopNames[#shopNames + 1] = n end
+end
 local TpBox = Tabs.Teleport:AddLeftGroupbox("Shops & places")
-local placeDrop = TpBox:AddDropdown("FIU_Place", { Text = "Place", Values = PLACE_NAMES, AllowNull = true })
+local placeDrop = TpBox:AddDropdown("FIU_Place", { Text = "Place", Values = shopNames, AllowNull = true })
 TpBox:AddButton({ Text = "Go", Func = run("tp", function() if placeDrop.Value then goPlace(placeDrop.Value) end end) })
+local GarBox = Tabs.Teleport:AddLeftGroupbox("Garages")
+GarBox:AddLabel("Every garage: door, inside, car exit and the for-sale sign. Auction garages at the bottom.", true)
+local garDrop = GarBox:AddDropdown("FIU_GaragePlace", { Text = "Garage", Values = garageNames, AllowNull = true })
+GarBox:AddButton({ Text = "Go", Func = run("tp garage", function() if garDrop.Value then goPlace(garDrop.Value) end end) })
 TpBox:AddToggle("FIU_BringCar", { Text = "Bring selected car", Default = CFG.bringCar,
     Tooltip = "Spawns the car picked in the Car tab next to you when you teleport", Callback = set("bringCar") })
 local PlBox = Tabs.Teleport:AddRightGroupbox("Players")
@@ -1609,7 +1637,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
