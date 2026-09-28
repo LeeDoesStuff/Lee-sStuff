@@ -2,7 +2,6 @@
 -- Keyed by universe id (game.GameId) so every place in a game matches.
 local BASE = "https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/"
 
--- ponytail: JJBI and Mog or Die have no recorded ids yet; add them here when known
 local SCRIPTS = {
     [10765666801] = "build-a-battle-bot/bbb_farm.lua",
     [10383565741] = "warfare/warfare_hud.lua",
@@ -11,6 +10,8 @@ local SCRIPTS = {
     [7673659635]  = "fix-it-up/fiu_main.lua",
     [4542048826]  = "sneaker-resell-simulator/panel_v2.lua",
     [10761200080] = "needle-in-a-haystack/needle_selldrop.lua",
+    [9818302554]  = "jjbi/jjbi_hub.lua",
+    [10571722689] = "mog-or-die/mog_auto.lua",
 }
 
 local path = SCRIPTS[game.GameId]

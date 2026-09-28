@@ -1,4 +1,6 @@
 name = "JJBI"
+place_id = 106022825094913
+game_id = 9818302554
 status = "v1"
 script = "jjbi_hub.lua"
 loader = 'loadstring(readfile("jjbi_hub.lua"))()'

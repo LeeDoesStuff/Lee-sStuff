@@ -1,4 +1,6 @@
 name = "Mog or Die"
+place_id = 130641102725850
+game_id = 10571722689
 status = "parked"
 script = "mog_auto.lua"
 ui = "Obsidian (SaveManager folder MogAuto)"
