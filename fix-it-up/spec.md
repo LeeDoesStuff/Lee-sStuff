@@ -132,3 +132,15 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 - **Hood after spawn:** a freshly RemoteLoad-spawned car ignores hood clicks for about 4.5 s (measured twice: 4.8 s and 4.4 s). The script clicks every 0.5 s for up to 10 s.
 - **Junk offer timing:** after a teleport, wait about 0.8 s before clicking. At 0.3 s one of five offers didn't come; at 0.8 s all did (offers arrive about 0.05 s after the click). Junk cars vanish when another player buys them, so re-check `model.Parent`.
 - **Don't show the game's own confirm dialog from a script.** Calling the captured `Confirmation` OnClientInvoke callback from the executor showed the dialog, but the player's Confirm click never answered it; only firing the button's connection did. The script's buy is now two steps: **Get price** (click the car, decline, read the price), then **Confirm purchase** (click again, accept only at that price or lower). A junk car's price stays the same across clicks.
+
+## Gold, distance, highway (measured 2026-09-28)
+
+- **Gold:** `Events.Exchange:FireServer("mtg", amount)` buys gold at `floor(Cache.GoldPrice + 0.5)` each. It worked from wherever the player stood, with no bank needed; 1 gold cost €20,147. `"gtm"` sells gold back at 80 % (20 % tax). GoldPrice drifts slowly: 20171 → 20147 over about 3 h. Gold has no in-game sink in the client code.
+- **Distance (`Status.KMs`) is counted by the server from the car really moving.** The client's fuel script tracks distance locally but never sends it. A car moved by a client-side `PivotTo` loop while the player sits in the DriveSeat **is counted in full**: 0.60 km moved → 0.59 km counted. At 60 studs/s that's about 0.9 km/min.
+  - Driving also pays money: about €3.7/s at 60 studs/s (+€151 in 40 s).
+  - 3937 studs = 1 km, from the game's own fuel script.
+  - The user set the km-per-car rule by hand (5.5, later lower). The server's actual refusal text for a km shortfall hasn't been seen yet.
+- **Traffic lanes** (`ReplicatedStorage.Assets.TrafficNodes.Lane1-3`) are real world positions on a highway north of town. Lane1 runs 3.45 km out and Lane3 3.59 km back. Node 1 sits inside a tunnel mouth.
+- **Farm route:** the long straight highway section `Workspace.Map.Map.Model.Road.Road`, 101 × 1121 studs, centre (-984.8, 0.52, 2100.2). Its ends, one lane in, are (-1076.83, 1.02, 2612.93) and (-843.24, 1.02, 1598.84). The user picked it because town was crowded.
+- **RemoteLoad** can come back without moving the car: the auto repair after a fresh junkyard buy ran with the car still at the junkyard. `spawnCar` now checks the car arrived within 40 studs of the target, and retries up to 3 times.
+- **Car dropdown:** rebuilding the dropdown's values cleared the player's pick. The script now restores the same car after each rebuild.

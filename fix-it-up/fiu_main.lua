@@ -150,7 +150,7 @@ local CFG = {
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
     autoLock = false, autoLockTier = "A", autoLockModels = {},
-    driveSpeed = 60, driveExtra = 2,
+    driveSpeed = 60, driveExtra = 2, driveRoute = "Highway",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
@@ -303,19 +303,24 @@ end
 
 -- server spawns the car at cf (the old instance is replaced); returns the new instance
 local function spawnCar(e, cf)
-    local old = carOf(e)
+    -- the server sometimes won't move a car (seen right after buying one at the junkyard): check it really arrived
+    -- near cf and retry; never hand back a car that is still somewhere else
+    local function ready(c)
+        return c and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") and c.Values:FindFirstChild("Engine")
+    end
     pcall(function() LP:RequestStreamAroundAsync(cf.Position, 5) end) -- a car spawned out of streaming range arrives empty
-    local ok, err = pcall(function() Events.Vehicles.RemoteLoad:InvokeServer(e, cf) end)
-    if not ok then log("spawn failed: " .. tostring(err)); return nil end
-    local t = os.clock()
-    repeat
-        local c = carOf(e)
-        if c and c ~= old and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") and c.Values:FindFirstChild("Engine") then task.wait(0.5); return c end
-        task.wait(0.1)
-    until os.clock() - t > 8
-    local c = carOf(e)
-    if c and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") and c.Values:WaitForChild("Engine", 3) then return c end
-    log("spawned car didn't load: " .. entryModel(e))
+    for try = 1, 3 do
+        local ok, err = pcall(function() Events.Vehicles.RemoteLoad:InvokeServer(e, cf) end)
+        if not ok then log("spawn failed: " .. tostring(err)) end
+        local t = os.clock()
+        repeat
+            local c = carOf(e)
+            if ready(c) and (c:GetPivot().Position - cf.Position).Magnitude < 40 then task.wait(0.5); return c end
+            task.wait(0.2)
+        until os.clock() - t > 4
+        task.wait(1.5 * try)
+    end
+    log(("the server wouldn't move %s there"):format(entryModel(e)))
     return nil
 end
 
@@ -1123,13 +1128,8 @@ local function streamed(model, name)
     return p:IsA("Model") and p:GetPivot().Position or p.Position
 end
 -- interiors sit underground (y -14 to -108); DoorDetector is the real front door
-local function garagePoints(label, g)
-    PLACES[#PLACES + 1] = { label .. " · door", function() return streamed(g, "DoorDetector") end }
-    PLACES[#PLACES + 1] = { label .. " · inside", function() return streamed(g, "SpawnLocation") end }
-    PLACES[#PLACES + 1] = { label .. " · car exit", function() return streamed(g, "ExitPos") end }
-    if g:GetAttribute("Price") and g.Name ~= "Default" or g:GetAttribute("ProductId") then
-        PLACES[#PLACES + 1] = { label .. " · for-sale sign", function() return streamed(g, "Sign") end }
-    end
+local function garagePoints(label, g) -- the user wants the front door only
+    PLACES[#PLACES + 1] = { label, function() return streamed(g, "DoorDetector") end }
 end
 local myGarageModel = function() return workspace.Garages:FindFirstChild(tostring(PD:FindFirstChild("GarageModel") and PD.GarageModel.Value or "Default")) end
 do
@@ -1141,14 +1141,6 @@ table.sort(garages, function(a, b) return (a:GetAttribute("Price") or math.huge)
 for _, g in ipairs(garages) do
     local price = g:GetAttribute("Price")
     garagePoints(("Garage %s%s"):format(g.Name, price and (" · " .. money(price)) or " · Robux"), g)
-end
-local auction = workspace.Utils:FindFirstChild("Auctions") and workspace.Utils.Auctions:FindFirstChild("Garages")
-if auction then
-    local list = auction:GetChildren()
-    table.sort(list, function(a, b) return (tonumber(a.Name:match("%d+")) or 0) < (tonumber(b.Name:match("%d+")) or 0) end)
-    for _, g in ipairs(list) do
-        PLACES[#PLACES + 1] = { "Auction " .. g.Name:gsub("Garage", "garage "), function() return streamed(g, "RootPos") end }
-    end
 end
 local PLACE_NAMES, PLACE_POS = {}, {}
 for _, p in ipairs(PLACES) do PLACE_NAMES[#PLACE_NAMES + 1] = p[1]; PLACE_POS[p[1]] = p[2] end
@@ -1327,7 +1319,7 @@ local function unload()
     for _, d in ipairs(Vehicles:GetDescendants()) do if d.Name == "FIU_Title" and d:IsA("Attachment") then d:Destroy() end end
     if Library then pcall(Library.Unload, Library) end
 end
-getgenv().FIU_MAIN = { unload = unload, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
+getgenv().FIU_MAIN = { unload = unload, lib = function() return Library end, sel = function() return selectedCar end, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
     repairCar = repairCar, sellCar = sellCar, buyJunk = buyJunk, spawnCar = spawnCar, log = logLines,
     machines = machines, liftCF = liftCF, garageSlots = garageSlots, goPlace = goPlace, places = PLACE_NAMES, cleanCar = cleanCar, paintCar = paintCar, buyStore = buyStore }
 
@@ -1470,7 +1462,11 @@ Timer:AddSlider("FIU_SellCd", { Text = "Sell timer", Default = math.ceil(CFG.sel
 local CarBox = Tabs.Car:AddLeftGroupbox("Your cars")
 local carDrop = CarBox:AddDropdown("FIU_CarPick", { Text = "Car", Values = {}, AllowNull = true })
 local carByLabel = {}
-carDrop:OnChanged(function(v) selectedCar = carByLabel[v] end)
+local keepingCar = false -- set while the list refreshes, so the rebuild can't clear your pick
+carDrop:OnChanged(function(v)
+    if keepingCar then return end
+    selectedCar = v and carByLabel[v] or nil
+end)
 CarBox:AddButton({ Text = "Spawn car here", Func = run("spawn", function()
     if selectedCar then local r = hrp(); spawnCar(selectedCar, r.CFrame * CFrame.new(0, 2, -12)) end
 end) })
@@ -1611,7 +1607,7 @@ local TpBox = Tabs.Teleport:AddLeftGroupbox("Shops & places")
 local placeDrop = TpBox:AddDropdown("FIU_Place", { Text = "Place", Values = shopNames, AllowNull = true })
 TpBox:AddButton({ Text = "Go", Func = run("tp", function() if placeDrop.Value then goPlace(placeDrop.Value) end end) })
 local GarBox = Tabs.Teleport:AddLeftGroupbox("Garages")
-GarBox:AddLabel("Every garage: door, inside, car exit and the for-sale sign. Auction garages at the bottom.", true)
+GarBox:AddLabel("Teleports to the front door of each garage.", true)
 local garDrop = GarBox:AddDropdown("FIU_GaragePlace", { Text = "Garage", Values = garageNames, AllowNull = true })
 GarBox:AddButton({ Text = "Go", Func = run("tp garage", function() if garDrop.Value then goPlace(garDrop.Value) end end) })
 TpBox:AddToggle("FIU_BringCar", { Text = "Bring selected car", Default = CFG.bringCar,
@@ -1713,7 +1709,16 @@ task.spawn(function()
                 cvals[#cvals + 1] = l; carByLabel[l] = e
             end
             local ckey = table.concat(cvals, "|")
-            if ckey ~= lastCarVals then lastCarVals = ckey; carDrop:SetValues(cvals) end
+            if ckey ~= lastCarVals then
+                lastCarVals = ckey
+                -- a car's label changes when it's locked/sold/bought; keep the same car picked across the rebuild
+                keepingCar = true
+                carDrop:SetValues(cvals)
+                local keepLabel
+                for l, e2 in pairs(carByLabel) do if e2 == selectedCar then keepLabel = l end end
+                carDrop:SetValue(keepLabel)
+                keepingCar = false
+            end
             if selectedCar and not selectedCar.Parent then selectedCar = nil end
             local e = selectedCar
             if e then
@@ -2013,61 +2018,97 @@ do
     end
 
     local farm = { on = false, status = "off", startKm = 0 }
-    local function laneNodes()
-        local lane = RS.Assets:FindFirstChild("TrafficNodes") and RS.Assets.TrafficNodes:FindFirstChild("Lane1")
-        local nodes = {}
-        for _, n in ipairs(lane and lane:GetChildren() or {}) do if tonumber(n.Name) and n:IsA("BasePart") then nodes[#nodes + 1] = n end end
-        table.sort(nodes, function(a, b) return tonumber(a.Name) < tonumber(b.Name) end)
-        local pts = {}
-        for i, n in ipairs(nodes) do pts[i] = n.Position end
-        return pts
+    -- route: back and forth along the city's longest straight road (the traffic lanes run on a far-off highway)
+    local function roadRoute()
+        local best
+        for _, d in ipairs(workspace.Map.FirstCity.Roads:GetDescendants()) do
+            if d:IsA("BasePart") and d.Name == "Road" and d.Size.Y < 1 then
+                local len = math.max(d.Size.X, d.Size.Z)
+                if not best or len > best.len then best = { part = d, len = len } end
+            end
+        end
+        if not best then return nil end
+        local p = best.part
+        local alongX = p.Size.X >= p.Size.Z
+        local axis = alongX and p.CFrame.RightVector or p.CFrame.LookVector
+        local side = alongX and p.CFrame.LookVector or p.CFrame.RightVector
+        local top = p.Position.Y + p.Size.Y / 2
+        local mid = Vector3.new(p.Position.X, top, p.Position.Z) + side * 8 -- keep to one lane
+        local half = best.len / 2 - 30
+        return { mid - axis * half, mid + axis * half }, top
+    end
+
+    -- highway: the long straight stretch north of town the player picked (1121 x 101 studs, centre ~(-985, 1, 2100),
+    -- measured 2026-09-28). Back and forth along one lane of it.
+    local HWY_AT = Vector3.new(-984.75, 0.52, 2100.19)
+    local function highwayRoute()
+        local best
+        pcall(function() LP:RequestStreamAroundAsync(HWY_AT, 5) end)
+        for _, d in ipairs(workspace.Map.Map:GetDescendants()) do
+            if d:IsA("BasePart") and d.Size.Y < 3 and math.max(d.Size.X, d.Size.Z) > 800 and math.min(d.Size.X, d.Size.Z) > 60 then
+                local dist = (d.Position - HWY_AT).Magnitude
+                if dist < 60 and (not best or dist < best.dist) then best = { part = d, dist = dist } end
+            end
+        end
+        -- not streamed in yet: the ends measured on 2026-09-28 (both on the asphalt at y 1.02)
+        if not best then return { Vector3.new(-1076.83, 1.02, 2612.93), Vector3.new(-843.24, 1.02, 1598.84) }, 1.02 end
+        local p = best.part
+        local alongX = p.Size.X >= p.Size.Z
+        local axis = alongX and p.CFrame.RightVector or p.CFrame.LookVector
+        local side = alongX and p.CFrame.LookVector or p.CFrame.RightVector
+        local len, wid = math.max(p.Size.X, p.Size.Z), math.min(p.Size.X, p.Size.Z)
+        local top = p.Position.Y + p.Size.Y / 2
+        local mid = Vector3.new(p.Position.X, top, p.Position.Z) + side * (wid * 0.25) -- a lane on one carriageway
+        local half = len / 2 - 40
+        return { mid - axis * half, mid + axis * half }, top
     end
 
     local function farmRun()
         local e = selectedCar
         if not e then farm.status = "pick a car in the Car tab first"; return end
-        local pts = laneNodes()
-        if #pts < 3 then farm.status = "no traffic route found"; return end
-        local car = spawnCar(e, CFrame.lookAt(pts[1] + Vector3.new(0, 3, 0), pts[2] + Vector3.new(0, 3, 0)))
+        local pts, top, cycle
+        if CFG.driveRoute == "Highway" then
+            pts, top = highwayRoute()
+        else
+            pts, top = roadRoute()
+        end
+        if not pts then farm.status = "no route found"; return end
+        pcall(function() LP:RequestStreamAroundAsync(pts[1], 5) end)
+        local car = spawnCar(e, CFrame.lookAt(pts[1] + Vector3.new(0, 4, 0), pts[2] + Vector3.new(0, 4, 0)))
         if not car then farm.status = "car didn't spawn"; return end
         local h, seat = hum(), car:FindFirstChild("DriveSeat")
         if not (h and seat) then farm.status = "no seat"; return end
         tpTo(seat.CFrame * CFrame.new(0, 3, 0))
         task.wait(0.3)
         seat:Sit(h)
-        task.wait(0.8)
+        task.wait(1.2) -- let it land before measuring its ride height
         if h.SeatPart ~= seat then farm.status = "couldn't sit in the car"; return end
-        local groundOff = (function() -- how high the car's pivot sits above the road
-            local hit = workspace:Raycast(car:GetPivot().Position + Vector3.new(0, 2, 0), Vector3.new(0, -30, 0), rayParams)
-            return hit and (car:GetPivot().Position.Y - hit.Position.Y) or 2.5
-        end)()
+        local ride = math.clamp(car:GetPivot().Position.Y - (top or pts[1].Y), 0.5, 6)
         farm.startKm = tonumber(Status.KMs.Value) or 0
+        farm.moved = 0
         local i = 2
-        local conn
-        conn = RunService.Heartbeat:Connect(function(dt)
-            if not farm.on or h.SeatPart ~= seat or not car.Parent then return end
+        while farm.on and running do
+            local dt = RunService.Heartbeat:Wait()
+            if h.SeatPart ~= seat then farm.status = "stopped: you left the car"; break end
+            if not car.Parent then farm.status = "stopped: the car despawned"; break end
             local pos = car:GetPivot().Position
             local target = pts[i]
             local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
-            if flat.Magnitude < 10 then i = i % #pts + 1; return end
-            local dir = flat.Unit
-            local nextPos = pos + dir * math.min(CFG.driveSpeed * dt, flat.Magnitude)
-            rayParams.FilterDescendantsInstances = { char(), Vehicles, MoveParts }
-            local hit = workspace:Raycast(nextPos + Vector3.new(0, 6, 0), Vector3.new(0, -40, 0), rayParams)
-            local y = hit and (hit.Position.Y + groundOff) or pos.Y
-            car:PivotTo(CFrame.lookAt(Vector3.new(nextPos.X, y, nextPos.Z), Vector3.new(nextPos.X, y, nextPos.Z) + dir))
-            seat.AssemblyLinearVelocity = dir * CFG.driveSpeed -- the speedo and the server see a car moving at this speed
-        end)
-        farm.status = "driving"
-        while farm.on and running do
+            if flat.Magnitude < 6 then
+                if cycle then i = i % #pts + 1 else i = 3 - i end -- highway: next node, loops round; city road: turn around
+            else
+                local dir = flat.Unit
+                local step = math.min(CFG.driveSpeed * dt, flat.Magnitude)
+                local roadY = top or target.Y -- highway nodes carry the road height
+                local nextPos = Vector3.new(pos.X, roadY + ride, pos.Z) + dir * step
+                car:PivotTo(CFrame.lookAt(nextPos, nextPos + dir))
+                seat.AssemblyLinearVelocity = dir * CFG.driveSpeed -- the speedo (and anything reading velocity) sees real speed
+                farm.moved += step
+            end
             local km, _, owed = numbers()
-            farm.status = ("driving · %.2f km this run · %s"):format(km - farm.startKm,
-                owed + CFG.driveExtra > 0 and ("%.2f km to go"):format(owed + CFG.driveExtra) or "target reached")
-            if h.SeatPart ~= seat then farm.status = "stopped: you left the car"; break end
             if owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
-            task.wait(1)
+            farm.status = ("driving · moved %.2f km · counted %.2f km · %.2f km to go"):format(farm.moved / 3937, km - farm.startKm, math.max(0, owed + CFG.driveExtra))
         end
-        conn:Disconnect()
         pcall(function() seat.AssemblyLinearVelocity = Vector3.zero end)
         farm.on = false
     end
@@ -2078,7 +2119,7 @@ do
         Tooltip = "Learned from the server's message when it refuses a sale for distance; set it by hand if you know it",
         Callback = function(v) D.kmPerCar = v; saveD() end })
     local FarmBox = Tabs.Drive:AddRightGroupbox("Distance farm")
-    FarmBox:AddLabel("Spawns the car picked in the Car tab on the traffic route, seats you and drives the loop until your distance debt is paid plus the extra below. Get out of the car to stop.", true)
+    FarmBox:AddLabel("Spawns the car picked in the Car tab on the route, seats you and drives until your distance debt is paid plus the extra below. Get out of the car to stop.", true)
     local farmToggle = FarmBox:AddToggle("FIU_DriveFarm", { Text = "Farm distance", Default = false, Callback = function(v)
         if v and not farm.on then
             farm.on = true
@@ -2095,6 +2136,8 @@ do
             farm.on = false
         end
     end })
+    FarmBox:AddDropdown("FIU_DriveRoute", { Text = "Route", Values = { "Highway", "City road" }, Default = CFG.driveRoute,
+        Tooltip = "Highway: back and forth on the long straight stretch north of town. City road: the longest straight road in town.", Callback = set("driveRoute") })
     FarmBox:AddSlider("FIU_DriveSpeed", { Text = "Speed", Default = CFG.driveSpeed, Min = 20, Max = 150, Rounding = 0, Suffix = " studs/s",
         Tooltip = "3937 studs = 1 km. Faster finishes sooner but looks less like real driving.", Callback = set("driveSpeed") })
     FarmBox:AddSlider("FIU_DriveExtra", { Text = "Keep driving past the debt", Default = CFG.driveExtra, Min = 0, Max = 50, Rounding = 0, Suffix = " km",
