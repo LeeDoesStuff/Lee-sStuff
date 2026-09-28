@@ -18,11 +18,11 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 **User preferences:**
 - Repair at the Dealership stations (the "secondary garage"), not the busy Pitstop.
 - Teleport the car with RemoteLoad; don't drag it by sitting in it.
-- Respect the sell timer after a purchase. Its length is still unmeasured; the script learns it from the refusal text.
+- Respect the sell timer after a purchase: measured at 184 s. The refusal text is "You need to wait N seconds to sell this car".
 - Wants teleports for every shop.
 - NEVER sell the collector cars: see fiu-never-sell-collection.
 
-**Garage:** the Default garage has 3 slots. As of 2026-09-28 it holds a single Merquis Maibac S650 (collection). I left that car parked at the sell NPC after a test. The script refuses to sell while it's there.
+**Garage:** the Default garage has 3 slots. The user's Merquis Maibac S650 is locked as a favorite and is no longer parked at the sell NPC.
 
 **Server hop:** merged on 2026-09-28 into the fiu_main "Server hop" tab, at the user's request.
 - It keeps state in `fiu_hop.json`, and re-queues `fiu_main.lua` via queue_on_teleport.
