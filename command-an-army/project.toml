@@ -1,0 +1,9 @@
+name = "Command An Army"
+place_id = 92949164250558
+root_place_id = 101770480176177
+game_id = 10258991999
+status = "v1 (untested)"
+script = "caa_farm.lua"
+loader = 'loadstring(readfile("caa_farm.lua"))()'
+ui = "Obsidian"
+notes = ["notes.md", "spec.md"]

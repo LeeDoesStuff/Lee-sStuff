@@ -108,6 +108,8 @@ Finding where money comes from is step one, not the analysis. Before writing cod
 - The player will change settings and re-save the autoload config (here: Auto Equip on, "Stay whole event"). **Read their config before testing and don't overwrite it.**
 - Farm loops start before the UI's autoload applies. Every default must be safe (all automation off), or the first seconds run on defaults.
 - **A rejoin changes the server, so plot index, PID, and even which plot you own all change.** Resolve them every session; never hardcode them.
+- **Never sell, move or reset the player's own items during recon, and never gate that on a confirm hook alone.** Fix It Up (2026-09-27): to test the sell path, I respawned the user's collector Merquis into the sell zone and fired the prompt. The hook declined and nothing was lost, but the user was furious. Test sells only on an item the test bought. Build sell features as an **allowlist of what the script bought** (persisted GUIDs), never as a blocklist.
+- **Scheduled test steps can outlive a game timer.** A part left loose between two experiments was deleted by the game's own 90 s cleanup, and I had to buy a replacement. Before a multi-step test, find the game's cleanup and despawn timers (grep `DroppedAt`, `Destroy`, `Debris`, `DeletePart`).
 - **"The player is using a panel" pauses need a timeout.** The game opens panels by itself too (an update log after an update), and nobody closes them on an unattended client. The farm now ignores an `OpenPanel` older than 90 s (§8.6 *popups*).
 
 ## 5b. Tooling: the executor can fail, so make the farm verifiable without it
@@ -118,6 +120,19 @@ Finding where money comes from is step one, not the analysis. Before writing cod
 - **Vendor UI libraries into the workspace** (`readfile`, with `HttpGet` only as fallback). A hung GitHub fetch at load stalls the reload, and the whole script queue with it.
 - **Have the farm report itself:** a log file plus a **heartbeat status line every 60 s**, and one-time dry-run previews (e.g. "junk by current rules: 33 parts"). Then every test can be read from the log alone, with no bridge needed.
 - Queued scripts `readfile()` at execution time, so redeploying the file before a jammed queue drains is safe.
+- **Recon spy pattern** (*Command An Army*, 2026-09-27): a passive logger for three things, written to a workspace file every 3 s:
+  - `__namecall` `FireServer`/`InvokeServer` calls, tagged GAME/ME with `checkcaller()`;
+  - `OnClientEvent` on every remote;
+  - `LocalPlayer.AttributeChanged`.
+
+  The player's normal play then yields the exact argument shapes. Two catches:
+  - **Potassium's `appendfile` silently fails on a missing file**, so `writefile` it first.
+  - Buffer-payload snapshot channels flood about 10 KB/s. To mute them without touching the game's own handlers, disable only your connection: `getconnections(r.OnClientEvent)`, keep the one where `isexecutorclosure(c.Function)` is true, then `:Disable()` it.
+
+- **Recon spy v2** (*Fix It Up*): buffer log lines in memory and flush once a second, and drop high-rate values (Fuel, Odometer, suspension). The v1 spy did one `appendfile` per value change and went silent after about 10 minutes of a car's Fuel ticking at 60 Hz.
+- **StreamingEnabled games:** models stay but their parts are missing until streamed in (`GetPivot` still works on the Model). Call `LocalPlayer:RequestStreamAroundAsync(pos)` before reading a machine's parts or firing a remote prompt/ClickDetector.
+- **Purchase confirmations through `RemoteFunction.OnClientInvoke`:** take the original with `getcallbackvalue`, then install a wrapper that logs the text and asks a per-action decision function. **Decline** mode reads real prices and names (hidden car names, sell offers) without spending. Restore the original on unload.
+- **Check the game's own "spawn/load at CFrame" remotes before physically dragging things.** Fix It Up's `RemoteLoad(garageEntry, cframe)` spawns the car server-side anywhere, with no seat or ownership tricks.
 
 ## 6. Build the UI categorized from the first version
 
@@ -989,6 +1004,11 @@ Engine-behaviour sources: [spoofed touches aren't range-checked (2025)](https://
   - → only kicks locally → hook `Kick` yourself (`__namecall` with self == LP, plus `hookfunction` for `LP.Kick(LP)`): block it **and log** the reason, `debug.traceback()` and `getcallingscript()`, which tells you what tripped it. IY `;antikick` blocks the same kicks but logs nothing, and server kicks get through either way.
   - → reports through a remote → don't block the remote (the server may expect that traffic). Stop doing what trips it, e.g. leave `WalkSpeed` alone.
   - → answers a heartbeat (an `OnClientInvoke` callback, or a periodic ping the script replies to) → never destroy or disable that script or `:Disable()` its connections. The server kicks when the answers stop, often many seconds later, which hides the cause.
+- **Also read the anti-cheat's config module, not just its controller.** *Command An Army* ships `ClientIntegrityController` with every probe switched off by `ClientSecurityProtocol.AntiCheatEnabled = false`, and an update can flip that flag. Its design shows what gets caught:
+  - A **CoreGui asset probe**: `ContentProvider:PreloadAsync({CoreGui}, cb)` reports any `rbxassetid://` not on its allowlist, so executor UI with image assets under CoreGui is detectable. `gethui()` placement matters.
+  - A **VM hook timing probe** times `debug.info` calls against an empty loop, which catches hooks on `debug.info`.
+  - A challenge/response over a remote, so never disable its connection.
+  - The script must read the flag at runtime and pause or warn when it flips.
 - **Verify →** a 30-minute farm run with the logging Kick hook shows 0 blocked kicks.
 
 #### S5 · If you get disconnected → read the code before reacting
@@ -1031,6 +1051,7 @@ Engine-behaviour sources: [spoofed touches aren't range-checked (2025)](https://
 - **Survive teleports →** `queue_on_teleport` is one-shot: the queued run must queue itself again, and queuing twice starts two farms (guard with a `getgenv()` flag or unload hook). `getgenv()` is wiped on teleport, so settings and run state live in a file. Potassium's `autoexec` folder, where the bridge loader and IY already live, also covers crashes and manual relaunches; that's only safe because every default is off (§5).
 - **Watch out →** reserved match servers (`PrivateServerId ~= ""`, `PrivateServerOwnerId == 0`) can't be rejoined by JobId; recovery means going back to the lobby. IY `;antiteleport` blocks only LocalScript teleports (same-place rejoins still pass); a server `TeleportAsync`, which most lobby → match and soft-shutdown flows use, can't be blocked. On `TeleportInitFailed`, retry with backoff.
 - **Watch out →** the Potassium PID changes after every hop (§5b). Rewards granted as you leave arrive after the hop, so check them on the other side.
+- **Watch out → the onboarding place can run an older build.** *Command An Army* (2026-09-27): the Tutorial place's dump missed about 60 scripts and 40 remotes that the New Player Server has: guilds, ranked, traits, shop, gifts, inventory UI and an anti-cheat controller. About 90 shared controllers also differed. **Recon the place where the farm will actually run**, diff it against any earlier dump, and don't analyze until you have that dump. A `queue_on_teleport` spy with a one-time decompile of the next place catches the move automatically.
 - **Verify →** a lobby → match → lobby round trip, with the log showing each PlaceId and the farm resuming.
 
 #### S11 · If you need to server-hop → one API call per hop
