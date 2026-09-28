@@ -657,25 +657,22 @@ local function sellCar(e, manual)
 end
 
 -- ============================== buy ==============================
--- manual = the player confirms in the game's own dialog; otherwise answer by the Auto limits
-local function buyJunk(info, manual)
+-- opts.quote: only read the price (declines). opts.max: accept up to this price (a quoted price); default = Auto limits.
+-- The game's own dialog is never used: shown from a script it didn't take the player's click (measured 2026-09-28).
+local function buyJunk(info, opts)
+    opts = opts or {}
     local m = info.model
     if not m.Parent or not m:FindFirstChild("ClickDetector") then return nil, "car gone" end
-    if #entries() >= garageSlots() then return nil, ("garage full (%d/%d)"):format(#entries(), garageSlots()) end
-    if not manual and myMoney() - info.lo < CFG.reserve then return nil, "reserve" end
+    if not opts.quote and #entries() >= garageSlots() then return nil, ("garage full (%d/%d)"):format(#entries(), garageSlots()) end
+    local max = opts.max or CFG.buyMaxPrice
+    local reserve = opts.max and 0 or CFG.reserve -- a price you confirmed yourself ignores the auto reserve
+    if not opts.quote and myMoney() - info.lo < reserve then return nil, "reserve" end
     local before = {}
     for _, g in ipairs(entries()) do before[g] = true end
-    local asked, answered, price, yes = false, false, nil, false
+    local asked, price, yes = false, nil, false
     confirmFn = function(text)
         asked, price = true, parsePrice(text)
-        if manual then
-            local fr = LP.PlayerGui:FindFirstChild("HUD") and LP.PlayerGui.HUD.Frames:FindFirstChild("Confirmation")
-            if fr and fr.Visible then fr.Visible = false; task.wait(0.3) end -- a stale dialog makes the game's prompt return nil at once
-            local r = origConfirm(text)
-            if r == nil then task.wait(0.3); r = origConfirm(text) end
-            yes = r == true
-        else yes = price ~= nil and price <= CFG.buyMaxPrice and myMoney() - price >= CFG.reserve end
-        answered = true
+        yes = not opts.quote and price ~= nil and price <= max and myMoney() - price >= reserve
         return yes
     end
     -- the server checks where it thinks you are: give the teleport time to replicate, retry the click
@@ -688,10 +685,6 @@ local function buyJunk(info, manual)
         repeat task.wait(0.1) until asked or os.clock() - t > 2.5
         if asked then break end
     end
-    if asked and not answered then -- the player is still looking at the dialog
-        local t = os.clock()
-        repeat task.wait(0.1) until answered or os.clock() - t > 60
-    end
     local new
     if yes then
         local t = os.clock()
@@ -701,14 +694,21 @@ local function buyJunk(info, manual)
         until new or os.clock() - t > 5
     end
     confirmFn = nil
+    if opts.quote then
+        if price then return nil, price end
+        return nil, nil, asked and "no price in the offer" or "the server never offered the car (someone else bought it, or you're too far)"
+    end
     if new then
         OWNED[new.Name] = { model = entryModel(new), boughtAt = os.time(), price = price }
         saveOwned()
         return new, ("bought %s for %s"):format(entryModel(new), money(price))
     end
     if not asked then return nil, "the server never offered the car (someone else bought it, or you're too far)" end
-    if not yes then return nil, manual and "cancelled" or ("declined at %s"):format(money(price)) end
-    return nil, "confirmed but the car didn't arrive"
+    if not yes then
+        if price and price > max then return nil, ("price went up: %s"):format(money(price)) end
+        return nil, ("declined at %s"):format(money(price))
+    end
+    return nil, "accepted but the car didn't arrive"
 end
 
 -- ============================== junk scan + ESP ==============================
@@ -1379,27 +1379,51 @@ List:AddButton({ Text = "Teleport to car", Func = run("tp junk", function()
     local j = junkByLabel[junkDrop.Value]
     if j and j.model.Parent then tpTo(j.model:GetPivot() * CFrame.new(0, 3, 8)) end
 end) })
-List:AddButton({ Text = "Buy car", Tooltip = "Teleports to the car and opens the game's buy dialog with the real price", Func = function()
-    local j = junkByLabel[junkDrop.Value]
-    if not j then notify("Pick a car in the list first") return end
-    if manualBuy then notify("Already buying a car") return end
+local quote -- { j, price, t }: the price you saw, valid for 60 s
+local quoteLabel
+local function queued(what, f) -- one job at a time: wait for a running repair/sell instead of refusing
+    if manualBuy then notify("Already busy with a buy") return end
     manualBuy = true -- the auto loop starts nothing new while this is pending
     task.spawn(function()
         if busy then
-            notify("Waiting for " .. tostring(busyWhat) .. " to finish, then buying")
+            notify("Waiting for " .. tostring(busyWhat) .. " to finish")
             local t = os.clock()
             repeat task.wait(0.5) until not busy or os.clock() - t > 180
         end
         if not busy then
-            busy, busyWhat = true, "buying " .. j.name
-            local ok, e, msg = pcall(buyJunk, j, true)
+            busy, busyWhat = true, what
+            local ok, err = pcall(f)
             busy = false
-            msg = ok and msg or ("buy error: " .. tostring(e))
-            log(msg); notify(msg)
+            if not ok then log("buy error: " .. tostring(err)); notify("buy error: " .. tostring(err)) end
         end
         manualBuy = false
     end)
+end
+List:AddButton({ Text = "Get price", Tooltip = "Teleports to the car and reads its real price (buys nothing)", Func = function()
+    local j = junkByLabel[junkDrop.Value]
+    if not j then notify("Pick a car in the list first") return end
+    queued("getting a price", function()
+        local _, price, why = buyJunk(j, { quote = true })
+        if price then
+            quote = { j = j, price = price, t = os.clock() }
+            local msg = ("%s: %s (+%s at 100%%). Press Confirm purchase."):format(j.name, money(price), money(price * j.pm))
+            quoteLabel:SetText(msg); notify(msg); log("price " .. msg)
+        else
+            quote = nil
+            quoteLabel:SetText(tostring(why)); notify(tostring(why))
+        end
+    end)
 end })
+List:AddButton({ Text = "Confirm purchase", Tooltip = "Buys the car you just priced, at that price or lower", Func = function()
+    if not quote or os.clock() - quote.t > 60 or not quote.j.model.Parent then notify("Get a price first (it's good for 60 s)") return end
+    local q = quote
+    queued("buying " .. q.j.name, function()
+        local _, msg = buyJunk(q.j, { max = q.price })
+        quote = nil
+        quoteLabel:SetText(msg); log(msg); notify(msg)
+    end)
+end })
+quoteLabel = List:AddLabel("Pick a car, Get price, then Confirm purchase.", true)
 local junkLabelBox = List:AddLabel("-", true)
 
 -- Auto
