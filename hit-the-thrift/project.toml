@@ -1,5 +1,8 @@
 name = "Hit The Thrift"
 place_id = 122454884469606
 game_id = 8391342266
-status = "recon"
+status = "esp v1"
+script = "thrift_esp.lua"
+loader = 'loadstring(readfile("thrift_esp.lua"))()'
+ui = "Obsidian"
 notes = ["notes.md", "spec.md"]

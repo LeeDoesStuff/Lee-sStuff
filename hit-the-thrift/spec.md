@@ -63,6 +63,17 @@ When a Craig sale is over $1M, the client pops "Craig can't afford this! … Ric
   | Mythical | 20 | ≤ 5.95M |
   | Divine | 1 | 13.6M |
 
+## Racks, shelves and displays *(code + measured 2026-09-27)*
+
+- **One format for every item holder:** a part with attribute `Main = true` (`Rack_Main`, `Shelf_Main`, `Display_Main`). Each child slot (a Model named `1`–`9`, or a MeshPart for jewelry) carries `ItemKey`, either `"Key"` or `"Key_Color=Blue"`. Rarity is `ClothingModule.Items[Key].Rarity`. The rack UI also resolves numeric IDs through `GetItem`.
+- The holder's rack Model carries `ID`, `Location` (`Floor1`, `Floor2`, `Floor3-1`, `Floor3-2`, `Basement`, `Jewelry`), `ItemType` (Clothing / Shoes / Glasses / Chain), `Aura` (the gate: 0, 1k, 15k, 75k, 150k, 1M, 5M), and on some `RarityPool` (`JewelryRarity`, `Supreme`) or `MaxItems`.
+- Holders: 18 in `workspace.Thrift.Racks` (clothing racks hold 9, shoe shelves 6, glasses shelves 6) and 3 in `workspace.JewelryStore.Displays` (4 each; `JewelryDisplay3` sits in the basement behind 5M Aura). The flea market stalls have a `Main` part but no item models; their stock comes through `getFleaStock`.
+- `ClothingModule.Rarities`: Common 72, Uncommon 25, Rare 2.5, Epic 0.5 (`Chance`); Legendary, Mythical and Divine have 0, so those come only from rack `RarityPool`s. Colors are in the same table.
+- **Purchases are per player:** the rack payload's `PurchasedItems` filters your own buys out of the menu, and `ClothingDeleteEvent` deletes the bought slot model on your client only. After a rejoin, the models of items you already bought reappear until the next restock (not tested).
+- `RestockEvent(prompt, items)` swaps rack stock. The rack price is `Item.Price`, or 80% of it for Morieli members (`MorieliPricing.DisplayPrice`, attribute `MorieliMember`).
+- Example (measured): Silver Spades Hoodie on Rack24 costs $1.5M, with catalog `Resale` 2.55M. Detergent can push the finished piece to about $6.4M.
+- **ESP:** `%USERPROFILE%\rblx\thrift_esp.lua` (v1). Loader: `loadstring(readfile("thrift_esp.lua"))()`. It shows a dot per item colored by rarity, a per-rack summary, an outline in the best rarity's color, and a Finds list, with toggles and colors per rarity. Config folder: `ThriftESP`.
+
 ## Currencies and systems seen (not mapped yet)
 
 - leaderstats: `Thrift Bucks` (a StringValue, abbreviated like "636.7K") and `Aura`.

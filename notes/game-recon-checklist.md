@@ -95,6 +95,7 @@ Finding where money comes from is step one, not the analysis. Before writing cod
 - **List every executor-specific call** (`getgc`, `debug.*`, `hookfunction`, `require` of game modules, `gethui`) and **check once that each exists.** When one is missing, switch off the feature that needs it. Don't retry in a loop.
 - **Never rescan memory on a timer while nothing is found.** A ~100 ms hitch on Potassium can be seconds on a weaker executor, and games have watchdogs (Warfare's weapon equip gives up after 6 s).
 - **Don't `require` game modules for small helpers.** Inline the ~20 lines instead; lower-level executors emulate require in their own ways.
+  - Even on Potassium, **calling** a game module function drops the thread's capabilities until its next yield. After that, `gethui()` and CoreGui access fail with "lacking capability Plugin". *Hit The Thrift:* one `MorieliPricing.DisplayPrice` call broke the ESP loop. Reading a module's tables (items, rarities) is safe.
 - **Test the stripped path locally:** load the script with `setfenv` on an environment where those globals are nil.
 - **When a tester reports a break, get the game's own console error first** (F9). Games often print where they got stuck.
 
