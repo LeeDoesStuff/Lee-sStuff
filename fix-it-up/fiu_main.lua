@@ -156,7 +156,7 @@ local CFG = {
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
     autoLock = false, autoLockTier = "A", autoLockModels = {},
-    driveSpeed = 85, driveExtra = 2, driveRoute = "Highway", swapOld = "Store in inventory",
+    driveSpeed = 85, driveExtra = 2, farmYield = false, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
@@ -176,6 +176,12 @@ local confirmFn, lastConfirm = nil, nil -- confirmFn(text) -> bool while the scr
 CONFIRM.OnClientInvoke = function(text, ...)
     lastConfirm = { t = os.clock(), text = tostring(text) }
     if confirmFn then return confirmFn(tostring(text)) == true end
+    -- the game's own sell prompt (you at the NPC): never let it sell a locked car
+    local selling = tostring(text):match("sell your (.-) for [%d,]+")
+    if selling and getgenv().FIU_MAIN and getgenv().FIU_MAIN.lockedAtNpc and getgenv().FIU_MAIN.lockedAtNpc(selling) then
+        task.defer(function() pcall(function() getgenv().FIU_MAIN.lib():Notify(selling .. " is locked: sale blocked", 6) end) end)
+        return false
+    end
     return origConfirm(text, ...)
 end
 
@@ -1049,7 +1055,7 @@ local function autoStep()
     -- 1) finish cars we bought: repair, then sell
     for _, e in ipairs(entries()) do
         maybeAutoLock(e) -- also catches cars bought before auto lock was turned on
-        local o = not isFav(e) and OWNED[e.Name]
+        local o = OWNED[e.Name] -- locked (favorite) script-bought cars still get repaired, they're just never sold
         if o and os.time() >= (o.nextTry or 0) then
             if CFG.autoRepair and not o.repaired then
                 busy, busyWhat = true, "repairing " .. entryModel(e)
@@ -1063,7 +1069,7 @@ local function autoStep()
                 busy = false
                 return
             end
-            if CFG.autoSell and (o.repaired or not CFG.autoRepair) then
+            if CFG.autoSell and not isFav(e) and e.Name ~= CFG.farmCarGuid and (o.repaired or not CFG.autoRepair) then
                 local left = sellCooldownLeft(e)
                 if left > 0 then
                     autoStatus = ("waiting sell timer for %s: %dm %02ds"):format(entryModel(e), left // 60, left % 60)
@@ -1340,7 +1346,16 @@ local function unload()
     for _, d in ipairs(Vehicles:GetDescendants()) do if d.Name == "FIU_Title" and d:IsA("Attachment") then d:Destroy() end end
     if Library then pcall(Library.Unload, Library) end
 end
-getgenv().FIU_MAIN = { unload = unload, lib = function() return Library end, sel = function() return selectedCar end, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
+getgenv().FIU_MAIN = { unload = unload, lib = function() return Library end,
+    lockedAtNpc = function(model) -- a locked car with this model name is out and near the Used Cars NPC
+        local npc = workspace.Utils:FindFirstChild("SellCar")
+        local at = npc and npc:GetPivot().Position
+        for _, e in ipairs(entries()) do
+            local c = carOf(e)
+            if isFav(e) and entryModel(e) == model and c and (not at or (c:GetPivot().Position - at).Magnitude < 60) then return true end
+        end
+        return false
+    end, sel = function() return selectedCar end, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
     repairCar = repairCar, sellCar = sellCar, buyJunk = buyJunk, spawnCar = spawnCar, log = logLines,
     machines = machines, liftCF = liftCF, garageSlots = garageSlots, goPlace = goPlace, places = PLACE_NAMES, cleanCar = cleanCar, paintCar = paintCar, buyStore = buyStore }
 
@@ -1551,6 +1566,32 @@ RepBox:AddToggle("FIU_Replace", { Text = "Replace parts with no machine", Defaul
 RepBox:AddToggle("FIU_PartEsp", { Text = "Show my loose parts", Default = false, Tooltip = "Wear + the game's 90 s delete countdown", Callback = set("partEsp") })
 
 local ActBox = Tabs.Car:AddRightGroupbox("Car actions")
+-- the pump's own remote works from anywhere (measured: +1 L for €2 far from any station); pays the cheapest station's price
+ActBox:AddButton({ Text = "Refuel", Tooltip = "Fills the tank of the car picked above from anywhere, at the cheapest station's price", Func = run("refuel", function()
+    local e = selectedCar
+    if not e then notify("Pick a car above first") return end
+    local car = carOf(e)
+    if not car then notify("Spawn the car first (Spawn car here)") return end
+    local tc = car:FindFirstChild("A-Chassis Tune") and car["A-Chassis Tune"]:FindFirstChild("TuneChanges")
+    local max = tc and tc:FindFirstChild("MaxFuel") and tc.MaxFuel.Value or 40
+    local kind = tc and tc:FindFirstChild("Fuel") and tc.Fuel.Value or "Petrol"
+    local fuel = car.Values:FindFirstChild("Fuel")
+    local need = math.floor((max - (fuel and fuel.Value or 0)) * 100) / 100
+    if need <= 0.05 then notify("The tank is already full") return end
+    local price
+    for _, d in ipairs(workspace.Map:GetDescendants()) do
+        local p = d.Name == "Prompts" and d:GetAttribute(kind .. "Price") -- each station keeps its prices on its Prompts
+        if p and (not price or p < price) then price = p end
+    end
+    price = price or 1.6
+    local cost = math.round(need * price)
+    if myMoney() < cost then notify("Not enough money for " .. money(cost)) return end
+    local before = fuel and fuel.Value or 0
+    Events.Vehicles.GasStation:FireServer(car, need, price)
+    task.wait(1.5)
+    local msg = ("Refuelled %s: %.1f L for %s"):format(entryModel(e), (fuel and fuel.Value or 0) - before, money(cost))
+    log(msg); notify(msg)
+end) })
 ActBox:AddButton({ Text = "Clean", Tooltip = "Puts the car in the nearest car wash and washes it (~10 s)", Func = run("clean", function()
     if not selectedCar then return end
     local _, msg = cleanCar(selectedCar)
@@ -2795,8 +2836,22 @@ do
         return { mid - axis * half, mid + axis * half }, top
     end
 
+    function farm.pending()
+        if not (CFG.autoBuy or CFG.autoRepair or CFG.autoSell) then return false end
+        for _, e in ipairs(entries()) do
+            local o = OWNED[e.Name]
+            if o and os.time() >= (o.nextTry or 0) then
+                if CFG.autoRepair and not o.repaired then return true end
+                if CFG.autoSell and not isFav(e) and e.Name ~= CFG.farmCarGuid and (o.repaired or not CFG.autoRepair)
+                    and sellCooldownLeft(e) <= 0 then return true end
+            end
+        end
+        return CFG.autoBuy and #entries() < garageSlots() and wantedJunk() ~= nil
+    end
+
     local function farmRun()
         local e = (farm.car and farm.car.Parent and farm.car) or selectedCar -- the Drive tab's own pick, else the Car tab's
+        CFG.farmCarGuid = e and e.Name or nil -- auto sell never sells the car being farmed
         if not e then farm.status = "pick a car in the Car tab first"; return end
         local pts, top, cycle
         if CFG.driveRoute == "Highway" then
@@ -2850,10 +2905,14 @@ do
             end
             local km, _, owed = numbers()
             if owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
+            if CFG.farmYield and os.clock() - (farm.lastCheck or 0) > 1 then
+                farm.lastCheck = os.clock()
+                if farm.pending() then farm.yielded = true; farm.status = "paused: auto flip has work"; break end
+            end
             farm.status = ("driving · moved %.2f km · counted %.2f km · %.2f km to go"):format(farm.moved / 3937, km - farm.startKm, math.max(0, owed + CFG.driveExtra))
         end
         pcall(function() seat.AssemblyLinearVelocity = Vector3.zero end)
-        farm.on = false
+        if not farm.yielded then farm.on = false end
     end
 
     local DistBox = Tabs.Drive:AddLeftGroupbox("Distance owed")
@@ -2867,18 +2926,30 @@ do
         if v and not farm.on then
             farm.on = true
             task.spawn(function()
-                if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on end
-                if not farm.on then return end
-                busy, busyWhat = true, "farming distance"
-                local ok, err = pcall(farmRun)
-                busy = false
+                while farm.on and running do
+                    if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on end
+                    if not farm.on then break end
+                    busy, busyWhat = true, "farming distance"
+                    farm.yielded = false
+                    local ok, err = pcall(farmRun)
+                    busy = false
+                    if not ok then farm.status = "error: " .. tostring(err); log("drive farm: " .. tostring(err)); break end
+                    if not (farm.yielded and farm.on) then break end
+                    -- the auto loop buys / repairs / sells now (it runs every 2 s once busy is free); drive again after
+                    local t = os.clock()
+                    repeat task.wait(1) until (not busy and not farm.pending()) or not farm.on or os.clock() - t > 600
+                    task.wait(1)
+                end
                 farm.on = false
-                if not ok then farm.status = "error: " .. tostring(err); log("drive farm: " .. tostring(err)) end
+                CFG.farmCarGuid = nil
             end)
         elseif not v then
             farm.on = false
         end
     end })
+    FarmBox:AddToggle("FIU_DriveYield", { Text = "Pause for auto flips", Default = CFG.farmYield,
+        Tooltip = "Steps out while Auto has a car to buy, repair or sell (sell timer up), then keeps driving. Needs the Auto toggles on.",
+        Callback = set("farmYield") })
     local PICK = "Car tab pick"
     local carDropF = FarmBox:AddDropdown("FIU_DriveCar", { Text = "Car", Values = { PICK }, Default = PICK,
         Tooltip = "Which car to drive; \"Car tab pick\" uses the car picked in the Car tab",
