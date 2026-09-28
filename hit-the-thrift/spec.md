@@ -72,7 +72,37 @@ When a Craig sale is over $1M, the client pops "Craig can't afford this! … Ric
 - **Purchases are per player:** the rack payload's `PurchasedItems` filters your own buys out of the menu, and `ClothingDeleteEvent` deletes the bought slot model on your client only. After a rejoin, the models of items you already bought reappear until the next restock (not tested).
 - `RestockEvent(prompt, items)` swaps rack stock. The rack price is `Item.Price`, or 80% of it for Morieli members (`MorieliPricing.DisplayPrice`, attribute `MorieliMember`).
 - Example (measured): Silver Spades Hoodie on Rack24 costs $1.5M, with catalog `Resale` 2.55M. Detergent can push the finished piece to about $6.4M.
-- **ESP:** `%USERPROFILE%\rblx\thrift_esp.lua` (v1). Loader: `loadstring(readfile("thrift_esp.lua"))()`. It shows a dot per item colored by rarity, a per-rack summary, an outline in the best rarity's color, and a Finds list, with toggles and colors per rarity. Config folder: `ThriftESP`.
+- **Script:** `%USERPROFILE%\rblx\thrift_esp.lua` (v2). Loader: `loadstring(readfile("thrift_esp.lua"))()`. Config folder: `ThriftESP`.
+  - ESP tab: a dot per item colored by rarity, a per-rack summary and an outline in the best rarity's color, with toggles and colors per rarity.
+  - Finds tab: a list of items at or above a chosen rarity.
+  - Matcha and Laundry tabs: see below.
+  - Settings: a spending reserve.
+
+## Matcha *(code + measured 2026-09-27)*
+
+- `MatchaItems`: Culinary $500 (aura x1.3, 60 s), Strawberry $10k (x2, 90 s), Ceremonial $250k (x3, 150 s), Gold 99 R$ (x4, 250 s); Gingerbread Latte $199 (x1.1). Drinking one (tool attribute `UsesLeft = 4`) gives a timed aura multiplier. Aura comes from the outfit you wear, per Griff.
+- **Order:** `MatchaOrderEvent:FireServer(itemKey, os.time())`. It's ignored from 90 studs but works 6 studs in front of Kat (the customer side of her counter, floor y = 92.35). The client menu closes past 15 studs from Kat's HumanoidRootPart.
+- **Flow:**
+  1. The server sends `MatchaAnimationEvent "StartMaking"`. `"StartDrinkSoon"` means your order is queued.
+  2. The client's own Kat clone walks off and animates for about 8 s. Kat is a client-side clone, and the server's placed NPC is destroyed locally.
+  3. The client sends `MatchaOrderEvent("AnimationComplete")`.
+  4. The server spawns `Workspace.<Kind>_Clickable` (e.g. `Culinary_Clickable`) at `DrinkReferencePoint`, about (-63, 95.5, 118.5), and sends `"OrderReady", model`. The client adds a `SelectedHighlight` to it.
+  5. `fireclickdetector` on its ClickDetector (range 32) collects the drink.
+  About 10 s per drink in total.
+- **Limit:** 15 matcha drinks of any kind; the server replies `"Limit"`.
+- The game moves you client-side itself: Teleport app (gamepass) `Character:PivotTo`, MRKET pack station. No client anti-cheat scripts. The teleports used for matcha haven't triggered anything.
+- **Auto (v2):** teleport to the spot, order, click, repeat to the target count, teleport back. Walking more than 8 studs from the spot pauses it for 2 min. If Kat's animation never runs (she's already busy), the server waits forever for `AnimationComplete`, so the run sends it itself 20 s after `StartMaking`.
+
+## Laundry *(code + measured 2026-09-27)*
+
+- **Pods** (`DetergentModule`), price → resale multiplier / aura multiplier: Basic $25 → x1.5 / 1.1, Premium $250 → x2, Gold $2.5k → x2.5, Onyx $5k → x3, Supreme $50k → x4.5 / 1.75, Phoenix $100k → x5 / 2, Amethyst $250k → x5.5 / 2.25. Each restock rolls a stock count per pod: Supreme is 0 at 97.9%, Phoenix 0 at 99%, Amethyst 0 at 99.5%, Onyx 0 at 95.6%; Basic rolls 14–16.
+- **Buy:** `DetergentEvent:FireServer(key, true)` works from anywhere (45 studs from Franklin was fine).
+  - A success answers `PodEvent("Stock", stock, boughtThisRestock)`. Stock is per player: what's left for you is stock minus your buys.
+  - A pod with no stock is silently ignored and costs nothing.
+  - The client refuses a 16th pod of one kind ("Too many in Inventory").
+  - The Robux path is `DetergentTransaction("Single", key)`.
+- **Restock:** every 300 s, shared with the racks. At the restock the server pushes `PodEvent("Stock", newStock, {})`, then `RestockTimerEvent(300)`, in the same frame, unasked. `getRestockTime:InvokeServer()` returns the seconds left.
+- **Bubbles:** while you're `WASHING` and within 20 studs of the machine, `LaundryClientModule` spawns a `BubbleButton` (ImageButton) in `MainGUI.ScreenFrame.BubbleGameFrame` every 0.75 s. A pop runs `BubbleEvent:FireServer()` and `WasherTimerEvent:Fire("Decrement")`, taking 1 s off the wash. Auto-pop fires each new button's own `Activated` handler with `firesignal`, in its own thread. Verified with a fake button, not yet during a real wash.
 
 ## Currencies and systems seen (not mapped yet)
 

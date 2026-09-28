@@ -11,7 +11,11 @@ Started 2026-09-27. The user's first question was where **MRKET** is. They typed
   - Offers come in through phone Messages. You pack the order at the apartment station and deliver it to the buyer NPC.
 - **Craig's wallet cap:** full value up to $1M, then 20% of the rest. Detergents push a tool's `Value` far past the catalog `Resale`, and the user carries Legendary pieces worth over $6M, so selling those to Craig loses most of their value. MRKET's Legendary rate is x1.25.
 - State on 2026-09-27: apartments were unlocked for the user but not bought, and they had about 637k.
-- **Rack ESP v1 built 2026-09-27: `%USERPROFILE%\rblx\thrift_esp.lua`** (Obsidian, config folder `ThriftESP`). Deploy by copying it to the Potassium workspace; the loader is `loadstring(readfile("thrift_esp.lua"))()`. Items are the children of parts with `Main=true` that carry `ItemKey`. Defaults: Rare and up shown, outline from Epic, Finds list from Legendary.
+- **`%USERPROFILE%\rblx\thrift_esp.lua`** (Obsidian, config folder `ThriftESP`; the name stayed so the loader didn't change). Deploy by copying it to the Potassium workspace; the loader is `loadstring(readfile("thrift_esp.lua"))()`.
+  - v1 rack ESP: items are the children of parts with `Main=true` that carry `ItemKey`. Defaults: Rare and up shown, outline from Epic, Finds list from Legendary.
+  - v2 (2026-09-27, the user asked for these): a **Matcha tab** (auto buy + collect at Kat by teleporting there and back) and a **Laundry tab** (auto buy picked pods on restock; auto pop bubbles). A spending reserve sits in Settings.
+  - All three were verified live with one small real buy each. Bubbles were only tested with a fake button; a real wash is untested.
+- User pattern: they asked for features mid-build ("add a category for matcha", then laundry). Each system gets its own tab.
 - Decompiled sources: Potassium workspace `thrift_src_*.lua`.
 
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md).

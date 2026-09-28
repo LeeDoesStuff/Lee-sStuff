@@ -53,6 +53,7 @@ Finding where money comes from is step one, not the analysis. Before writing cod
   - Depths: start, defeat, stop, restart.
   - Events: start, join, leave, rewards arrive.
   - Rebirth: rebirth, rebuild, resume.
+- **Watch for server steps that wait on a client report.** Hit The Thrift's matcha order only finishes after the client's own NPC animation sends `AnimationComplete`. If that animation never runs (the NPC is already busy with another order), the order hangs. Add a timeout that sends the report the way the game's client does.
 - **Learn the full completion condition of timed or capture mechanics.** Touching an alien crate for 1.5 s and leaving caught 0. The crate needs the character to stay with it in the arena for the whole capture timer. Judge success by the **actual delivery signal** (the inventory count rising), not by "the thing disappeared".
 - **Capture mechanics usually have three parts: *acquire*, *hold*, *survive*.** Each needs its own input:
   - **Acquire** needs a real touch (`firetouchinterest` on the object's part). Standing near it lost the crate to a player who walked into it.
@@ -363,6 +364,7 @@ Check these before skipping one:
   - In client scripts: `os.time()`, `os.date("!*t")`, `DateTime.now()`, `workspace:GetServerTimeNow()`, or a date-seeded `Random.new(yday + …)`.
   - Strings: `"RESETS IN"`, `"RESTOCK"`, `"NEXT"`.
   - `Daily*` counters.
+- **Listen before you poll:** many restocks are pushed to every client unasked. Hit The Thrift sends `PodEvent("Stock", newStock, {})` and then `RestockTimerEvent(300)` in the same frame. Handler order matters: the timer handler must not throw away the stock that just arrived.
 - **Automate:** a date-seeded rotation can be computed, so build the schedule instead of polling (Sneaker: `LimitedShopSneaker[utcHour % 6 + 1]`). Claim dailies on join and at the reset boundary (§8.6).
 - **Watch:**
   - The boundary can be UTC midnight, 24 h after the last claim, or server-local time. Read it from the sync (BBB `daily={claimable, day, streak}`).
@@ -891,6 +893,7 @@ Every system below comes down to one **input rung** and one **movement rung**. U
   - → The target moves each round (SRS: random 30–70 %) → re-read it each round. A fixed delay breaks on round 2.
   - → Never replace `OnClientInvoke` (in SRS that froze the game), and never return a made-up result. The returned band is the one value the server trusts without checking.
 - **Verify:** pay per band vs the expected multiplier (SRS: Perfect 1.10 / Good 1.00 / Miss 0.85 × value).
+- ↳ **and if it's click-the-spawned-button** (Hit The Thrift's washer bubbles, one every 0.75 s) → watch the frame's `ChildAdded` and run each new button's own handler with `task.spawn(firesignal, btn.Activated)`. It sends exactly what a click sends, at the game's own spawn rate. The separate thread keeps the game code's capability drop off your loop.
 
 #### Vehicles & mounts
 - **Detect:** `VehicleSeat`/`Seat`, a spawn remote, prompt or GUI, `Humanoid.SeatPart` while seated, mount attributes.

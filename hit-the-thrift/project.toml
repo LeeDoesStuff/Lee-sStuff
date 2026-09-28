@@ -1,7 +1,7 @@
 name = "Hit The Thrift"
 place_id = 122454884469606
 game_id = 8391342266
-status = "esp v1"
+status = "v2: rack ESP, matcha, laundry"
 script = "thrift_esp.lua"
 loader = 'loadstring(readfile("thrift_esp.lua"))()'
 ui = "Obsidian"

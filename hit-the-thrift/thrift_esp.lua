@@ -1,13 +1,15 @@
 --[[
-    Hit The Thrift rack ESP v1  (place 122454884469606)
+    Hit The Thrift v2  (place 122454884469606)
     UI: Obsidian (deividcomsono)
-    Every item on the thrift racks, shoe/glasses shelves and jewelry displays, by rarity:
+    ESP: every item on the thrift racks, shoe/glasses shelves and jewelry displays, by rarity:
       - a dot on each item (optional name + rack price), colored by rarity
       - a summary over each rack: rarity counts + floor
       - a rack outline in the color of its best shown rarity
       - Finds tab: every item at or above a rarity, with its rack + floor
     Data: the children of any part with attribute Main=true carry ItemKey ("Key" or "Key_Color=Blue"); rarity comes
     from ClothingModule.Items. A restock swaps the slot models; buying one deletes it locally, so its dot goes too.
+    Matcha: auto buy + collect drinks at Kat (teleports there and back).
+    Laundry: auto buy picked detergent pods after each restock; auto pop washer bubbles.
     Spec: hit-the-thrift-spec.md
 ]]
 
@@ -72,6 +74,11 @@ local CFG = {
     dots = true, labels = false, summary = true, outline = true,
     outlineMin = "Epic", listMin = "Legendary",
     maxDist = 600, dotSize = 10, textSize = 13,
+    -- every automation starts off; SaveManager autoload turns on what the player saved
+    matchaAuto = false, matchaDrink = "Ceremonial Matcha", matchaKeep = 15, matchaReturn = true,
+    podAuto = false, podMax = 15, bubbles = false,
+    pods = { ["Amethyst Pod"] = true, ["Phoenix Pod"] = true, ["Supreme Pod"] = true, ["Onyx Pod"] = true, ["Gold Pod"] = true },
+    reserve = 1, -- $M never spent by matcha / pods
 }
 for _, r in ipairs(RARITIES) do -- default colors = the game's rarity colors
     local def = type(CM.Rarities) == "table" and CM.Rarities[r]
@@ -267,7 +274,226 @@ end
 for _, d in ipairs(Workspace:GetDescendants()) do register(d) end
 table.insert(conns, Workspace.DescendantAdded:Connect(register)) -- racks streaming back in
 
-local Library, statusLabel, findsLabel
+-- ============================== shared (automation) ==============================
+local Events = RS:WaitForChild("Events")
+local function bucks()
+    local st = lp:FindFirstChild("Stats")
+    local v = st and st:FindFirstChild("Thrift Bucks")
+    return v and v.Value or 0
+end
+local function canSpend(price) return bucks() - price >= CFG.reserve * 1e6 end
+local function countTools(pred)
+    local n = 0
+    for _, holder in ipairs({ lp:FindFirstChild("Backpack"), lp.Character }) do
+        for _, t in ipairs(holder and holder:GetChildren() or {}) do
+            if t:IsA("Tool") and pred(t) then n += 1 end
+        end
+    end
+    return n
+end
+local function mmss(s) s = math.max(0, math.floor(s)); return ("%d:%02d"):format(s // 60, s % 60) end
+
+-- ============================== matcha ==============================
+-- Measured 2026-09-27: MatchaOrderEvent:FireServer(key, os.time()) is ignored from 90 studs but works 6 studs in
+-- front of Kat. The server answers StartMaking; the game's own Kat animation (~8 s) sends AnimationComplete; then
+-- OrderReady(model) and the model's ClickDetector (range 32) collects the drink. 15 matcha drinks max ("Limit").
+local OrderEvent = Events:WaitForChild("OrderEvents"):WaitForChild("MatchaOrderEvent")
+local AnimEvent = Events:WaitForChild("OrderEvents"):WaitForChild("MatchaAnimationEvent")
+local okMI, MI = pcall(require, Global:WaitForChild("MatchaItems"))
+local MATCHA_KEYS = { "Culinary Matcha", "Strawberry Matcha", "Ceremonial Matcha" }
+local MATCHA_PRICE = { ["Culinary Matcha"] = 500, ["Strawberry Matcha"] = 10000, ["Ceremonial Matcha"] = 250000 }
+if okMI and type(MI) == "table" then
+    for _, k in ipairs(MATCHA_KEYS) do
+        if type(MI[k]) == "table" and tonumber(MI[k].Price) then MATCHA_PRICE[k] = MI[k].Price end
+    end
+end
+local matcha = { busy = false, pausedUntil = 0, status = "off", bought = 0, spot = nil }
+
+local function matchaCount() -- every matcha drink counts toward the server's 15
+    return countTools(function(t)
+        local k = t:GetAttribute("ItemKey")
+        return type(k) == "string" and k:find("Matcha$") ~= nil
+    end)
+end
+
+local function katSpot() -- 6 studs in front of Kat = the customer side of her counter (measured floor)
+    local misc = Workspace:FindFirstChild("Misc")
+    local npc = misc and misc:FindFirstChild("MatchaNPC")
+    local kat = npc and npc:FindFirstChild("HumanoidRootPart")
+    local prompt = npc and npc:FindFirstChild("NPC_ProximityPrompt")
+    -- her prompt is off while she walks off to make a drink, so only cache the spot while she's home
+    if kat and prompt and prompt.Enabled then
+        local lv = kat.CFrame.LookVector
+        local spot = kat.Position + Vector3.new(lv.X, 0, lv.Z).Unit * 6
+        matcha.spot = CFrame.lookAt(spot, Vector3.new(kat.Position.X, spot.Y, kat.Position.Z))
+    end
+    return matcha.spot
+end
+
+local function matchaRun()
+    local key = CFG.matchaDrink
+    local price = rackPrice(MATCHA_PRICE[key] or math.huge)
+    local target = math.clamp(CFG.matchaKeep, 1, 15)
+    if os.clock() < matcha.pausedUntil then return end
+    if matchaCount() >= target then matcha.status = "stocked"; return end
+    if not canSpend(price) then matcha.status = "waiting for money (reserve)"; return end
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local spot = katSpot()
+    if not (hrp and spot) then matcha.status = "can't find Kat"; return end
+    matcha.busy = true
+    local saved, moved = hrp.CFrame, false
+    char:PivotTo(spot)
+    task.wait(0.5)
+    while running and CFG.matchaAuto and matchaCount() < target and canSpend(price) do
+        if (hrp.Position - spot.Position).Magnitude > 8 then -- you walked off: hand control back
+            moved, matcha.pausedUntil, matcha.status = true, os.clock() + 120, "you moved, paused 2 min"
+            break
+        end
+        local ready, limit, queued, makingAt, nudged
+        local conn = OrderEvent.OnClientEvent:Connect(function(kind, obj)
+            if kind == "OrderReady" then ready = obj
+            elseif kind == "Limit" then limit = true
+            elseif kind == "StartDrinkSoon" then queued = true end
+        end)
+        local conn2 = AnimEvent.OnClientEvent:Connect(function(kind)
+            if kind == "StartMaking" then makingAt = os.clock() end
+        end)
+        local n0 = matchaCount()
+        matcha.status = "ordering " .. key
+        OrderEvent:FireServer(key, os.time())
+        local t0 = os.clock()
+        while running and not ready and not limit do
+            local now = os.clock()
+            if makingAt then
+                -- Kat's animation sends AnimationComplete after ~8 s. If hers never ran (she was already busy, e.g. with
+                -- an order you placed by hand), the server waits forever, so send it the way she would.
+                if now - makingAt > 20 and not nudged then nudged = true; OrderEvent:FireServer("AnimationComplete") end
+                if now - makingAt > 30 then break end
+            elseif now - t0 > (queued and 90 or 20) then
+                break
+            end
+            task.wait(0.2)
+        end
+        conn:Disconnect()
+        conn2:Disconnect()
+        if limit then matcha.status = "at the 15-drink limit"; break end
+        if not ready then
+            matcha.pausedUntil, matcha.status = os.clock() + 60, "no drink came (retry in 1 min)"
+            break
+        end
+        local cd = typeof(ready) == "Instance" and ready:FindFirstChildWhichIsA("ClickDetector", true)
+        if cd then fireclickdetector(cd) end
+        local t1 = os.clock()
+        while matchaCount() <= n0 and os.clock() - t1 < 3 do task.wait(0.1) end
+        if matchaCount() > n0 then matcha.bought += 1 end
+    end
+    if CFG.matchaReturn and not moved and lp.Character == char then char:PivotTo(saved) end
+    if matcha.status:find("^ordering") then matcha.status = "done" end
+    matcha.busy = false
+end
+
+-- ============================== laundry ==============================
+-- Measured 2026-09-27: DetergentEvent:FireServer(key, true) buys one pod from anywhere (45 studs from Franklin worked).
+-- A buy answers PodEvent("Stock", stock, boughtThisRestock); a pod with no stock is silently ignored and costs
+-- nothing. Racks and pods share one 5-minute restock (getRestockTime / RestockTimerEvent). The shop refuses a 16th pod.
+local DetergentEvent = Events:WaitForChild("LaundryEvents"):WaitForChild("DetergentEvent")
+local PodEvent = Events:WaitForChild("DataEvents"):WaitForChild("PodEvent")
+local RestockTimerEvent = Events:WaitForChild("RackEvents"):WaitForChild("RestockTimerEvent")
+local getRestockTime = Events:WaitForChild("RackEvents"):WaitForChild("getRestockTime")
+local okDM, DM = pcall(require, Global:WaitForChild("DetergentModule"))
+local PODS = {} -- { key, name, price }, most expensive first
+if okDM and type(DM) == "table" and type(DM.Detergents) == "table" then
+    for _, key in ipairs(DM.InShop or {}) do
+        local d = DM.Detergents[key]
+        if type(d) == "table" and tonumber(d.Price) then PODS[#PODS + 1] = { key = key, name = d.Name, price = d.Price } end
+    end
+    table.sort(PODS, function(a, b) return a.price > b.price end)
+end
+local POD_NAMES = {}
+for i, p in ipairs(PODS) do POD_NAMES[i] = p.name end
+local pod = { stock = nil, bought = {}, fresh = false, pending = true, nextRestock = nil, last = {} }
+
+table.insert(conns, PodEvent.OnClientEvent:Connect(function(kind, stock, bought)
+    if kind == "Stock" and type(stock) == "table" then
+        pod.stock, pod.bought, pod.fresh = stock, type(bought) == "table" and bought or {}, true
+        pod.pending = true -- a buy (yours or mine) may show more stock
+    end
+end))
+-- At a restock the server pushes PodEvent("Stock", newStock, {}) and then RestockTimerEvent(300) in the same frame
+-- (measured), so this handler must not throw that fresh stock away.
+table.insert(conns, RestockTimerEvent.OnClientEvent:Connect(function(sec)
+    pod.nextRestock = os.clock() + (tonumber(sec) or 60)
+    pod.pending = true
+end))
+task.spawn(function()
+    local ok, t = pcall(function() return getRestockTime:InvokeServer() end)
+    if ok and tonumber(t) then pod.nextRestock = os.clock() + t end
+end)
+
+local function podCount(name) return countTools(function(t) return t.Name == name end) end
+
+local function podRun()
+    pod.pending = false
+    for _, p in ipairs(PODS) do
+        if CFG.pods[p.name] then
+            for _ = 1, 15 do
+                if not (running and CFG.podAuto) then return end
+                local have = podCount(p.name)
+                local avail = pod.fresh and pod.stock and (tonumber(pod.stock[p.key]) or 0) - (tonumber(pod.bought[p.key]) or 0) or 1
+                if avail <= 0 or have >= CFG.podMax or not canSpend(rackPrice(p.price)) then break end
+                DetergentEvent:FireServer(p.key, true)
+                local t0 = os.clock()
+                while podCount(p.name) <= have and os.clock() - t0 < 1.5 do task.wait(0.1) end
+                if podCount(p.name) <= have then break end -- no stock: the server stays silent
+                table.insert(pod.last, 1, os.date("%H:%M ") .. p.name)
+                pod.last[7] = nil
+            end
+        end
+    end
+end
+
+local bubbles = { popped = 0 }
+local function hookBubbles() -- the game's own pop handler: BubbleEvent + 1 s off your wash timer
+    local main = lp:WaitForChild("PlayerGui"):WaitForChild("MainGUI", 30)
+    local frame = main and main:WaitForChild("ScreenFrame"):WaitForChild("BubbleGameFrame", 30)
+    if not frame then return end
+    table.insert(conns, frame.ChildAdded:Connect(function(b)
+        if not (CFG.bubbles and b:IsA("GuiButton")) then return end
+        task.delay(0.15, function()
+            if running and CFG.bubbles and b.Parent and b.ImageTransparency ~= 1 then
+                task.spawn(firesignal, b.Activated) -- own thread: running game code lowers that thread's capabilities
+                bubbles.popped += 1
+            end
+        end)
+    end))
+end
+task.spawn(guard, "bubbles", hookBubbles)
+
+task.spawn(function() -- pods: after each restock, whenever new stock shows up, and when switched on
+    while running do
+        if CFG.podAuto then
+            if pod.nextRestock and os.clock() >= pod.nextRestock + 3 then -- missed RestockTimerEvent: ask again
+                pod.fresh, pod.pending = false, true
+                local ok, t = pcall(function() return getRestockTime:InvokeServer() end)
+                pod.nextRestock = os.clock() + (ok and tonumber(t) or 60)
+            end
+            if pod.pending then guard("pods", podRun) end
+        end
+        task.wait(1)
+    end
+end)
+task.spawn(function() -- matcha: top up whenever you're below the target
+    while running do
+        if CFG.matchaAuto and not matcha.busy then
+            guard("matcha", matchaRun)
+            matcha.busy = false -- also after an error mid-run
+        end
+        task.wait(2)
+    end
+end)
+
+local Library, statusLabel, findsLabel, matchaLabel, podLabel, bubbleLabel
 local function unload()
     if getgenv().THRIFT_ESP == nil then return end
     getgenv().THRIFT_ESP = nil
@@ -277,7 +503,8 @@ local function unload()
     root:Destroy()
     if Library then pcall(Library.Unload, Library) end
 end
-getgenv().THRIFT_ESP = { unload = unload, cfg = CFG, containers = containers, finds = finds, totals = totals, errs = errs }
+getgenv().THRIFT_ESP = { unload = unload, cfg = CFG, containers = containers, finds = finds, totals = totals, errs = errs,
+    matcha = matcha, pod = pod, bubbles = bubbles }
 
 task.spawn(function()
     local lastFinds
@@ -289,6 +516,24 @@ task.spawn(function()
             end
             local text = findsText()
             if findsLabel and text ~= lastFinds then lastFinds = text; findsLabel:SetText(text) end
+            if matchaLabel then
+                matchaLabel:SetText(("%s\nDrinks: %d / %d · bought this session: %d"):format(
+                    CFG.matchaAuto and matcha.status or "off", matchaCount(), CFG.matchaKeep, matcha.bought))
+            end
+            if podLabel then
+                local stock = {}
+                if pod.fresh and pod.stock then
+                    for _, p in ipairs(PODS) do
+                        local n = (tonumber(pod.stock[p.key]) or 0) - (tonumber(pod.bought[p.key]) or 0)
+                        if n > 0 then stock[#stock + 1] = p.name:gsub(" Pod$", "") .. " " .. n end
+                    end
+                end
+                podLabel:SetText(("Restock in %s\nLeft for you: %s\n%s"):format(
+                    pod.nextRestock and mmss(pod.nextRestock - os.clock()) or "?",
+                    not pod.fresh and "unknown until a buy this restock" or (#stock > 0 and table.concat(stock, " · ") or "nothing"),
+                    #pod.last > 0 and ("Bought: " .. table.concat(pod.last, ", ")) or ""))
+            end
+            if bubbleLabel then bubbleLabel:SetText(("Popped this session: %d"):format(bubbles.popped)) end
         end)
         task.wait(0.5)
     end
@@ -306,12 +551,14 @@ local ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
 local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
 
 local Window = Library:CreateWindow({
-    Title = "Hit The Thrift ESP", Footer = "racks · shelves · jewelry by rarity",
+    Title = "Hit The Thrift", Footer = "rack ESP · matcha · laundry",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
     ESP      = Window:AddTab("ESP"),
     Finds    = Window:AddTab("Finds"),
+    Matcha   = Window:AddTab("Matcha"),
+    Laundry  = Window:AddTab("Laundry"),
     Settings = Window:AddTab("Settings"),
 }
 local function set(key) return function(v) CFG[key] = v; dirty = true end end
@@ -348,6 +595,41 @@ FindBox:AddDropdown("TE_ListMin", { Text = "List from", Values = RARITIES, Defau
 statusLabel = FindBox:AddLabel("-", true)
 findsLabel = FindBox:AddLabel("-", true)
 
+local MatchaBox = Tabs.Matcha:AddLeftGroupbox("Auto buy + collect")
+MatchaBox:AddLabel("Teleports you in front of Kat, orders, clicks your drink on the counter (about 10 s each) and takes you back. Walking away cancels the run for 2 min. The game caps you at 15 matcha drinks.", true)
+MatchaBox:AddToggle("MA_Auto", { Text = "Auto buy matcha", Default = CFG.matchaAuto,
+    Callback = function(v) CFG.matchaAuto = v; matcha.pausedUntil = 0 end })
+MatchaBox:AddDropdown("MA_Drink", { Text = "Drink", Values = MATCHA_KEYS, Default = CFG.matchaDrink,
+    Tooltip = ("Culinary %s x1.3 · Strawberry %s x2 · Ceremonial %s x3 aura"):format(money(MATCHA_PRICE["Culinary Matcha"]),
+        money(MATCHA_PRICE["Strawberry Matcha"]), money(MATCHA_PRICE["Ceremonial Matcha"])),
+    Callback = function(v) CFG.matchaDrink = v end })
+MatchaBox:AddSlider("MA_Keep", { Text = "Keep this many drinks", Default = CFG.matchaKeep, Min = 1, Max = 15, Rounding = 0,
+    Tooltip = "Buys until you hold this many matcha drinks (all kinds count)", Callback = function(v) CFG.matchaKeep = v end })
+MatchaBox:AddToggle("MA_Return", { Text = "Go back after buying", Default = CFG.matchaReturn,
+    Callback = function(v) CFG.matchaReturn = v end })
+matchaLabel = MatchaBox:AddLabel("-", true)
+
+local PodBox = Tabs.Laundry:AddLeftGroupbox("Detergent pods")
+PodBox:AddLabel("Buys the picked pods right after each restock (same timer as the racks), from anywhere. Trying a pod with no stock costs nothing.", true)
+PodBox:AddToggle("LA_PodAuto", { Text = "Auto buy pods on restock", Default = CFG.podAuto,
+    Callback = function(v) CFG.podAuto = v; pod.pending = true end })
+local podDefaults = {}
+for name, on in pairs(CFG.pods) do if on then podDefaults[#podDefaults + 1] = name end end
+PodBox:AddDropdown("LA_Pods", { Text = "Pods to buy", Values = POD_NAMES, Multi = true, Default = podDefaults,
+    Tooltip = "Most expensive first", Callback = function(v) CFG.pods = v; pod.pending = true end })
+PodBox:AddSlider("LA_PodMax", { Text = "Max of each pod", Default = CFG.podMax, Min = 1, Max = 15, Rounding = 0,
+    Callback = function(v) CFG.podMax = v; pod.pending = true end })
+podLabel = PodBox:AddLabel("-", true)
+
+local BubbleBox = Tabs.Laundry:AddRightGroupbox("Bubbles")
+BubbleBox:AddLabel("Pops every bubble while you wash; each pop takes 1 s off the wash timer. Bubbles only spawn while you stay within 20 studs of your machine.", true)
+BubbleBox:AddToggle("LA_Bubbles", { Text = "Auto pop bubbles", Default = CFG.bubbles, Callback = function(v) CFG.bubbles = v end })
+bubbleLabel = BubbleBox:AddLabel("-", true)
+
+local Spend = Tabs.Settings:AddRightGroupbox("Spending")
+Spend:AddSlider("SP_Reserve", { Text = "Always keep", Default = CFG.reserve, Min = 0, Max = 100, Rounding = 1, Suffix = "M",
+    Tooltip = "Matcha and pod buying never take your Thrift Bucks below this", Callback = function(v) CFG.reserve = v end })
+
 local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 Library:OnUnload(unload)
@@ -359,4 +641,4 @@ ThemeManager:SetFolder("ThriftESP")
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
-Library:Notify("Thrift ESP ready — RightCtrl toggles the UI.", 4)
+Library:Notify("Hit The Thrift ready — RightCtrl toggles the UI.", 4)
