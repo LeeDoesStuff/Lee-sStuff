@@ -2850,7 +2850,13 @@ do
     end
 
     local function farmRun()
-        local e = (farm.car and farm.car.Parent and farm.car) or selectedCar -- the Drive tab's own pick, else the Car tab's
+        -- a car picked in the Drive tab that has gone (sold) stops the farm: never fall back to some other car
+        if farm.chosen and not (farm.car and farm.car.Parent) then
+            farm.status = "the farm car is gone (sold?), pick another one"
+            farm.on = false
+            return
+        end
+        local e = (farm.chosen and farm.car) or selectedCar -- the Drive tab's own pick, else the Car tab's
         CFG.farmCarGuid = e and e.Name or nil -- auto sell never sells the car being farmed
         if not e then farm.status = "pick a car in the Car tab first"; return end
         local pts, top, cycle
@@ -2905,6 +2911,7 @@ do
             end
             local km, _, owed = numbers()
             if owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
+            if farm.chosen and farm.car ~= e then farm.yielded = true; farm.status = "switching car"; break end -- picked another car mid-run
             if CFG.farmYield and os.clock() - (farm.lastCheck or 0) > 1 then
                 farm.lastCheck = os.clock()
                 if farm.pending() then farm.yielded = true; farm.status = "paused: auto flip has work"; break end
@@ -2937,7 +2944,7 @@ do
                     if not (farm.yielded and farm.on) then break end
                     -- the auto loop buys / repairs / sells now (it runs every 2 s once busy is free); drive again after
                     local t = os.clock()
-                    repeat task.wait(1) until (not busy and not farm.pending()) or not farm.on or os.clock() - t > 600
+                    repeat task.wait(1) until (not busy and not (CFG.farmYield and farm.pending())) or not farm.on or os.clock() - t > 600
                     task.wait(1)
                 end
                 farm.on = false
@@ -2953,7 +2960,11 @@ do
     local PICK = "Car tab pick"
     local carDropF = FarmBox:AddDropdown("FIU_DriveCar", { Text = "Car", Values = { PICK }, Default = PICK,
         Tooltip = "Which car to drive; \"Car tab pick\" uses the car picked in the Car tab",
-        Callback = function(v) farm.car = v ~= PICK and carByLabel[v] or nil end })
+        Callback = function(v)
+            if farm.refreshing then return end -- the list being rebuilt isn't a new pick
+            farm.chosen = v ~= nil and v ~= PICK
+            farm.car = farm.chosen and carByLabel[v] or nil
+        end })
     task.spawn(function() -- keep the list in step with your garage, keeping the pick
         local lastKey = ""
         while running do
@@ -2965,10 +2976,12 @@ do
                 lastKey = key
                 local keep = farm.car
                 table.insert(labels, 1, PICK)
+                farm.refreshing = true
                 carDropF:SetValues(labels)
                 local keepLabel = PICK
                 for l, e2 in pairs(carByLabel) do if e2 == keep then keepLabel = l end end
-                carDropF:SetValue(keepLabel)
+                carDropF:SetValue(keepLabel) -- a sold farm car shows "Car tab pick" but the farm still stops (farm.chosen stays)
+                farm.refreshing = false
             end
             task.wait(1)
         end
