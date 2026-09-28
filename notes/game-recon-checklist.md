@@ -131,6 +131,12 @@ Finding where money comes from is step one, not the analysis. Before writing cod
 
 - **Recon spy v2** (*Fix It Up*): buffer log lines in memory and flush once a second, and drop high-rate values (Fuel, Odometer, suspension). The v1 spy did one `appendfile` per value change and went silent after about 10 minutes of a car's Fuel ticking at 60 Hz.
 - **ESP labels in StreamingEnabled games: don't adorn the game's parts.** When a model streams out and back in, its parts are new instances. The old `BillboardGui.Adornee` goes nil and the label floats in the wrong place. *Fix It Up:* 9 of 10 junk-car labels had lost their anchor and drifted. Instead, adorn a client-only anchored part (parented under `workspace.CurrentCamera`), move it every scan to the top of `model:GetBoundingBox()`, and hide the label while the box is empty (streamed out).
+- **`queue_on_teleport` reloads run before the game has loaded.**
+  - *Fix It Up* (2026-09-28): the merged script errored silently in the next server, because `LocalPlayer`, PlayerData and the car list weren't there yet.
+  - The payload must `repeat task.wait() until game:IsLoaded() and Players.LocalPlayer`, then `pcall` the script and write any error to a file.
+  - The script itself should wait for everything it reads at load time.
+  - Add a load/unload trail file (`life.log`, with a traceback on unload), so hop runs can be debugged without a console.
+- **Don't parent client objects to `workspace.CurrentCamera` at load time:** the join camera can be replaced. Parent them to `workspace` instead; client-created instances don't replicate.
 - **Spawning or teleporting an object far from the player:** it can arrive before its children stream in (missing `PartsEvent`). Stream the destination first, or go there first, and wait for the children you need.
 - **StreamingEnabled games:** models stay but their parts are missing until streamed in (`GetPivot` still works on the Model). Call `LocalPlayer:RequestStreamAroundAsync(pos)` before reading a machine's parts or firing a remote prompt/ClickDetector.
 - **Purchase confirmations through `RemoteFunction.OnClientInvoke`:** take the original with `getcallbackvalue`, then install a wrapper that logs the text and asks a per-action decision function. **Decline** mode reads real prices and names (hidden car names, sell offers) without spending. Restore the original on unload.

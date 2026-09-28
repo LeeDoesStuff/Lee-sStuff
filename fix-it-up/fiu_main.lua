@@ -24,14 +24,25 @@
 ]]
 
 if getgenv().FIU_MAIN then pcall(getgenv().FIU_MAIN.unload) end
+-- after a server hop this runs from queue_on_teleport, before the game has loaded: wait for what we read at load
+if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
 local RunService  = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
+while not Players.LocalPlayer do task.wait() end
 local LP          = Players.LocalPlayer
 local Events      = RS:WaitForChild("Events")
 local PD          = LP:WaitForChild("PlayerData")
+PD:WaitForChild("Loaded", 30)
+for _, n in ipairs({ "Map", "Garages", "PartsStore", "Utils", "Vehicles", "MoveableParts" }) do workspace:WaitForChild(n, 30) end
+do
+    local list = RS:WaitForChild("Cache"):WaitForChild("CarList", 30)
+    local t = os.clock() -- the catalog replicates in pieces; names need all of it
+    while list and #list:GetChildren() < 100 and os.clock() - t < 15 do task.wait(0.25) end
+end
+while not workspace.CurrentCamera do task.wait() end
 local Status      = PD:WaitForChild("Status")
 local Garage      = PD:WaitForChild("Garage")
 local Vehicles    = workspace:WaitForChild("Vehicles")
@@ -40,6 +51,14 @@ local CONFIRM     = Events.HUD.Confirmation
 
 local DIR = "FixItUp"
 pcall(function() if not isfolder(DIR) then makefolder(DIR) end end)
+-- load/unload trail across server hops (queued runs have no console)
+local function lifeLog(msg)
+    pcall(function()
+        local p, line = DIR .. "/life.log", os.date("%H:%M:%S ") .. game.JobId:sub(1, 8) .. " " .. msg .. "\n"
+        if isfile(p) then appendfile(p, line) else writefile(p, line) end
+    end)
+end
+lifeLog("load")
 
 -- ============================== helpers ==============================
 local function money(n)
@@ -671,7 +690,7 @@ espRoot.Parent = hui
 -- in, which left labels with a nil Adornee floating in the wrong place
 local anchorRoot = Instance.new("Folder")
 anchorRoot.Name = "FixItUpAnchors"
-anchorRoot.Parent = workspace.CurrentCamera -- client-only, never replicates
+anchorRoot.Parent = workspace -- made by the client, so it never replicates (the join camera gets replaced, don't use it)
 
 local function newAnchor()
     local p = Instance.new("Part")
@@ -980,6 +999,14 @@ do
     saveHop()
 end
 local hopping, hopQueued, hopStatus, hopServer = false, false, "idle", "scanning..."
+-- what runs in the next server: wait for the game, then load; a failure lands in FixItUp/reload_error.txt
+local RELOAD = [==[
+repeat task.wait() until game:IsLoaded() and game:GetService("Players").LocalPlayer
+local f, e = loadstring(readfile("fiu_main.lua"))
+if not f then pcall(writefile, "FixItUp/reload_error.txt", os.date() .. " compile: " .. tostring(e)) return end
+local ok, err = pcall(f)
+if not ok then pcall(writefile, "FixItUp/reload_error.txt", os.date() .. " " .. tostring(err)) end
+]==]
 
 -- values = Cars Sold of every other player (math.huge = stats never loaded, counts as over)
 local function judge(values, c)
@@ -1056,7 +1083,7 @@ local function hop()
     if hopping then return end
     hopping = true
     local q = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
-    if q and not hopQueued then hopQueued = pcall(q, 'loadstring(readfile("fiu_main.lua"))()') end
+    if q and not hopQueued then hopQueued = pcall(q, RELOAD) end
     local backoff = 60
     while running and HOP.auto do
         local s, why = candidates()
@@ -1066,6 +1093,7 @@ local function hop()
             HOP.hops += 1
             saveHop()
             hopStatus = ("hop #%d -> %d/%d players"):format(HOP.hops, s.playing, s.maxPlayers)
+            lifeLog(("hop -> %s (%d players)"):format(s.id:sub(1, 8), s.playing))
             pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, s.id, LP)
             task.wait(15) -- normally gone before this; still here = it failed, try the next one
         elseif why == 429 then
@@ -1094,6 +1122,7 @@ local function hopRun()
         saveHop()
         if hopToggle then hopToggle:SetValue(false) end
         hopStatus = ("FOUND after %d hops: %d others, %d over limit"):format(HOP.hops, n, over)
+        lifeLog(hopStatus)
         notify(("Found it! %d players, all under %d cars sold."):format(n, HOP.max))
     else
         hop()
@@ -1104,6 +1133,7 @@ end
 local Library
 local function unload()
     if getgenv().FIU_MAIN == nil then return end
+    lifeLog("unload\n" .. debug.traceback())
     getgenv().FIU_MAIN = nil
     running = false
     for _, c in ipairs(conns) do pcall(c.Disconnect, c) end
@@ -1509,7 +1539,7 @@ HopInfo:AddButton({ Text = "Hop once now", Func = function()
         local s, why = candidates()
         if not s then notify("No server to hop to: " .. tostring(why or "none under the player cap")) return end
         local q = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
-        if q and not hopQueued then hopQueued = pcall(q, 'loadstring(readfile("fiu_main.lua"))()') end
+        if q and not hopQueued then hopQueued = pcall(q, RELOAD) end
         HOP.visited[s.id] = os.time(); saveHop()
         pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, s.id, LP)
     end)
@@ -1525,4 +1555,5 @@ task.spawn(function()
 end)
 if HOP.auto then task.spawn(hopRun) else task.spawn(checkServer) end
 
+lifeLog("ready")
 Library:Notify("Fix It Up ready — RightCtrl toggles the UI. Only script-bought cars are ever sold.", 5)
