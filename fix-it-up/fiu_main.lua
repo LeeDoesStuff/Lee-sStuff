@@ -149,7 +149,7 @@ local CFG = {
     alerts = true, alertMin = "B",
     -- auto flip: everything off until the player (or SaveManager autoload) turns it on
     autoBuy = false, autoRepair = false, autoSell = false,
-    buyMinTier = "C", buyModels = {}, buyMaxPrice = 60000, buyMinProfit = 0,
+    buyMinTier = "C", buyBy = "Tier", buyMaxPct = 1, buyModels = {}, buyMaxPrice = 60000, buyMinProfit = 0,
     reserve = 20000,
     repairMin = 1, replaceWorn = true, station = "Dealership",
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
@@ -1119,7 +1119,10 @@ local function wantedJunk()
     for _, j in ipairs(sortedJunk()) do
         local modelOk = next(CFG.buyModels) == nil
         for _, n in ipairs(j.names) do if CFG.buyModels[n] then modelOk = true end end
-        if not j.exclusive and TIER_RANK[j.tier] <= TIER_RANK[CFG.buyMinTier] and modelOk
+        local rareOk
+        if CFG.buyBy == "Spawn chance" then rareOk = j.sc ~= nil and j.sc > 0 and j.sc <= CFG.buyMaxPct
+        else rareOk = TIER_RANK[j.tier] <= TIER_RANK[CFG.buyMinTier] end
+        if not j.exclusive and rareOk and modelOk
             and j.lo <= CFG.buyMaxPrice and j.profitLo >= CFG.buyMinProfit and myMoney() - j.lo >= CFG.reserve then
             best = best or j
         end
@@ -1284,7 +1287,7 @@ local req = request or http_request or (syn and syn.request)
 local HOP_FILE, VISIT_TTL = "fiu_hop.json", 3600
 local HOP = readJSON(HOP_FILE, {})
 for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500,
-    antiMod = true, modRank = 2, modAction = "Leave game" }) do if HOP[k] == nil then HOP[k] = v end end
+    antiMod = true, modRank = 2, modAction = "Leave game", staffBoard = true }) do if HOP[k] == nil then HOP[k] = v end end
 local function saveHop() writeJSON(HOP_FILE, HOP) end
 do
     local now = os.time()
@@ -1339,6 +1342,97 @@ function STAFF.check(p)
 end
 function STAFF.scan()
     for _, p in ipairs(Players:GetPlayers()) do task.spawn(STAFF.check, p) end
+end
+
+-- status board: every group member at/above the staff rank, with where they are right now
+function STAFF.get(url, body)
+    if not req then return nil end
+    local ok, res = pcall(req, { Url = url, Method = body and "POST" or "GET",
+        Headers = body and { ["Content-Type"] = "application/json" } or nil, Body = body and HttpService:JSONEncode(body) or nil })
+    if not ok or not res or res.StatusCode ~= 200 then return nil, res and res.StatusCode end
+    local ok2, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
+    return ok2 and data or nil
+end
+-- Everyone ranked above Member (~100 people), saved to FixItUp/staff.json for 6 h: the groups API rate-limits hard
+-- (15 quick calls from a few reloads got 21 s timeouts). The staff-rank setting only filters this list.
+function STAFF.members()
+    if not STAFF.mem then
+        local saved = readJSON(DIR .. "/staff.json", nil)
+        if saved and saved.list then STAFF.mem, STAFF.memAt = saved.list, saved.at or 0 end
+    end
+    if STAFF.mem and os.time() - (STAFF.memAt or 0) < 6 * 3600 then return STAFF.mem end
+    local roles, code = STAFF.get(("https://groups.roblox.com/v1/groups/%d/roles"):format(STAFF.group))
+    if not roles then STAFF.err = "group roles: " .. tostring(code or "timeout"); return STAFF.mem end
+    STAFF.done = STAFF.done or {} -- role id -> its members; a failed run resumes where it stopped
+    local list = {}
+    for _, r in ipairs(roles.roles or {}) do
+        if r.rank >= 2 then
+            if not STAFF.done[r.id] then
+                local got, cursor = {}, ""
+                repeat
+                    local page, c2
+                    for try = 1, 3 do -- dropped requests (status 0) happen: back off and retry
+                        task.wait(0.6 * try * try)
+                        page, c2 = STAFF.get(("https://groups.roblox.com/v1/groups/%d/roles/%d/users?limit=100&sortOrder=Asc&cursor=%s"):format(STAFF.group, r.id, cursor))
+                        if page then break end
+                    end
+                    if not page then STAFF.err = r.name .. ": " .. tostring(c2 or "timeout"); return STAFF.mem end -- keep the old list, don't save half
+                    for _, u in ipairs(page.data or {}) do
+                        got[#got + 1] = { id = u.userId, name = u.username, display = u.displayName, role = r.name, rank = r.rank }
+                    end
+                    cursor = page.nextPageCursor
+                until not cursor
+                STAFF.done[r.id] = got
+            end
+            for _, m in ipairs(STAFF.done[r.id]) do list[#list + 1] = m end
+        end
+    end
+    STAFF.done = nil
+    STAFF.mem, STAFF.memAt, STAFF.err = list, os.time(), nil
+    writeJSON(DIR .. "/staff.json", { at = STAFF.memAt, list = list })
+    return list
+end
+STAFF.where = { -- order + color on the board
+    { "server", "#ff5555", "IN YOUR SERVER" }, { "game", "#ff9f43", "in Fix It Up (other server)" }, { "other", "#ffd24a", "in another game" },
+    { "hidden", "#ffd24a", "in a game (hidden)" }, { "studio", "#aaaaaa", "in Studio" }, { "online", "#aaaaaa", "online" },
+}
+function STAFF.refresh()
+    local list = STAFF.members()
+    if not list then STAFF.board = "Couldn't load the group's staff list (" .. tostring(STAFF.err) .. "), retrying in a minute"; return end
+    local byId, ids = {}, {}
+    for _, m in ipairs(list) do
+        if m.rank >= HOP.modRank and (not byId[m.id] or m.rank > byId[m.id].rank) then byId[m.id] = m; m.where = nil end
+    end
+    for id in pairs(byId) do ids[#ids + 1] = id end
+    for i = 1, #ids, 50 do
+        local data, code = STAFF.get("https://presence.roblox.com/v1/presence/users", { userIds = { table.unpack(ids, i, math.min(i + 49, #ids)) } })
+        if not data then STAFF.board = "Couldn't read who's online (" .. tostring(code or "timeout") .. "), retrying in a minute"; return end
+        for _, p in ipairs(data and data.userPresences or {}) do
+            local m, t = byId[p.userId], p.userPresenceType
+            if m then
+                m.where = t == 2 and (p.gameId == game.JobId and "server" or p.rootPlaceId == game.PlaceId and "game" or p.rootPlaceId and "other" or "hidden")
+                    or t == 1 and "online" or t == 3 and "studio" or "offline"
+                m.loc = p.lastLocation
+            end
+        end
+    end
+    local lines, off, counts = {}, {}, {}
+    for _, wdef in ipairs(STAFF.where) do
+        local group = {}
+        for _, m in pairs(byId) do if m.where == wdef[1] then group[#group + 1] = m end end
+        table.sort(group, function(a, b) return a.rank > b.rank end)
+        counts[wdef[1]] = #group
+        for _, m in ipairs(group) do
+            lines[#lines + 1] = ('<font color="%s">● %s (@%s) · %s · %s</font>'):format(wdef[2], m.display, m.name, m.role,
+                wdef[1] == "other" and ("in " .. tostring(m.loc)) or wdef[3])
+        end
+    end
+    for _, m in pairs(byId) do if m.where == "offline" or not m.where then off[#off + 1] = m.display end end
+    table.sort(off)
+    table.insert(lines, 1, ("<b>%d staff</b> · %d here · %d in Fix It Up · %d in games · %d online · %s"):format(#ids, counts.server, counts.game,
+        counts.other + counts.hidden, counts.online + counts.studio, os.date("%H:%M")))
+    if #off > 0 then lines[#lines + 1] = ('<font color="#777777">Offline (%d): %s</font>'):format(#off, table.concat(off, ", ")) end
+    STAFF.board = table.concat(lines, "\n")
 end
 on(Players.PlayerAdded, STAFF.check)
 task.spawn(STAFF.scan)
@@ -1706,7 +1800,18 @@ end
 
 do
 local Filt = Tabs.Auto:AddRightGroupbox("Buy filters")
-Filt:AddDropdown("FIU_BuyTier", { Text = "Tier at least", Values = { "S", "A", "B", "C", "D" }, Default = CFG.buyMinTier, Callback = set("buyMinTier") })
+local buyTier, buyPct
+local function showBuyBy()
+    if buyTier then buyTier:SetVisible(CFG.buyBy ~= "Spawn chance") end
+    if buyPct then buyPct:SetVisible(CFG.buyBy == "Spawn chance") end
+end
+Filt:AddDropdown("FIU_BuyBy", { Text = "Buy by", Values = { "Tier", "Spawn chance" }, Default = CFG.buyBy,
+    Tooltip = "Pick one: a tier and rarer, or a spawn % and rarer", Callback = function(v) CFG.buyBy = v; showBuyBy() end })
+buyTier = Filt:AddDropdown("FIU_BuyTier", { Text = "Tier at least", Values = { "S", "A", "B", "C", "D" }, Default = CFG.buyMinTier, Callback = set("buyMinTier") })
+buyPct = Filt:AddInput("FIU_BuyPct", { Text = "Spawn chance at most (%)", Default = tostring(CFG.buyMaxPct), Numeric = true, Finished = true,
+    Tooltip = "e.g. 0.25 buys only cars that spawn 0.25% of the time or less",
+    Callback = function(v) CFG.buyMaxPct = math.max(0, tonumber(v) or 0) end })
+showBuyBy()
 Filt:AddDropdown("FIU_BuyModels", { Text = "Only these models", Tooltip = "None picked = any model", Values = CAT_NAMES, Multi = true, Default = {},
     Callback = function(v) CFG.buyModels = v end })
 Filt:AddSlider("FIU_BuyMax", { Text = "Max price", Default = CFG.buyMaxPrice, Min = 1000, Max = 500000, Rounding = 0, Suffix = "€", Callback = set("buyMaxPrice") })
@@ -2643,7 +2748,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_StaffBoard", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -3303,11 +3408,31 @@ for _, r in ipairs(STAFF.roles) do
 end
 ModBox:AddDropdown("FIU_ModRank", { Text = "Counts as staff", Values = rankVals, Default = rankDefault or rankVals[1],
     Tooltip = "Tester (2) and up = everyone above a regular member",
-    Callback = function(v) HOP.modRank = rankByLabel[v] or 2; saveHop(); task.spawn(STAFF.scan) end })
+    Callback = function(v) HOP.modRank = rankByLabel[v] or 2; saveHop(); task.spawn(STAFF.scan); STAFF.wake = true end })
 ModBox:AddDropdown("FIU_ModAction", { Text = "Then", Values = { "Leave game", "Server hop" }, Default = HOP.modAction,
     Tooltip = "Server hop joins a random server and reloads the script there; if the teleport fails it leaves after 12 s",
     Callback = function(v) HOP.modAction = v; saveHop() end })
 local modLabel = ModBox:AddLabel("-", true)
+ModBox:AddToggle("FIU_StaffBoard", { Text = "Staff status list", Default = HOP.staffBoard,
+    Tooltip = "Everyone at the rank above: in your server, in Fix It Up elsewhere, in another game, online or offline. Updates every minute.",
+    Callback = function(v) HOP.staffBoard = v; saveHop(); STAFF.wake = true end })
+ModBox:AddButton({ Text = "Refresh staff list", Func = function() STAFF.wake = true end })
+local staffLabel = ModBox:AddLabel("-", true)
+getgenv().FIU_MAIN.staff = STAFF -- for scripted tests
+task.spawn(function()
+    while running do
+        if HOP.staffBoard then
+            if not STAFF.board then staffLabel:SetText("Loading staff...") end
+            pcall(STAFF.refresh)
+            staffLabel:SetText(STAFF.board or "-")
+        else
+            staffLabel:SetText("Off")
+        end
+        STAFF.wake = false
+        local t = os.clock()
+        repeat task.wait(0.5) until STAFF.wake or not running or os.clock() - t > 60
+    end
+end)
 task.spawn(function()
     while running do
         pcall(function()
