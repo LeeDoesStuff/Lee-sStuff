@@ -129,6 +129,7 @@ local CFG = {
     repairMin = 1, replaceWorn = true, station = "Dealership",
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
+    cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
 local OWNED = readJSON(DIR .. "/owned.json", {}) -- [garage GUID] = { model, boughtAt } — the ONLY sellable cars
@@ -195,7 +196,15 @@ end
 
 local function tpTo(target) -- CFrame or Vector3
     local h = hum()
-    if h and h.SeatPart then h.Sit = false; task.wait(0.25) end
+    if h and h.SeatPart then -- a seated character drags the car along or snaps back: get out first
+        local t = os.clock()
+        repeat
+            h.Sit = false
+            h:ChangeState(Enum.HumanoidStateType.Jumping)
+            task.wait(0.1)
+        until not h.SeatPart or os.clock() - t > 2
+        task.wait(0.15)
+    end
     local r = hrp()
     if not r then return false end
     local cf = typeof(target) == "Vector3" and CFrame.new(target) or target
@@ -330,11 +339,21 @@ local function buyStore(model, isTool)
     local price = tonumber(model:GetAttribute("Price")) or 0
     if myMoney() - price < CFG.reserve then return nil, "reserve" end
     local before = myParts()
-    tpTo(CFrame.new(model:GetPivot().Position + Vector3.new(0, 2, 5)))
-    task.wait(0.4)
     local asked = false
     confirmFn = function(text) asked = true; local p = parsePrice(text); return p ~= nil and myMoney() - p >= CFG.reserve end
+    -- store clicks work from anywhere (measured 450 studs); only hop over if the server doesn't answer
     fireclickdetector(model.ClickDetector)
+    local t0 = os.clock()
+    repeat task.wait(0.05) until asked or os.clock() - t0 > 1.5
+    if not asked then
+        local back = hrp() and hrp().CFrame
+        tpTo(CFrame.new(model:GetPivot().Position + Vector3.new(0, 2, 5)))
+        task.wait(0.2)
+        fireclickdetector(model.ClickDetector)
+        t0 = os.clock()
+        repeat task.wait(0.05) until asked or os.clock() - t0 > 2
+        if back then tpTo(back) end
+    end
     local found, t = nil, os.clock()
     repeat
         task.wait(0.1)
@@ -484,6 +503,75 @@ local function repairCar(e)
     return left == 0, ("%s condition %s%%%s"):format(entryModel(e), tostring(condition(car)), left > 0 and (" · " .. left .. " part(s) not installed") or "")
 end
 
+-- ============================== clean / paint ==============================
+-- both need the car inside the shop's Detector box; RemoteLoad drops it straight in
+local function inBox(det) return CFrame.new(det.Position.X, det.Position.Y - det.Size.Y / 2 + 3, det.Position.Z) * det.CFrame.Rotation end
+
+local function nearest(models)
+    local r, best, bd = hrp(), nil, nil
+    for _, m in ipairs(models) do
+        local d = r and (m:GetPivot().Position - r.Position).Magnitude or 0
+        if not bd or d < bd then best, bd = m, d end
+    end
+    return best
+end
+
+local function cleanCar(e)
+    local wash = nearest(workspace.Map.CarWashes:GetChildren())
+    if not wash then return false, "no car wash" end
+    pcall(function() LP:RequestStreamAroundAsync(wash:GetPivot().Position, 5) end)
+    local det = wash:FindFirstChild("Detector") or wash:WaitForChild("Detector", 3)
+    if not det then return false, "car wash not loaded" end
+    local car = spawnCar(e, inBox(det))
+    if not car then return false, "spawn failed" end
+    local dirt = car.Values:FindFirstChild("DirtLevel")
+    if dirt and dirt.Value <= 0 then return true, entryModel(e) .. " is already clean" end
+    local prompt = wash:FindFirstChild("Prompt")
+    local pp = prompt and prompt:FindFirstChildWhichIsA("ProximityPrompt")
+    if pp then tpTo(CFrame.new(prompt.Position + Vector3.new(0, 1, 3))); task.wait(0.3); fireproximityprompt(pp); task.wait(0.8) end
+    local h = hum()
+    local tool = LP.Backpack:FindFirstChild("PressureWasher") or (char() and char():FindFirstChild("PressureWasher"))
+    if tool and h then h:EquipTool(tool) end
+    tpTo(car:GetPivot() * CFrame.new(5, 1, 0))
+    local start = dirt and dirt.Value or 100
+    for i = 1, 40 do -- 10 s at 4 Hz, the same curve the game's washer sends
+        Events.Vehicles.SetDirt:FireServer(start * (1 - i / 40))
+        task.wait(0.25)
+        if dirt and dirt.Value <= 0 then break end
+    end
+    if h then h:UnequipTools() end
+    task.wait(0.5)
+    local left = dirt and dirt.Value or 0
+    return left <= 1, ("%s dirt %d%%"):format(entryModel(e), math.floor(left))
+end
+
+local MATERIALS = { "Normal", "Shiny", "Matte", "Aluminum", "Metallic" }
+local function paintCar(e, color, material)
+    local mat = RS.Assets.CarMaterials:FindFirstChild(material)
+    local price = mat and mat:GetAttribute("Price") or 0
+    if myMoney() - price < CFG.reserve then return false, "reserve" end
+    local booth = workspace.Map.FirstCity.Buildings["Pitstop(Large)"].Model:FindFirstChild("CarPaint")
+    if not booth then return false, "paint booth not found" end
+    pcall(function() LP:RequestStreamAroundAsync(booth:GetPivot().Position, 5) end)
+    local det = booth:FindFirstChild("Detector") or booth:WaitForChild("Detector", 3)
+    if not det then return false, "paint booth not loaded" end
+    local car = spawnCar(e, inBox(det))
+    if not car then return false, "spawn failed" end
+    local prompt = booth:FindFirstChild("Prompt")
+    local pp = prompt and prompt:FindFirstChildWhichIsA("ProximityPrompt")
+    if pp then tpTo(prompt.CFrame * CFrame.new(0, 0, -3)); task.wait(0.3); fireproximityprompt(pp); task.wait(0.6) end
+    local before = car.Values.PaintColor.Value
+    Events.Vehicles.SetPaint:FireServer("Car", car, color, material)
+    local t = os.clock()
+    repeat task.wait(0.1) until car.Values.PaintColor.Value ~= before or os.clock() - t > 3
+    local fr = LP.PlayerGui:FindFirstChild("HUD") and LP.PlayerGui.HUD.Frames:FindFirstChild("Paint")
+    if fr and fr.Visible then fr.Visible = false end
+    local ok = car.Values.PaintColor.Value ~= before
+    return ok, ok and ("painted %s %s for %s"):format(entryModel(e), material, money(price)) or "paint didn't take"
+end
+
+local function paintColor() return CFG.paintRandom and Color3.fromHSV(math.random(), 0.75, 0.9) or CFG.paintColor end
+
 -- ============================== sell ==============================
 local function sellCar(e, manual)
     if isFav(e) then return false, "locked: " .. entryModel(e) .. " is a favorite" end
@@ -499,37 +587,43 @@ local function sellCar(e, manual)
         local c = carOf(o)
         if o ~= e and c and (c:GetPivot().Position - pr.Position).Magnitude < 40 then return false, entryModel(o) .. " is parked at the sell zone, move it first" end
     end
-    local car = spawnCar(e, CFrame.lookAt(pr.Position + pr.CFrame.LookVector * 9 + Vector3.new(0, 3, 0), pr.Position))
-    if not car then return false, "spawn failed" end
-    tpTo(pr.CFrame * CFrame.new(0, 0, -4))
-    task.wait(0.5)
     local want, offer = entryModel(e), nil
     confirmFn = function(text)
         offer = parsePrice(text)
         return text:find("sell your", 1, true) ~= nil and text:find(want, 1, true) ~= nil -- only the car we meant
     end
-    local nt0, gone = os.clock(), false
-    fireproximityprompt(pr.ProximityPrompt)
-    local t = os.clock()
-    repeat task.wait(0.1); gone = e.Parent == nil until gone or os.clock() - t > 4
-    confirmFn = nil
-    if gone then
-        OWNED[e.Name] = nil; saveOwned()
-        STATE.sold = (STATE.sold or 0) + 1; STATE.earned = (STATE.earned or 0) + (offer or 0); saveState()
-        return true, ("sold %s for %s"):format(want, money(offer))
-    end
-    if lastNotify.t >= nt0 then
-        local secs = parseWait(lastNotify.text)
-        if secs then
-            -- learn the timer: now - BoughtAt + remaining
-            local bought = tonumber(entryVal(e, "BoughtAt")) or os.time()
-            CFG.sellCooldown = math.max(CFG.sellCooldown, os.time() - bought + secs)
-            saveState()
-            log(("learned sell timer: %d s"):format(CFG.sellCooldown))
+    local lastMsg = "no sell offer"
+    for _, gap in ipairs({ 9, 6 }) do -- a fresh spawn sometimes settles out of the zone: second try closer
+        local car = spawnCar(e, CFrame.lookAt(pr.Position + pr.CFrame.LookVector * gap + Vector3.new(0, 3, 0), pr.Position))
+        if not car then confirmFn = nil; return false, "spawn failed" end
+        tpTo(pr.CFrame * CFrame.new(0, 0, -4))
+        task.wait(1)
+        local nt0, gone = os.clock(), false
+        fireproximityprompt(pr.ProximityPrompt)
+        local t = os.clock()
+        repeat task.wait(0.1); gone = e.Parent == nil until gone or os.clock() - t > 4
+        if gone then
+            confirmFn = nil
+            OWNED[e.Name] = nil; saveOwned()
+            STATE.sold = (STATE.sold or 0) + 1; STATE.earned = (STATE.earned or 0) + (offer or 0); saveState()
+            return true, ("sold %s for %s"):format(want, money(offer))
         end
-        return false, "server: " .. lastNotify.text
+        if lastNotify.t >= nt0 then
+            lastMsg = "server: " .. lastNotify.text
+            local secs = parseWait(lastNotify.text)
+            if secs then
+                -- learn the timer: now - BoughtAt + remaining
+                local bought = tonumber(entryVal(e, "BoughtAt")) or os.time()
+                CFG.sellCooldown = math.max(CFG.sellCooldown, os.time() - bought + secs)
+                saveState()
+                log(("learned sell timer: %d s"):format(CFG.sellCooldown))
+                break
+            end
+            if not lastNotify.text:find("too far", 1, true) then break end
+        end
     end
-    return false, "no sell offer"
+    confirmFn = nil
+    return false, lastMsg
 end
 
 -- ============================== buy ==============================
@@ -707,6 +801,8 @@ local function autoStep()
                 if ok or o.tries >= 2 then o.repaired = true end -- two tries, then sell it as it is
                 saveOwned()
                 log(msg)
+                if o.repaired and CFG.cleanAfter then local _, m2 = cleanCar(e); log(m2) end
+                if o.repaired and CFG.paintAfter then local _, m3 = paintCar(e, paintColor(), CFG.paintMaterial); log(m3) end
                 busy = false
                 return
             end
@@ -785,11 +881,42 @@ local PLACES = {
     { "Race Track", V(631.3, 17.7, 820.9) },
     { "Races", V(800.4, 12.5, 570.9) },
 }
-for _, g in ipairs(workspace.Garages:GetChildren()) do
-    local ex = g:FindFirstChild("ExitPos")
-    if ex then
-        local price = g:GetAttribute("Price")
-        PLACES[#PLACES + 1] = { ("Garage: %s%s"):format(g.Name, price and (" (" .. money(price) .. ")") or ""), ex.Position }
+-- garage points resolve at teleport time: their parts stream out when you're far away
+local function streamed(model, name)
+    local p = model:FindFirstChild(name, true)
+    if not p then
+        pcall(function() LP:RequestStreamAroundAsync(model:GetPivot().Position, 5) end)
+        p = model:FindFirstChild(name, true)
+    end
+    if not p then return model:GetPivot().Position end
+    return p:IsA("Model") and p:GetPivot().Position or p.Position
+end
+-- interiors sit underground (y -14 to -108); DoorDetector is the real front door
+local function garagePoints(label, g)
+    PLACES[#PLACES + 1] = { label .. " · door", function() return streamed(g, "DoorDetector") end }
+    PLACES[#PLACES + 1] = { label .. " · inside", function() return streamed(g, "SpawnLocation") end }
+    PLACES[#PLACES + 1] = { label .. " · car exit", function() return streamed(g, "ExitPos") end }
+    if g:GetAttribute("Price") and g.Name ~= "Default" or g:GetAttribute("ProductId") then
+        PLACES[#PLACES + 1] = { label .. " · for-sale sign", function() return streamed(g, "Sign") end }
+    end
+end
+local myGarageModel = function() return workspace.Garages:FindFirstChild(tostring(PD:FindFirstChild("GarageModel") and PD.GarageModel.Value or "Default")) end
+do
+    local mine = myGarageModel()
+    if mine then garagePoints("My garage", mine) end
+end
+local garages = workspace.Garages:GetChildren()
+table.sort(garages, function(a, b) return (a:GetAttribute("Price") or math.huge) < (b:GetAttribute("Price") or math.huge) end)
+for _, g in ipairs(garages) do
+    local price = g:GetAttribute("Price")
+    garagePoints(("Garage %s%s"):format(g.Name, price and (" · " .. money(price)) or " · Robux"), g)
+end
+local auction = workspace.Utils:FindFirstChild("Auctions") and workspace.Utils.Auctions:FindFirstChild("Garages")
+if auction then
+    local list = auction:GetChildren()
+    table.sort(list, function(a, b) return (tonumber(a.Name:match("%d+")) or 0) < (tonumber(b.Name:match("%d+")) or 0) end)
+    for _, g in ipairs(list) do
+        PLACES[#PLACES + 1] = { "Auction " .. g.Name:gsub("Garage", "garage "), function() return streamed(g, "RootPos") end }
     end
 end
 local PLACE_NAMES, PLACE_POS = {}, {}
@@ -797,10 +924,8 @@ for _, p in ipairs(PLACES) do PLACE_NAMES[#PLACE_NAMES + 1] = p[1]; PLACE_POS[p[
 
 local selectedCar -- garage entry picked in the Car tab
 local function goPlace(name)
-    local pos = name == "My garage" and (function()
-        local g = workspace.Garages:FindFirstChild(tostring(PD:FindFirstChild("GarageModel") and PD.GarageModel.Value or "Default"))
-        return g and g:FindFirstChild("ExitPos") and g.ExitPos.Position
-    end)() or PLACE_POS[name]
+    local pos = PLACE_POS[name]
+    if type(pos) == "function" then pos = pos() end
     if not pos then return end
     local at = ground(pos)
     tpTo(CFrame.new(at))
@@ -808,7 +933,6 @@ local function goPlace(name)
         spawnCar(selectedCar, CFrame.new(at + Vector3.new(0, 2, 12)))
     end
 end
-table.insert(PLACE_NAMES, 1, "My garage")
 
 -- ============================== unload ==============================
 local Library
@@ -823,7 +947,7 @@ local function unload()
 end
 getgenv().FIU_MAIN = { unload = unload, cfg = CFG, junk = junk, owned = OWNED, state = STATE,
     repairCar = repairCar, sellCar = sellCar, buyJunk = buyJunk, spawnCar = spawnCar, log = logLines,
-    machines = machines, liftCF = liftCF, garageSlots = garageSlots }
+    machines = machines, liftCF = liftCF, garageSlots = garageSlots, goPlace = goPlace, places = PLACE_NAMES, cleanCar = cleanCar, paintCar = paintCar, buyStore = buyStore }
 
 -- ============================== loops ==============================
 task.spawn(function()
@@ -911,12 +1035,12 @@ local AutoBox = Tabs.Auto:AddLeftGroupbox("Flip loop")
 AutoBox:AddLabel("Buys junk cars that pass the filters, repairs them at the repair shop, sells them at Used Cars once the sell timer allows. Only cars bought by this script are ever sold.", true)
 AutoBox:AddToggle("FIU_AutoBuy", { Text = "Auto buy", Default = CFG.autoBuy, Callback = set("autoBuy") })
 AutoBox:AddToggle("FIU_AutoRepair", { Text = "Auto repair after buy", Default = CFG.autoRepair, Callback = set("autoRepair") })
-AutoBox:AddToggle("FIU_AutoSell", { Text = "Auto sell (script-bought only)", Default = CFG.autoSell, Callback = set("autoSell") })
+AutoBox:AddToggle("FIU_AutoSell", { Text = "Auto sell", Tooltip = "Only sells cars this script bought", Default = CFG.autoSell, Callback = set("autoSell") })
 local autoLabel = AutoBox:AddLabel("-", true)
 
 local Filt = Tabs.Auto:AddRightGroupbox("Buy filters")
 Filt:AddDropdown("FIU_BuyTier", { Text = "Tier at least", Values = { "S", "A", "B", "C", "D" }, Default = CFG.buyMinTier, Callback = set("buyMinTier") })
-Filt:AddDropdown("FIU_BuyModels", { Text = "Only these models (none = any)", Values = CAT_NAMES, Multi = true, Default = {},
+Filt:AddDropdown("FIU_BuyModels", { Text = "Only these models", Tooltip = "None picked = any model", Values = CAT_NAMES, Multi = true, Default = {},
     Callback = function(v) CFG.buyModels = v end })
 Filt:AddSlider("FIU_BuyMax", { Text = "Max price", Default = CFG.buyMaxPrice, Min = 1000, Max = 500000, Rounding = 0, Suffix = "€", Callback = set("buyMaxPrice") })
 Filt:AddSlider("FIU_BuyProfit", { Text = "Min profit", Default = CFG.buyMinProfit, Min = 0, Max = 100000, Rounding = 0, Suffix = "€",
@@ -939,13 +1063,13 @@ CarBox:AddButton({ Text = "Teleport to car", Func = run("tp car", function()
     local c = selectedCar and carOf(selectedCar)
     if c then tpTo(c:GetPivot() * CFrame.new(0, 3, 8)) end
 end) })
-CarBox:AddButton({ Text = "Repair (teleports car to the repair shop)", Func = run("repair", function()
+CarBox:AddButton({ Text = "Repair", Tooltip = "Teleports the car to the repair shop floor and fixes every worn part", Func = run("repair", function()
     if not selectedCar then return end
     local ok, msg = repairCar(selectedCar)
     if ok and isFlip(selectedCar) then OWNED[selectedCar.Name].repaired = true; saveOwned() end
     log(msg); notify(msg)
 end) })
-CarBox:AddButton({ Text = "Sell (not favorites)", DoubleClick = true, Tooltip = "Double-click. Favorites are locked and never sold.", Func = run("sell", function()
+CarBox:AddButton({ Text = "Sell", DoubleClick = true, Tooltip = "Double-click. Favorites are locked and never sold.", Func = run("sell", function()
     if not selectedCar then return end
     local ok, msg = sellCar(selectedCar, true)
     log(msg); notify(msg)
@@ -974,6 +1098,31 @@ RepBox:AddSlider("FIU_RepMin", { Text = "Repair parts worn at least", Default = 
 RepBox:AddToggle("FIU_Replace", { Text = "Replace parts with no machine", Default = CFG.replaceWorn,
     Tooltip = "Sparkplugs, injectors, timing belts...: buys a new one at the parts store", Callback = set("replaceWorn") })
 RepBox:AddToggle("FIU_PartEsp", { Text = "Show my loose parts", Default = false, Tooltip = "Wear + the game's 90 s delete countdown", Callback = set("partEsp") })
+
+local ActBox = Tabs.Car:AddRightGroupbox("Car actions")
+ActBox:AddButton({ Text = "Clean", Tooltip = "Puts the car in the nearest car wash and washes it (~10 s)", Func = run("clean", function()
+    if not selectedCar then return end
+    local _, msg = cleanCar(selectedCar)
+    log(msg); notify(msg)
+end) })
+local matLabels, matByLabel = {}, {}
+for _, n in ipairs(MATERIALS) do
+    local m = RS.Assets.CarMaterials:FindFirstChild(n)
+    local l = ("%s  %s"):format(n, money(m and m:GetAttribute("Price") or 0))
+    matLabels[#matLabels + 1] = l; matByLabel[l] = n
+end
+ActBox:AddDropdown("FIU_PaintMat", { Text = "Paint finish", Values = matLabels, Default = matLabels[1],
+    Callback = function(v) CFG.paintMaterial = matByLabel[v] or "Normal" end })
+ActBox:AddLabel("Paint color"):AddColorPicker("FIU_PaintCol", { Default = CFG.paintColor, Title = "Paint color",
+    Callback = function(c) CFG.paintColor = c end })
+ActBox:AddToggle("FIU_PaintRandom", { Text = "Random color", Default = CFG.paintRandom, Callback = set("paintRandom") })
+ActBox:AddButton({ Text = "Paint", Tooltip = "Puts the car in the paint booth and paints it", Func = run("paint", function()
+    if not selectedCar then return end
+    local _, msg = paintCar(selectedCar, paintColor(), CFG.paintMaterial)
+    log(msg); notify(msg)
+end) })
+ActBox:AddToggle("FIU_CleanAfter", { Text = "Clean after auto repair", Default = CFG.cleanAfter, Callback = set("cleanAfter") })
+ActBox:AddToggle("FIU_PaintAfter", { Text = "Paint after auto repair", Default = CFG.paintAfter, Callback = set("paintAfter") })
 
 -- Shop
 local ShopBox = Tabs.Shop:AddLeftGroupbox("Spare parts")
@@ -1065,6 +1214,34 @@ SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
+-- ============================== selected car tag ==============================
+-- floating tag over the car picked in the Car tab: name, condition, and how long until it can be sold
+local selTag = Instance.new("BillboardGui")
+selTag.AlwaysOnTop, selTag.LightInfluence, selTag.ResetOnSpawn = true, 0, false
+selTag.Size, selTag.StudsOffsetWorldSpace = UDim2.fromOffset(240, 54), Vector3.new(0, 7, 0)
+local selText = Instance.new("TextLabel")
+selText.Size, selText.BackgroundTransparency, selText.RichText = UDim2.fromScale(1, 1), 1, true
+selText.Font, selText.TextSize, selText.TextStrokeTransparency, selText.TextColor3 = Enum.Font.GothamBold, 15, 0.3, Color3.new(1, 1, 1)
+selText.Parent = selTag
+selTag.Parent = espRoot
+
+local function sellLine(e)
+    if isFav(e) then return '<font color="#ffd24a">★ locked</font>' end
+    if CFG.sellCooldown <= 0 then return '<font color="#aaaaaa">sell timer unknown</font>' end
+    local left = sellCooldownLeft(e)
+    if left <= 0 then return '<font color="#5ee07a">can sell ✓</font>' end
+    return ('<font color="#ff9b5e">sell in %d:%02d</font>'):format(left // 60, left % 60)
+end
+
+local function updateSelTag()
+    local c = selectedCar and carOf(selectedCar)
+    local part = c and (c:FindFirstChild("DriveSeat") or c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true))
+    selTag.Enabled = part ~= nil
+    if not part then return end
+    selTag.Adornee = part
+    selText.Text = ("%s · %d%%\n%s"):format(entryModel(selectedCar), condition(c) or 0, sellLine(selectedCar))
+end
+
 -- ============================== label refresh ==============================
 task.spawn(function()
     local lastJunkVals, lastCarVals = "", ""
@@ -1100,10 +1277,7 @@ task.spawn(function()
                 local buy = tonumber(entryVal(e, "BuyPrice")) or 0
                 local pm = c and c:GetAttribute("ProfitMultiplier")
                 lines2[#lines2 + 1] = ("Bought %s%s"):format(money(buy), pm and (" · sells for %s at 100%%"):format(money(buy * (1 + pm))) or "")
-                if isFlip(e) then
-                    local left = sellCooldownLeft(e)
-                    lines2[#lines2 + 1] = CFG.sellCooldown == 0 and "Sell timer: unknown yet" or (left > 0 and ("Can sell in %dm %02ds"):format(left // 60, left % 60) or "Can sell ✓")
-                end
+                lines2[#lines2 + 1] = sellLine(e)
                 if c then
                     lines2[#lines2 + 1] = ("Condition %d%%"):format(condition(c) or 0)
                     local eng = c.Values.Engine
@@ -1118,7 +1292,9 @@ task.spawn(function()
                     lines2[#lines2 + 1] = "Not spawned"
                 end
                 carInfo:SetText(table.concat(lines2, "\n"))
+                updateSelTag()
             else
+                selTag.Enabled = false
                 carInfo:SetText("Pick a car")
             end
 

@@ -104,3 +104,18 @@ StreamingEnabled is on. Machines, the sell NPC and far junk cars exist as empty 
 ## Shop and place coordinates
 
 These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used Cars, auctions, premium dealership, repair shops, paint/tint, gas stations, car washes, plate, tire/rim, brake, underglow, bank, clothes, RodEx, body parts (far map at -10840, 5742), jobs, races, and every garage `ExitPos`.
+
+## Clean, paint, and remote clicks (measured 2026-09-28)
+
+- **Store parts can be clicked from anywhere.** `fireclickdetector` on a `PartsStore.SpareParts.Parts` item worked from 452 studs away. The confirm arrives and the part spawns at SpawnPosition, with no teleport. Buying a replacement takes about 0.5 s.
+- **Junk cars can't:** a click from about 1,700 studs gave no confirm. Buying still needs the character within the 32-stud range.
+- **Car wash:** the prompt has a 10-stud range, and it gave no tool on the first tries. `workspace.Map.CarWashes` holds 6 washes, each with a `Detector` bay (16×9.6×23).
+  - The dirt value is `car.Values.DirtLevel` (0–100).
+  - The client sends `Events.Vehicles.SetDirt:FireServer(level)` for the player's own car, from the `PressureWasher` tool (10 s) or the `Sponge` tool (15 s), stepping the level down every 0.25 s.
+  - A car spawned into the bay read dirt 0. Whether the bay itself cleans cars, or the earlier stepped SetDirt did it, isn't settled yet.
+- **Paint:**
+  - With the car inside `Pitstop(Large).Model.CarPaint.Detector` (16×9.6×19), `Events.Vehicles.SetPaint:FireServer("Car", car, Color3, material)` repaints it. Money goes down by the material price and `Values.PaintColor` becomes `"<material>_r, g, b"`.
+  - Prices (`Assets.CarMaterials` attr Price): Rust 0, Normal 200, Shiny 500, Matte 700, Aluminum 1200, Metallic 1500. Underglow costs 2500 (`ReplicatedStorage` attr UnderglowPrice).
+- **Sell price depends on condition:** an unrepaired Fia-Te Ponto bought for €1.6K sold for €1.1K. The repaired Ontel got the full ×(1+PM).
+- **Sell timer:** 184 s after purchase. The refusal text is `You need to wait N seconds to sell this car`.
+- **Sell zone:** a car freshly respawned 9 studs from the NPC was once "too far". Retrying 6 studs out worked.
