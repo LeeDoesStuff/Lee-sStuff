@@ -1878,6 +1878,107 @@ do
         return ok and type(src) == "string" and tonumber(src:match("EngineSize = ([%d%.]+)")) or nil
     end
 
+    -- ============ car to car: move or trade parts between two of your cars ============
+    -- Only one of your cars can be out at a time, so: pull from A, pull from B, fit A's into B, bring A back, fit B's.
+    -- Loose parts wait at the shop with their cleanup timer held off (the game's client deletes loose parts after 90 s).
+    local X = { held = {} } -- car-to-car helpers live in one table (Luau caps a function at 200 locals)
+    function X.slotsFor(car, what)
+        local eng = car.Values.Engine
+        local cur = categoryOf(eng.EngineBlock.Value)
+        local slots = {}
+        if what.Engine and cur then for _, s in ipairs(engineSlots(car, cur)) do slots[#slots + 1] = s end end
+        for _, s in ipairs({ "Transmission", "Battery", "Radiator" }) do
+            local key = s == "Transmission" and "Gearbox" or s
+            if what[key] and eng:FindFirstChild(s) and eng[s].Value ~= "" then slots[#slots + 1] = s end
+        end
+        return slots
+    end
+
+    function X.holdParts(on)
+        if on and not X.holdConn then
+            X.holdConn = RunService.Heartbeat:Connect(function()
+                for p in pairs(X.held) do
+                    if p.Parent then p:SetAttribute("DroppedAt", nil) else X.held[p] = nil end
+                end
+            end)
+        elseif not on and X.holdConn then
+            X.holdConn:Disconnect(); X.holdConn = nil; table.clear(X.held)
+        end
+    end
+
+    function X.pull(e, slots)
+        tpTo(liftCF() * CFrame.new(0, 0, 12))
+        local car = spawnCar(e, liftCF())
+        if not car then return nil, "car didn't come to the shop" end
+        if not openHood(car) then return nil, "couldn't open the hood" end
+        local before = myParts()
+        for _, s in ipairs(slots) do
+            local v = car.Values.Engine:FindFirstChild(s)
+            if v and v.Value ~= "" then fireParts(e, "RemovePart", s); task.wait(0.35) end
+        end
+        task.wait(1)
+        local got = {}
+        for p in pairs(myParts()) do if not before[p] then got[#got + 1] = p; X.held[p] = true end end
+        return got
+    end
+
+    function X.fit(e, parts)
+        tpTo(liftCF() * CFrame.new(0, 0, 12))
+        local car = spawnCar(e, liftCF())
+        if not car then return #parts, "car didn't come to the shop" end
+        openHood(car)
+        table.sort(parts, function(a, b) return (a.Name == "EngineBlock" and 0 or 1) < (b.Name == "EngineBlock" and 0 or 1) end)
+        for pass = 1, 2 do
+            for _, p in ipairs(parts) do if p.Parent == MoveParts then fireParts(e, "ReapplyPart", p); task.wait(0.3) end end
+            task.wait(0.8)
+        end
+        local left = 0
+        for _, p in ipairs(parts) do if p.Parent == MoveParts then left += 1 end end
+        return left
+    end
+
+    function X.transfer(eFrom, eTo, what, mode)
+        if eFrom == eTo then return false, "pick two different cars" end
+        -- engine sizes: read both tunes (each car has to be out once to read it)
+        if what.Engine then
+            local a = spawnCar(eFrom, liftCF())
+            local aSize = a and engineSize(categoryOf(a.Values.Engine.EngineBlock.Value) or "")
+            local aMax = a and maxEngineSize(a)
+            local b = spawnCar(eTo, liftCF())
+            local bSize = b and engineSize(categoryOf(b.Values.Engine.EngineBlock.Value) or "")
+            local bMax = b and maxEngineSize(b)
+            if aSize and bMax and aSize > bMax then return false, ("%s's engine (size %s) is too big for %s (takes %s)"):format(entryModel(eFrom), aSize, entryModel(eTo), bMax) end
+            if mode == "Swap" and bSize and aMax and bSize > aMax then return false, ("%s's engine (size %s) is too big for %s (takes %s)"):format(entryModel(eTo), bSize, entryModel(eFrom), aMax) end
+        end
+        X.holdParts(true)
+        local ok, res = pcall(function()
+            local carA = spawnCar(eFrom, liftCF())
+            if not carA then return "car A didn't spawn" end
+            local fromA, why = X.pull(eFrom, X.slotsFor(carA, what))
+            if not fromA then return why end
+            local carB = spawnCar(eTo, liftCF())
+            if not carB then return "car B didn't spawn (A's parts are waiting at the shop)" end
+            local fromB, why2 = X.pull(eTo, X.slotsFor(carB, what))
+            if not fromB then return why2 end
+            local leftB = X.fit(eTo, fromA)
+            local leftA = 0
+            if mode == "Swap" then
+                leftA = X.fit(eFrom, fromB)
+            else
+                dealWithOld(fromB) -- Move: B's old parts go to the inventory or get deleted
+            end
+            local leftover = {}
+            for _, p in ipairs(fromA) do if p.Parent == MoveParts then leftover[#leftover + 1] = p end end
+            if mode == "Swap" then for _, p in ipairs(fromB) do if p.Parent == MoveParts then leftover[#leftover + 1] = p end end end
+            if #leftover > 0 then dealWithOld(leftover) end
+            return ("%s %d part(s) %s %s%s"):format(mode == "Swap" and "swapped" or "moved", #fromA, mode == "Swap" and "between" or "from",
+                entryModel(eFrom) .. (mode == "Swap" and " and " or " to ") .. entryModel(eTo),
+                (leftA + leftB) > 0 and (" · %d didn't fit and went to %s"):format(leftA + leftB, CFG.swapOld == "Delete" and "the bin" or "your inventory") or "")
+        end)
+        X.holdParts(false)
+        return ok, ok and res or ("error: " .. tostring(res))
+    end
+
     local SwapBox = Tabs.Car:AddRightGroupbox("Spec swap")
     SwapBox:AddLabel("Works on the car picked above. The car goes to the repair shop; new parts are bought first, then the old ones come out and the new ones go in.", true)
     local engDrop = SwapBox:AddDropdown("FIU_SwapEngine", { Text = "Engine", Values = ENGINES, AllowNull = true, Searchable = true })
@@ -1917,6 +2018,43 @@ do
     SwapBox:AddDropdown("FIU_SwapOld", { Text = "Old parts", Values = { "Store in inventory", "Delete" }, Default = CFG.swapOld,
         Tooltip = "Inventory holds 10 items; anything that doesn't fit stays on the floor and the game clears it after 90 s",
         Callback = set("swapOld") })
+
+    X.box = Tabs.Car:AddRightGroupbox("Car to car")
+    X.box:AddLabel("Takes parts out of one of your cars and puts them in another. Swap = the two cars trade; Move = the first car's parts replace the second's (its old parts go to your inventory or the bin, per Old parts above).", true)
+    X.from = X.box:AddDropdown("FIU_XFrom", { Text = "From car", Values = {}, AllowNull = true })
+    X.to = X.box:AddDropdown("FIU_XTo", { Text = "To car", Values = {}, AllowNull = true })
+    X.what = X.box:AddDropdown("FIU_XWhat", { Text = "Parts", Values = { "Engine", "Gearbox", "Battery", "Radiator" }, Multi = true,
+        Default = { "Engine" } })
+    X.mode = X.box:AddDropdown("FIU_XMode", { Text = "Mode", Values = { "Swap", "Move" }, Default = "Swap" })
+    X.box:AddButton({ Text = "Transfer parts", DoubleClick = true, Tooltip = "Double-click", Func = function()
+        local a, b = carByLabel[X.from.Value], carByLabel[X.to.Value]
+        if not (a and b) then notify("Pick both cars") return end
+        if not next(X.what.Value) then notify("Pick which parts") return end
+        local what, mode = table.clone(X.what.Value), X.mode.Value
+        queued("part transfer", function()
+            local ok, msg = X.transfer(a, b, what, mode)
+            log(msg); notify(msg)
+        end)
+    end })
+    task.spawn(function() -- keep both car lists in step with your garage
+        local lastKey = ""
+        while running do
+            local labels = {}
+            for l in pairs(carByLabel) do labels[#labels + 1] = l end
+            table.sort(labels)
+            local key = table.concat(labels, "|")
+            if key ~= lastKey then
+                lastKey = key
+                local fa, ta = carByLabel[X.from.Value], carByLabel[X.to.Value]
+                X.from:SetValues(labels); X.to:SetValues(labels)
+                for l, e2 in pairs(carByLabel) do
+                    if e2 == fa then X.from:SetValue(l) end
+                    if e2 == ta then X.to:SetValue(l) end
+                end
+            end
+            task.wait(1)
+        end
+    end)
 
     task.spawn(function() -- price + fit preview for the picks
         while running do
@@ -2041,7 +2179,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
