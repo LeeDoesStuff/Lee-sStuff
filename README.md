@@ -4,7 +4,7 @@ Scripts for Roblox games. Paste a loadstring into your executor; every box has a
 
 ## Loader
 
-Runs the right script for whatever game you're in (Fix It Up loads the main farm, not the hopper; JJBI and Mog or Die aren't in it yet).
+Runs the right script for whatever game you're in (Fix It Up loads the main farm, not the hopper).
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/loader.lua"))()
 ```
