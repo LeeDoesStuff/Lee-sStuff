@@ -1283,7 +1283,8 @@ local TeleportService = game:GetService("TeleportService")
 local req = request or http_request or (syn and syn.request)
 local HOP_FILE, VISIT_TTL = "fiu_hop.json", 3600
 local HOP = readJSON(HOP_FILE, {})
-for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500 }) do if HOP[k] == nil then HOP[k] = v end end
+for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500,
+    antiMod = true, modRank = 2, modAction = "Leave game" }) do if HOP[k] == nil then HOP[k] = v end end
 local function saveHop() writeJSON(HOP_FILE, HOP) end
 do
     local now = os.time()
@@ -1300,6 +1301,47 @@ if not f then pcall(writefile, "FixItUp/reload_error.txt", os.date() .. " compil
 local ok, err = pcall(f)
 if not ok then pcall(writefile, "FixItUp/reload_error.txt", os.date() .. " " .. tostring(err)) end
 ]==]
+
+-- ============================== anti-mod ==============================
+-- Game group ".workspace" (12249805): regular players are Member (rank 1); every rank above is staff.
+-- Settings live in fiu_hop.json so the watch is on the moment the script loads after a hop.
+local STAFF = {
+    group = 12249805,
+    roles = { { "Tester", 2 }, { "Content Creator", 3 }, { "Analytics", 4 }, { "Contributor", 130 }, { "Developers / Anti-Cheat", 150 },
+        { "Builder", 151 }, { "Moderator", 249 }, { "Senior Moderator", 250 }, { "Admin", 251 }, { "Senior Admin", 252 },
+        { "Manager", 253 }, { "Owners", 254 }, { "Holder", 255 } },
+    gone = false, status = "watching",
+}
+function STAFF.rank(p) -- one retry: the group web call fails now and then
+    for _ = 1, 2 do
+        local ok, r = pcall(p.GetRankInGroup, p, STAFF.group)
+        if ok and r then return r end
+        task.wait(2)
+    end
+end
+function STAFF.check(p)
+    if not HOP.antiMod or STAFF.gone or p == LP then return end
+    local rank = STAFF.rank(p)
+    if not rank or rank < HOP.modRank or STAFF.gone or not HOP.antiMod then return end
+    STAFF.gone = true
+    local _, role = pcall(p.GetRoleInGroup, p, STAFF.group)
+    local why = ("%s (@%s) is %s, rank %d"):format(p.DisplayName, p.Name, tostring(role), rank)
+    STAFF.status = "staff found: " .. why
+    lifeLog("anti-mod: " .. why .. " -> " .. HOP.modAction)
+    if HOP.modAction == "Server hop" then
+        local q = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+        if q and not hopQueued then hopQueued = pcall(q, RELOAD) end
+        pcall(TeleportService.Teleport, TeleportService, game.PlaceId, LP)
+        task.delay(12, function() LP:Kick("Staff joined (hop failed): " .. why) end) -- still here = the teleport didn't happen
+    else
+        LP:Kick("Left: staff joined. " .. why)
+    end
+end
+function STAFF.scan()
+    for _, p in ipairs(Players:GetPlayers()) do task.spawn(STAFF.check, p) end
+end
+on(Players.PlayerAdded, STAFF.check)
+task.spawn(STAFF.scan)
 
 -- values = Cars Sold of every other player (math.huge = stats never loaded, counts as over)
 -- c.hard: anyone at/over c.hardMax fails the server outright, whatever c.over allows
@@ -2601,7 +2643,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -3248,9 +3290,30 @@ end })
 HopInfo:AddButton({ Text = "Forget visited servers", Func = function()
     HOP.visited = { [game.JobId] = os.time() }; saveHop(); notify("Visited list cleared.")
 end })
+
+local ModBox = Tabs.Hop:AddRightGroupbox("Anti-mod")
+ModBox:AddLabel("Leaves as soon as anyone ranked above Member in the game's group (.workspace) is in the server, including when you join.", true)
+ModBox:AddToggle("FIU_AntiMod", { Text = "Leave when staff join", Default = HOP.antiMod,
+    Callback = function(v) HOP.antiMod = v; saveHop(); if v then task.spawn(STAFF.scan) end end })
+local rankVals, rankByLabel, rankDefault = {}, {}, nil
+for _, r in ipairs(STAFF.roles) do
+    local l = ("%s (%d) and up"):format(r[1], r[2])
+    rankVals[#rankVals + 1] = l; rankByLabel[l] = r[2]
+    if r[2] == HOP.modRank then rankDefault = l end
+end
+ModBox:AddDropdown("FIU_ModRank", { Text = "Counts as staff", Values = rankVals, Default = rankDefault or rankVals[1],
+    Tooltip = "Tester (2) and up = everyone above a regular member",
+    Callback = function(v) HOP.modRank = rankByLabel[v] or 2; saveHop(); task.spawn(STAFF.scan) end })
+ModBox:AddDropdown("FIU_ModAction", { Text = "Then", Values = { "Leave game", "Server hop" }, Default = HOP.modAction,
+    Tooltip = "Server hop joins a random server and reloads the script there; if the teleport fails it leaves after 12 s",
+    Callback = function(v) HOP.modAction = v; saveHop() end })
+local modLabel = ModBox:AddLabel("-", true)
 task.spawn(function()
     while running do
-        pcall(function() hopLabel:SetText(hopStatus .. ("\nHops this hunt: %d"):format(HOP.hops)); hopServerLabel:SetText(hopServer) end)
+        pcall(function()
+            hopLabel:SetText(hopStatus .. ("\nHops this hunt: %d"):format(HOP.hops)); hopServerLabel:SetText(hopServer)
+            modLabel:SetText(not HOP.antiMod and "Off" or STAFF.status == "watching" and ("Watching %d players, no staff seen"):format(#Players:GetPlayers() - 1) or STAFF.status)
+        end)
         task.wait(1)
     end
 end)
