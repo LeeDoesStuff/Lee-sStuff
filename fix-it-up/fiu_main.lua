@@ -23,9 +23,13 @@
       sell          car within ~12 studs of the Used Cars NPC + prompt + confirm; pays BuyPrice * (1 + ProfitMultiplier)
 ]]
 
+-- newest copy wins: autoexec + the hop reload can both start one; an older copy sees the token change and unloads itself
+local HOOK = { token = {} } -- token + confirm hook state in one table (the main chunk is at Luau's 200-local limit)
+getgenv().FIU_TOKEN = HOOK.token
 if getgenv().FIU_MAIN then pcall(getgenv().FIU_MAIN.unload) end
 -- after a server hop this runs from queue_on_teleport, before the game has loaded: wait for what we read at load
 if not game:IsLoaded() then game.Loaded:Wait() end
+if getgenv().FIU_TOKEN ~= HOOK.token then return end -- a newer copy started while we waited
 
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
@@ -170,10 +174,14 @@ local function saveState() STATE.sellCooldown = CFG.sellCooldown; writeJSON(DIR 
 local function myMoney() return Status.Money.Value end
 
 -- ============================== confirm + notify hooks ==============================
-local origConfirm = getgenv().FIU_ORIG_CONFIRM or getcallbackvalue(CONFIRM, "OnClientInvoke")
-getgenv().FIU_ORIG_CONFIRM = origConfirm
+-- The game's HUD script (PlayerGui.HUD...ConfirmationClient) sets OnClientInvoke itself, and sets it AGAIN when the HUD
+-- rebuilds (respawn, and after a hop where we load first). That silently replaced our hook, so script buys/sells never
+-- saw their prompt ("server never offered the car"). hookConfirm() re-installs every second and adopts the game's
+-- newest callback as the pass-through. FIU_HOOKS marks every copy's hook so one is never mistaken for the game's.
+getgenv().FIU_HOOKS = getgenv().FIU_HOOKS or setmetatable({}, { __mode = "k" })
+HOOK.orig = getgenv().FIU_ORIG_CONFIRM
 local confirmFn, lastConfirm = nil, nil -- confirmFn(text) -> bool while the script is buying/selling
-CONFIRM.OnClientInvoke = function(text, ...)
+function HOOK.fn(text, ...)
     lastConfirm = { t = os.clock(), text = tostring(text) }
     if confirmFn then return confirmFn(tostring(text)) == true end
     -- the game's own sell prompt (you at the NPC): never let it sell a locked car
@@ -182,8 +190,17 @@ CONFIRM.OnClientInvoke = function(text, ...)
         task.defer(function() pcall(function() getgenv().FIU_MAIN.lib():Notify(selling .. " is locked: sale blocked", 6) end) end)
         return false
     end
-    return origConfirm(text, ...)
+    if HOOK.orig then return HOOK.orig(text, ...) end
+    return false -- the game's dialog isn't set up yet: decline rather than hang
 end
+getgenv().FIU_HOOKS[HOOK.fn] = true
+function HOOK.install()
+    local cur = getcallbackvalue(CONFIRM, "OnClientInvoke")
+    if cur == HOOK.fn then return end
+    if cur and not getgenv().FIU_HOOKS[cur] then HOOK.orig = cur; getgenv().FIU_ORIG_CONFIRM = cur end
+    CONFIRM.OnClientInvoke = HOOK.fn
+end
+HOOK.install()
 
 local lastNotify = { t = 0, text = "" }
 on(Events.HUD.Notifiy.OnClientEvent, function(text) lastNotify = { t = os.clock(), text = tostring(text) } end)
@@ -1570,12 +1587,12 @@ end
 -- ============================== unload ==============================
 local Library
 local function unload()
-    if getgenv().FIU_MAIN == nil then return end
+    if not running then return end
     lifeLog("unload\n" .. debug.traceback())
-    getgenv().FIU_MAIN = nil
+    if getgenv().FIU_MAIN and getgenv().FIU_MAIN.unload == unload then getgenv().FIU_MAIN = nil end -- not a newer copy's export
     running = false
     for _, c in ipairs(conns) do pcall(c.Disconnect, c) end
-    CONFIRM.OnClientInvoke = origConfirm
+    if getcallbackvalue(CONFIRM, "OnClientInvoke") == HOOK.fn and HOOK.orig then CONFIRM.OnClientInvoke = HOOK.orig end
     for m in pairs(junk) do dropJunk(m) end
     espRoot:Destroy()
     anchorRoot:Destroy()
@@ -1594,6 +1611,17 @@ getgenv().FIU_MAIN = { unload = unload, lib = function() return Library end,
     end, sel = function() return selectedCar end, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
     repairCar = repairCar, sellCar = sellCar, buyJunk = buyJunk, spawnCar = spawnCar, log = logLines,
     machines = machines, liftCF = liftCF, garageSlots = garageSlots, goPlace = goPlace, places = PLACE_NAMES, cleanCar = cleanCar, paintCar = paintCar, buyStore = buyStore }
+
+-- watchdog: a newer copy took over -> step aside; the game re-set the confirm callback -> hook it again
+task.spawn(function()
+    local mine = getgenv().FIU_MAIN
+    while running do
+        if getgenv().FIU_TOKEN ~= HOOK.token then lifeLog("newer copy started, unloading this one"); unload() break end
+        if getgenv().FIU_MAIN ~= mine then getgenv().FIU_MAIN = mine end -- an older copy raced its export over ours
+        pcall(HOOK.install)
+        task.wait(1)
+    end
+end)
 
 -- ============================== loops ==============================
 task.spawn(function()
@@ -1635,6 +1663,8 @@ local Window = Library:CreateWindow({
     Title = "Fix It Up", Footer = "junkyard tiers · auto flip · repair · teleports",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
+-- unloaded by a newer copy while we were still setting up: don't leave a dead menu behind
+if not running or getgenv().FIU_TOKEN ~= HOOK.token then running = false; pcall(Library.Unload, Library); return end
 local Tabs = {
     Junk     = Window:AddTab("Junkyard"),
     Auto     = Window:AddTab("Auto"),
