@@ -616,10 +616,13 @@ table.insert(S.conns, GuiService.ErrorMessageChanged:Connect(function(msg)
 end))
 
 -- Keep farming across teleports (IY autorejoin, server hops): queue this file for the next server.
--- Queued only when a teleport starts, so switching the option off takes effect right away.
+-- Queued only when a teleport starts, so switching the option off takes effect right away. Loads the
+-- workspace copy when there is one, else the GitHub copy (for whoever ran the README loadstring).
+local SELF_URL = "https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/build-a-battle-bot/bbb_farm.lua"
 table.insert(S.conns, LP.OnTeleport:Connect(function(state)
     if state == Enum.TeleportState.Started and CFG.rejoin and queue_on_teleport then
-        queue_on_teleport('loadstring(readfile("bbb_farm.lua"))()')
+        queue_on_teleport(('local ok, src = pcall(readfile, "bbb_farm.lua") loadstring(ok and src or game:HttpGet(%q))()')
+            :format(SELF_URL))
         log("teleport started — farm queued for the next server")
         pcall(writefile, "bbb_farm_log.txt", table.concat(S.log, "\n"))
     end
