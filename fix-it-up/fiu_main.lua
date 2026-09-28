@@ -588,10 +588,16 @@ local function cleanCar(e)
     pcall(function() LP:RequestStreamAroundAsync(wash:GetPivot().Position, 5) end)
     local det = wash:FindFirstChild("Detector") or wash:WaitForChild("Detector", 3)
     if not det then return false, "car wash not loaded" end
+    local backMe, oldCar = hrp() and hrp().CFrame, carOf(e)
+    local backCar = oldCar and oldCar:GetPivot()
+    local function restore()
+        if backCar then spawnCar(e, backCar + Vector3.new(0, 2, 0)) end
+        if backMe then tpTo(backMe) end
+    end
     local car = spawnCar(e, inBox(det))
-    if not car then return false, "spawn failed" end
+    if not car then restore(); return false, "spawn failed" end
     local dirt = car.Values:FindFirstChild("DirtLevel")
-    if dirt and dirt.Value <= 0 then return true, entryModel(e) .. " is already clean" end
+    if dirt and dirt.Value <= 0 then restore(); return true, entryModel(e) .. " is already clean" end
     local prompt = wash:FindFirstChild("Prompt")
     local pp = prompt and prompt:FindFirstChildWhichIsA("ProximityPrompt")
     if pp then tpTo(CFrame.new(prompt.Position + Vector3.new(0, 1, 3))); task.wait(0.3); fireproximityprompt(pp); task.wait(0.8) end
@@ -608,6 +614,7 @@ local function cleanCar(e)
     if h then h:UnequipTools() end
     task.wait(0.5)
     local left = dirt and dirt.Value or 0
+    restore()
     return left <= 1, ("%s dirt %d%%"):format(entryModel(e), math.floor(left))
 end
 
@@ -621,8 +628,15 @@ local function paintCar(e, color, material)
     pcall(function() LP:RequestStreamAroundAsync(booth:GetPivot().Position, 5) end)
     local det = booth:FindFirstChild("Detector") or booth:WaitForChild("Detector", 3)
     if not det then return false, "paint booth not loaded" end
+    -- afterwards the car goes back where it was (if it was out) and so do you
+    local backMe, oldCar = hrp() and hrp().CFrame, carOf(e)
+    local backCar = oldCar and oldCar:GetPivot()
+    local function restore()
+        if backCar then spawnCar(e, backCar + Vector3.new(0, 2, 0)) end
+        if backMe then tpTo(backMe) end
+    end
     local car = spawnCar(e, inBox(det))
-    if not car then return false, "spawn failed" end
+    if not car then restore(); return false, "spawn failed" end
     local prompt = booth:FindFirstChild("Prompt")
     local pp = prompt and prompt:FindFirstChildWhichIsA("ProximityPrompt")
     if pp then tpTo(prompt.CFrame * CFrame.new(0, 0, -3)); task.wait(0.3); fireproximityprompt(pp); task.wait(0.6) end
@@ -633,6 +647,7 @@ local function paintCar(e, color, material)
     local fr = LP.PlayerGui:FindFirstChild("HUD") and LP.PlayerGui.HUD.Frames:FindFirstChild("Paint")
     if fr and fr.Visible then fr.Visible = false end
     local ok = car.Values.PaintColor.Value ~= before
+    restore()
     return ok, ok and ("painted %s %s for %s"):format(entryModel(e), material, money(price)) or "paint didn't take"
 end
 
@@ -1562,6 +1577,172 @@ ActBox:AddToggle("FIU_PaintAfter", { Text = "Paint after auto repair", Default =
 
 end
 do
+-- Car lookup: search any car in the game. Catalog numbers come from ReplicatedStorage.Cache.CarList; engines,
+-- gearboxes and weight come from the car's "A-Chassis Tune" (decompiled, since requiring a loose copy errors),
+-- fetched the way the game's garage does it (GetModel) and cached in FixItUp/cars.json.
+do
+    local CARS_FILE = DIR .. "/cars.json"
+    local CC = readJSON(CARS_FILE, {})
+    local fetching = {}
+
+    local function parseTune(src)
+        local function list(key)
+            local blk = src:match("%." .. key .. " = (%b{})")
+            local t = {}
+            if blk then for v in blk:gmatch('"([^"]+)"') do t[#t + 1] = v end end
+            return t
+        end
+        local function num(key) return tonumber(src:match("%." .. key .. " = (%-?[%d%.]+)")) end
+        return { engines = list("DefaultEngines"), trans = list("DefaultTransmission"), maxSize = num("MaxEngineSize"),
+            weight = num("Weight"), body = list("StartBody") }
+    end
+    do
+        local t = parseTune('v1.DefaultEngines = { "V8 4.0" };\nv1.DefaultTransmission = { "8-Speed TC", "7-Speed DCT" };\nv1.MaxEngineSize = 6;\nv1.Weight = 2395;')
+        assert(t.engines[1] == "V8 4.0" and #t.trans == 2 and t.maxSize == 6 and t.weight == 2395, "parseTune self-check")
+    end
+
+    local function tuneSource(m)
+        local tune = m and m:FindFirstChild("A-Chassis Tune")
+        if not tune then return nil end
+        local ok, src = pcall(decompile, tune)
+        return ok and type(src) == "string" and src:find("DefaultEngines") and src or nil
+    end
+
+    local function tuneOf(name) -- cached, then any copy already on the client, then ask the server like the garage does
+        if CC[name] then return CC[name] end
+        local src
+        local cache = RS.Cache:FindFirstChild("Vehicles")
+        src = tuneSource(cache and cache:FindFirstChild(name))
+        if not src then
+            for _, v in ipairs(Vehicles:GetChildren()) do
+                if v:GetAttribute("Model") == name then src = tuneSource(v); if src then break end end
+            end
+        end
+        if not src then
+            local ok, id = pcall(function() return Events.Vehicles.GetModel:InvokeServer(name, true) end)
+            if ok and typeof(id) == "string" then
+                local t, m = os.clock(), nil
+                repeat m = LP.PlayerGui:FindFirstChild(id); task.wait(0.1) until (m and m:FindFirstChild("A-Chassis Tune")) or os.clock() - t > 15
+                src = tuneSource(m)
+                local fd = m and m:FindFirstChild("ForceDelete")
+                if fd then fd:FireServer() end -- tell the server we're done with the preview copy, as the game does
+            end
+        end
+        if not src then return nil end
+        local info = parseTune(src)
+        CC[name] = info
+        writeJSON(CARS_FILE, CC)
+        return info
+    end
+
+    local engineStats = {}
+    local function engineInfo(eng) -- from the engine block's PartInfo in the parts store
+        if engineStats[eng] ~= nil then return engineStats[eng] end
+        local cat = SPARE.Parts:FindFirstChild(eng)
+        local blk = cat and cat:FindFirstChild("EngineBlock")
+        local pi = blk and blk:FindFirstChild("PartInfo")
+        local info = false
+        if pi then
+            local ok, s = pcall(decompile, pi)
+            if ok and type(s) == "string" then
+                info = { size = tonumber(s:match("EngineSize = ([%d%.]+)")), hp = tonumber(s:match("HPLimit = ([%d%.]+)")),
+                    torque = tonumber(s:match("PeakTorque = ([%d%.]+)")), redline = tonumber(s:match("Redline = ([%d%.]+)")),
+                    fuel = s:match('Fuel = "(%a+)"'), price = blk:GetAttribute("Price") }
+            end
+        end
+        engineStats[eng] = info
+        return info
+    end
+    local function engineLine(eng)
+        local e = engineInfo(eng)
+        if not e then return eng end
+        return ("%s · %s Nm · %s rpm · HP limit %s · %s · block %s"):format(eng, tostring(e.torque or "?"), tostring(e.redline or "?"),
+            tostring(e.hp or "?"), e.fuel or "?", money(e.price or 0))
+    end
+
+    local names = {}
+    for _, c in ipairs(RS.Cache.CarList:GetChildren()) do names[#names + 1] = c.Name end
+    table.sort(names)
+
+    local Look = Tabs.Car:AddLeftGroupbox("Car lookup")
+    local lookDrop = Look:AddDropdown("FIU_Lookup", { Text = "Search any car", Values = names, Searchable = true, AllowNull = true })
+    local lookLabel = Look:AddLabel("Pick a car to see its rarity, price, profit and engines.", true)
+    local shown
+
+    local function render(name)
+        local cat = RS.Cache.CarList:FindFirstChild(name)
+        if not cat then return "Unknown car" end
+        local price, pm, sc = cat:GetAttribute("Price"), cat:GetAttribute("ProfitMultiplier") or 0, cat:GetAttribute("SpawnChance") or 0
+        local lo, hi = typeof(price) == "NumberRange" and price.Min or 0, typeof(price) == "NumberRange" and price.Max or 0
+        local tier = tierOf(sc, sc <= 0)
+        local L = { ('<font color="%s"><b>[%s] %s</b></font>'):format(hex(CFG.color[tier]), tier, name) }
+        L[#L + 1] = sc > 0 and ("Rarity %s · %s spawn chance in the junkyard"):format(TIER_TEXT[tier], chanceText(sc))
+            or "Doesn't spawn in the junkyard (dealership, event or exclusive)"
+        if hi > 0 then
+            L[#L + 1] = ("Junk price %s – %s · profit ×%s"):format(money(lo), money(hi), tostring(pm))
+            L[#L + 1] = ("Profit %s – %s · sells for %s – %s at 100%%"):format(money(lo * pm), money(hi * pm), money(lo * (1 + pm)), money(hi * (1 + pm)))
+        end
+        local flags = {}
+        if cat:GetAttribute("NoRust") then flags[#flags + 1] = "never rusty" end
+        if cat:GetAttribute("ShowEngine") then flags[#flags + 1] = "open engine" end
+        if #flags > 0 then L[#L + 1] = table.concat(flags, " · ") end
+        -- where it is right now
+        local junkN = 0
+        for _, j in pairs(junk) do for _, n in ipairs(j.names) do if n == name then junkN += 1 end end end
+        local mine, others = 0, {}
+        for _, e in ipairs(entries()) do if entryModel(e) == name then mine += 1 end end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP then
+                local g = p:FindFirstChild("PlayerData") and p.PlayerData:FindFirstChild("Garage")
+                for _, e in ipairs(g and g:GetChildren() or {}) do if entryVal(e, "Model") == name then others[#others + 1] = p.DisplayName end end
+            end
+        end
+        L[#L + 1] = ("In the junkyard now: %d · you own %d%s"):format(junkN, mine, #others > 0 and (" · also owned by " .. table.concat(others, ", ")) or "")
+        -- engines and the rest from the car's tune
+        local t = CC[name]
+        if not t then
+            L[#L + 1] = fetching[name] and "Loading engines..." or "Engines not loaded"
+        else
+            L[#L + 1] = "<b>Engines it can spawn with</b>"
+            for _, eng in ipairs(t.engines) do L[#L + 1] = "  " .. engineLine(eng) end
+            if #t.trans > 0 then L[#L + 1] = "Gearboxes: " .. table.concat(t.trans, ", ") end
+            if t.maxSize then
+                local fits = {}
+                for _, c in ipairs(SPARE.Parts:GetChildren()) do
+                    local e = engineInfo(c.Name)
+                    if e and e.size and e.size <= t.maxSize then fits[#fits + 1] = c.Name end
+                end
+                table.sort(fits)
+                L[#L + 1] = ("Max engine size %s · swaps that fit: %s"):format(tostring(t.maxSize), #fits > 0 and table.concat(fits, ", ") or "none")
+            end
+            if t.weight then L[#L + 1] = ("Weight %s"):format(tostring(t.weight)) end
+        end
+        return table.concat(L, "\n")
+    end
+
+    lookDrop:OnChanged(function(name)
+        shown = name
+        if not name then lookLabel:SetText("Pick a car to see its rarity, price, profit and engines.") return end
+        lookLabel:SetText(render(name))
+        if not CC[name] and not fetching[name] then
+            fetching[name] = true
+            task.spawn(function()
+                local ok, err = pcall(tuneOf, name)
+                fetching[name] = nil
+                if not ok then log("car lookup: " .. tostring(err)) end
+                if shown == name then lookLabel:SetText(render(name)) end
+            end)
+            lookLabel:SetText(render(name))
+        end
+    end)
+    task.spawn(function() -- keep the junkyard/owner counts fresh
+        while running do
+            task.wait(2)
+            if shown then pcall(function() lookLabel:SetText(render(shown)) end) end
+        end
+    end)
+end
+
 -- Shop
 local ShopBox = Tabs.Shop:AddLeftGroupbox("Spare parts")
 local cats = {}
@@ -1656,7 +1837,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
