@@ -215,6 +215,15 @@ local function entries() return Garage:GetChildren() end
 local function entryModel(e) local v = e:FindFirstChild("Model"); return v and v.Value or "?" end
 local function entryVal(e, n) local v = e:FindFirstChild(n); return v and v.Value end
 local function carOf(e) return Vehicles:FindFirstChild(e.Name) end
+-- the hood ClickDetector only reaches 10 studs: stand just outside the hood, away from the car's middle
+local function hoodSpot(car)
+    local det = car:FindFirstChild("Misc") and car.Misc:FindFirstChild("Hood") and car.Misc.Hood:FindFirstChild("Detector")
+    if not det then return car:GetPivot() * CFrame.new(0, 2, -8) end
+    local out = det.Position - car:GetPivot().Position
+    out = Vector3.new(out.X, 0, out.Z)
+    out = out.Magnitude > 0.1 and out.Unit or Vector3.new(0, 0, -1)
+    return CFrame.lookAt(det.Position + out * 4 + Vector3.new(0, 1, 0), det.Position)
+end
 local function isFav(e) return FAV[e.Name] ~= nil end
 local function isFlip(e) return OWNED[e.Name] ~= nil and not isFav(e) end
 
@@ -257,9 +266,14 @@ local SHOPS = {
 }
 local function stationRoot() return SHOPS[CFG.station] and SHOPS[CFG.station]() or SHOPS.Dealership() end
 
+-- where the car goes for a repair: open floor, not up on a lift (Dealership spot picked by the player)
+local FLOOR_SPOT = { Dealership = Vector3.new(-533.6, 4.8, -799.0) }
 local function liftCF()
     local root = stationRoot()
     local lift = root:FindFirstChild("Lift") or (root:FindFirstChild("Lifts") and root.Lifts:FindFirstChild("Lift"))
+    local rot = lift and lift:GetPivot().Rotation or CFrame.identity
+    local spot = FLOOR_SPOT[CFG.station]
+    if spot then return CFrame.new(spot) * rot end
     if lift then return lift:GetPivot() * CFrame.new(0, 4, 0) end
     return CFrame.new(-563.4, 11, -799.9)
 end
@@ -342,15 +356,28 @@ local function repairCar(e)
     local car = spawnCar(e, liftCF())
     if not car then return false, "spawn failed" end
     local eng, wear = car.Values.Engine, car.Values.Engine.Wear
-    tpTo(car:GetPivot() * CFrame.new(0, 2, -8))
+    tpTo(hoodSpot(car))
     task.wait(0.4)
-    if not car.Values.Cache.IsHoodOpen.Value then
-        local hood = car:FindFirstChild("Misc") and car.Misc:FindFirstChild("Hood")
-        local cd = hood and hood:FindFirstChild("ClickDetector", true)
-        if cd then fireclickdetector(cd) end
+    -- IsHoodOpen only exists once the hood has been used on this spawn
+    local function hoodOpen() local v = car.Values.Cache:FindFirstChild("IsHoodOpen"); return v ~= nil and v.Value end
+    -- a fresh spawn needs a moment before its hood takes clicks; 10-stud range, so re-stand each try
+    local hood = car:WaitForChild("Misc", 5) and car.Misc:WaitForChild("Hood", 5)
+    local det = hood and hood:WaitForChild("Detector", 5)
+    local cd = det and det:FindFirstChildWhichIsA("ClickDetector")
+    for try = 1, 3 do
+        if hoodOpen() or not cd then break end
+        task.wait(0.6)
+        tpTo(hoodSpot(car))
+        task.wait(0.4)
+        fireclickdetector(cd)
         local t = os.clock()
-        repeat task.wait(0.1) until car.Values.Cache.IsHoodOpen.Value or os.clock() - t > 3
+        repeat task.wait(0.1) until hoodOpen() or os.clock() - t > 2
+        if not hoodOpen() then
+            local r = hrp()
+            log(("hood try %d failed, %.1f studs from it"):format(try, r and (r.Position - det.Position).Magnitude or -1))
+        end
     end
+    if not hoodOpen() then return false, "couldn't open the hood" end
 
     -- slots to pull: installed, worn, and either repairable or replaceable
     local bay = car.Body:FindFirstChild("EngineBay")
@@ -926,7 +953,7 @@ end) })
 CarBox:AddButton({ Text = "Open / close hood", Func = run("hood", function()
     local c = selectedCar and carOf(selectedCar)
     local cd = c and c:FindFirstChild("Misc") and c.Misc:FindFirstChild("Hood") and c.Misc.Hood:FindFirstChild("ClickDetector", true)
-    if cd then tpTo(c:GetPivot() * CFrame.new(0, 2, -8)); task.wait(0.3); fireclickdetector(cd) end
+    if cd then tpTo(hoodSpot(c)); task.wait(0.3); fireclickdetector(cd) end
 end) })
 local carInfo = CarBox:AddLabel("-", true)
 

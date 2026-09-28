@@ -51,7 +51,7 @@ The sale pays `BuyPrice × (1 + ProfitMultiplier)` at 100 % condition. For examp
 
 ## Repair
 
-1. **Hood:** click `car.Misc.Hood.Detector.ClickDetector`. This sets `Values.Cache.IsHoodOpen`.
+1. **Hood:** click `car.Misc.Hood.Detector.ClickDetector`, which has a **10-stud range**; stand beside the hood, not the car center. This sets `Values.Cache.IsHoodOpen` (the value can be missing before the hood is first used). A car spawned by RemoteLoad ignores the first click for about a second, so retry (measured 2026-09-28).
 2. **Remove:** `car.PartsEvent:FireServer("RemovePart", "<Slot>")`.
    - It works from 230+ studs.
    - The part appears in `workspace.MoveableParts` with `Owner`, `Wear`, `PartName`, `Category`, `RepairMachine` and `DroppedAt`.
@@ -68,6 +68,8 @@ The sale pays `BuyPrice × (1 + ProfitMultiplier)` at 100 % condition. For examp
    - Click `workspace.PartsStore.SpareParts.Parts[<Category>][<PartName>]`, then confirm "Do you want to buy  i3 1.0 Sparkplugs for 30€?".
    - The new part spawns at `SpareParts.SpawnPosition`.
    - Install it, then `Events.PartsEvent:FireServer("DeletePart", oldPart)`.
+
+**Repair spot:** the user wants the car on the open floor of the Dealership shop at about (-533.6, 1.8, -799), not up on a lift. The script spawns it there with RemoteLoad. A full repair (3 parts + 1 replacement) took 30 s.
 
 **Repair shops:**
 - `Buildings.Dealership.Folder.Station1/2`: 6 grinders, 3 washers, 3 chargers, and lifts at about (-563, 7, -800). The user calls this the "secondary garage" and prefers it because it's quiet.
