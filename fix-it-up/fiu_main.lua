@@ -963,6 +963,143 @@ local function goPlace(name)
     end
 end
 
+-- ============================== server hop (was fiu_hop.lua) ==============================
+-- Hops public servers until every other player has fewer than N "Cars Sold" (fewer competitors for junk).
+-- State in fiu_hop.json (shared with the old standalone hopper) so settings + visited servers survive teleports.
+if getgenv().FIU_Hop_Unload then pcall(getgenv().FIU_Hop_Unload) end -- the standalone hopper would fight this one
+local TeleportService = game:GetService("TeleportService")
+local req = request or http_request or (syn and syn.request)
+local HOP_FILE, VISIT_TTL = "fiu_hop.json", 3600
+local HOP = readJSON(HOP_FILE, {})
+for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {} }) do if HOP[k] == nil then HOP[k] = v end end
+local function saveHop() writeJSON(HOP_FILE, HOP) end
+do
+    local now = os.time()
+    for id, t in pairs(HOP.visited) do if now - t > VISIT_TTL then HOP.visited[id] = nil end end
+    HOP.visited[game.JobId] = now
+    saveHop()
+end
+local hopping, hopQueued, hopStatus, hopServer = false, false, "idle", "scanning..."
+
+-- values = Cars Sold of every other player (math.huge = stats never loaded, counts as over)
+local function judge(values, c)
+    local over = 0
+    for _, v in ipairs(values) do if v >= c.max then over += 1 end end
+    return #values >= 1 and over <= c.over, over
+end
+assert(judge({ 10, 49 }, { max = 50, over = 0 }) and not judge({ 10, 50 }, { max = 50, over = 0 })
+    and judge({ 10, 900 }, { max = 50, over = 1 }) and not judge({}, { max = 50, over = 0 }), "judge self-check")
+
+local function soldOf(pl)
+    local ls = pl:FindFirstChild("leaderstats")
+    local v = ls and ls:FindFirstChild("Cars Sold")
+    return v and tonumber(v.Value)
+end
+
+local function scanServer() -- waits up to 8 s for everyone's leaderstats
+    local deadline, others = os.clock() + 8, nil
+    repeat
+        others = {}
+        local missing = false
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= LP then
+                local s = soldOf(pl)
+                if not s then missing = true end
+                others[#others + 1] = s or math.huge
+            end
+        end
+        if not missing then break end
+        task.wait(0.5)
+    until os.clock() > deadline
+    table.sort(others)
+    return others
+end
+
+local function checkServer()
+    local vals = scanServer()
+    local ok, over = judge(vals, HOP)
+    local shown = {}
+    for i, v in ipairs(vals) do shown[i] = v == math.huge and "?" or tostring(v) end
+    hopServer = ("%d others · %d at/over %d\nlowest %s · highest %s\n%s"):format(#vals, over, HOP.max,
+        shown[1] or "-", shown[#shown] or "-", ok and "PASSES" or "fails")
+    return ok, #vals, over
+end
+
+-- ONE request per hop, page 1 only: the API 429s on the 3rd call within 4 s (measured 2026-09-25)
+local function candidates()
+    local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100"):format(game.PlaceId)
+    local body, code
+    if req then
+        local ok, res = pcall(req, { Url = url, Method = "GET" })
+        if not ok then return nil, "request error" end
+        body, code = res.Body, res.StatusCode
+    else
+        local ok, b = pcall(game.HttpGet, game, url)
+        if not ok then return nil, "request error" end
+        body, code = b, 200
+    end
+    if code == 429 then return nil, 429 end
+    local ok, data = pcall(HttpService.JSONDecode, HttpService, body)
+    if not ok or type(data) ~= "table" or type(data.data) ~= "table" then return nil, data and data.errors and 429 or code end
+    local best
+    for _, s in ipairs(data.data) do
+        local p = s.playing or 0
+        -- ponytail: largest server under the cap = most low-sellers per hop
+        if not HOP.visited[s.id] and p >= 1 and p <= HOP.maxp and p < (s.maxPlayers or 0) and (not best or p > best.playing) then best = s end
+    end
+    return best
+end
+
+on(TeleportService.TeleportInitFailed, function(_, result, msg) hopStatus = ("teleport failed: %s %s"):format(tostring(result), tostring(msg)) end)
+
+local function hop()
+    if hopping then return end
+    hopping = true
+    local q = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+    if q and not hopQueued then hopQueued = pcall(q, 'loadstring(readfile("fiu_main.lua"))()') end
+    local backoff = 60
+    while running and HOP.auto do
+        local s, why = candidates()
+        if s then
+            backoff = 60
+            HOP.visited[s.id] = os.time()
+            HOP.hops += 1
+            saveHop()
+            hopStatus = ("hop #%d -> %d/%d players"):format(HOP.hops, s.playing, s.maxPlayers)
+            pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, s.id, LP)
+            task.wait(15) -- normally gone before this; still here = it failed, try the next one
+        elseif why == 429 then
+            hopStatus = ("Roblox rate-limited the server list, waiting %ds"):format(backoff)
+            task.wait(backoff)
+            backoff = math.min(backoff * 2, 300)
+        elseif why then
+            hopStatus = ("server list failed (%s), retry in 30s"):format(tostring(why))
+            task.wait(30)
+        else
+            hopStatus = ("no unvisited servers with <= %d players, retry in 30s"):format(HOP.maxp)
+            task.wait(30)
+        end
+    end
+    hopping = false
+end
+
+local hopToggle
+local function hopRun()
+    hopStatus = "checking this server..."
+    task.wait(2) -- let the player list settle after joining
+    if not (running and HOP.auto) then return end
+    local ok, n, over = checkServer()
+    if ok then
+        HOP.auto = false
+        saveHop()
+        if hopToggle then hopToggle:SetValue(false) end
+        hopStatus = ("FOUND after %d hops: %d others, %d over limit"):format(HOP.hops, n, over)
+        notify(("Found it! %d players, all under %d cars sold."):format(n, HOP.max))
+    else
+        hop()
+    end
+end
+
 -- ============================== unload ==============================
 local Library
 local function unload()
@@ -1016,6 +1153,7 @@ local Tabs = {
     Car      = Window:AddTab("Car"),
     Shop     = Window:AddTab("Shop"),
     Teleport = Window:AddTab("Teleport"),
+    Hop      = Window:AddTab("Server hop"),
     Settings = Window:AddTab("Settings"),
 }
 local function set(key) return function(v) CFG[key] = v end end
@@ -1238,7 +1376,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_Player", "FIU_SellCd" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -1343,5 +1481,48 @@ task.spawn(function()
         task.wait(0.5)
     end
 end)
+
+-- Server hop tab (settings live in fiu_hop.json, not SaveManager, so they survive the teleport before autoload)
+local HopBox = Tabs.Hop:AddLeftGroupbox("Auto hop")
+HopBox:AddLabel("Hops to servers where the other players have sold few cars (less competition at the junkyard). Reloads this script after every hop.", true)
+hopToggle = HopBox:AddToggle("FIU_HopAuto", { Text = "Auto hop until match", Default = HOP.auto,
+    Tooltip = "Checks this server, hops if it fails, repeats after every teleport",
+    Callback = function(v)
+        if v == HOP.auto then return end
+        HOP.auto = v
+        if v then HOP.hops = 0 end
+        saveHop()
+        if v then task.spawn(hopRun) else hopStatus = "stopped" end
+    end })
+HopBox:AddSlider("FIU_HopMax", { Text = "Cars Sold must be under", Default = HOP.max, Min = 5, Max = 500, Rounding = 0,
+    Callback = function(v) HOP.max = v; saveHop() end })
+HopBox:AddSlider("FIU_HopOver", { Text = "Players allowed over limit", Default = HOP.over, Min = 0, Max = 10, Rounding = 0,
+    Tooltip = "0 = everyone must be under. Raise it if hunting takes forever.", Callback = function(v) HOP.over = v; saveHop() end })
+HopBox:AddSlider("FIU_HopMaxP", { Text = "Max other players", Default = HOP.maxp, Min = 1, Max = 21, Rounding = 0,
+    Tooltip = "Only hop into servers with at most this many players", Callback = function(v) HOP.maxp = v; saveHop() end })
+local hopLabel = HopBox:AddLabel("-", true)
+local HopInfo = Tabs.Hop:AddRightGroupbox("This server")
+local hopServerLabel = HopInfo:AddLabel("-", true)
+HopInfo:AddButton({ Text = "Rescan this server", Func = function() task.spawn(checkServer) end })
+HopInfo:AddButton({ Text = "Hop once now", Func = function()
+    task.spawn(function()
+        local s, why = candidates()
+        if not s then notify("No server to hop to: " .. tostring(why or "none under the player cap")) return end
+        local q = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+        if q and not hopQueued then hopQueued = pcall(q, 'loadstring(readfile("fiu_main.lua"))()') end
+        HOP.visited[s.id] = os.time(); saveHop()
+        pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, s.id, LP)
+    end)
+end })
+HopInfo:AddButton({ Text = "Forget visited servers", Func = function()
+    HOP.visited = { [game.JobId] = os.time() }; saveHop(); notify("Visited list cleared.")
+end })
+task.spawn(function()
+    while running do
+        pcall(function() hopLabel:SetText(hopStatus .. ("\nHops this hunt: %d"):format(HOP.hops)); hopServerLabel:SetText(hopServer) end)
+        task.wait(1)
+    end
+end)
+if HOP.auto then task.spawn(hopRun) else task.spawn(checkServer) end
 
 Library:Notify("Fix It Up ready — RightCtrl toggles the UI. Only script-bought cars are ever sold.", 5)

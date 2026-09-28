@@ -24,8 +24,10 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 
 **Garage:** the Default garage has 3 slots. As of 2026-09-28 it holds a single Merquis Maibac S650 (collection). I left that car parked at the sell NPC after a test. The script refuses to sell while it's there.
 
-**fiu_hop.lua** (2026-09-25) hops to servers with low Cars Sold.
-- Stats: `leaderstats["Cars Sold"]`, `PlayerData.Status.*`.
-- The servers API rate limit is the 3rd call within 4 s → 429.
+**Server hop:** merged on 2026-09-28 into the fiu_main "Server hop" tab, at the user's request.
+- It keeps state in `fiu_hop.json`, and re-queues `fiu_main.lua` via queue_on_teleport.
+- The standalone `fiu_hop.lua` is legacy; fiu_main unloads it if it's running.
+- It hunts for servers where other players' `leaderstats["Cars Sold"]` is under a cap.
+- The servers API allows at most 2 calls per 4 s (the 3rd gets a 429).
 
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md).
