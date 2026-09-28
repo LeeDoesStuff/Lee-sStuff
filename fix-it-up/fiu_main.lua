@@ -155,7 +155,7 @@ local CFG = {
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
-    homeReturn = false, homeAfterTp = false, autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
+    homeAfterTp = false, autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
     driveSpeed = 85, driveExtra = 2, driveNoLimit = false, farmYield = false, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
@@ -930,6 +930,7 @@ local function titleAttachment(c, old)
     return a
 end
 local function scanPlayers()
+    if not CFG.playerEsp and not next(plEsp) and not next(carEsp) then return end -- off and already cleaned up
     local cp = camPos()
     local byOwner, driving = {}, {} -- owner name -> cars; car -> driver
     for _, c in ipairs(Vehicles:GetChildren()) do
@@ -1075,7 +1076,7 @@ end
 -- home: a quiet spot you park at between auto actions (STATE.home = { x, y, z, lookX, lookZ })
 local function goHome(force)
     local h = STATE.home
-    if not (h and (force or CFG.homeReturn or CFG.homeAfterTp)) then return end
+    if not (h and (force or CFG.homeAfterTp)) then return end
     local pos = Vector3.new(h[1], h[2], h[3])
     local r = hrp()
     if r and (r.Position - pos).Magnitude < 10 then return end
@@ -1448,7 +1449,7 @@ local Tabs = {
     Junk     = Window:AddTab("Junkyard"),
     Auto     = Window:AddTab("Auto"),
     Car      = Window:AddTab("Garage"),
-    Shop     = Window:AddTab("Shop"),
+    Shop     = Window:AddTab("Parts"),
     Teleport = Window:AddTab("Teleport"),
     Players  = Window:AddTab("Players"),
     Gold     = Window:AddTab("Gold"),
@@ -1576,17 +1577,19 @@ AutoBox:AddLabel("Buys junk cars that pass the filters, repairs them at the repa
 AutoBox:AddToggle("FIU_AutoBuy", { Text = "Auto buy", Default = CFG.autoBuy, Callback = set("autoBuy") })
 AutoBox:AddToggle("FIU_AutoRepair", { Text = "Auto repair after buy", Default = CFG.autoRepair, Callback = set("autoRepair") })
 AutoBox:AddToggle("FIU_AutoSell", { Text = "Auto sell", Tooltip = "Only sells cars this script bought", Default = CFG.autoSell, Callback = set("autoSell") })
+AutoBox:AddToggle("FIU_CleanAfter", { Text = "Clean after auto repair", Default = CFG.cleanAfter, Callback = set("cleanAfter") })
+AutoBox:AddToggle("FIU_PaintAfter", { Text = "Paint after auto repair", Tooltip = "Uses the finish and color set in Garage > Car actions",
+    Default = CFG.paintAfter, Callback = set("paintAfter") })
 local autoLabel = AutoBox:AddLabel("-", true)
 
 do
 local HomeBox = Tabs.Auto:AddLeftGroupbox("Home")
-HomeBox:AddLabel("A quiet spot of your choosing. After each auto buy, repair or sell you're sent back here instead of standing around the junkyard or the sell NPC.", true)
+HomeBox:AddLabel("A quiet spot of your choosing. With Return after tp on, anything that teleports you (auto or buttons) ends back here instead of at the junkyard or the sell NPC.", true)
 local homeLabel = HomeBox:AddLabel("-", true)
 local function showHome()
     local h = STATE.home
     homeLabel:SetText(h and ("Home set at %d, %d, %d"):format(h[1], h[2], h[3]) or "No home set")
 end
-HomeBox:AddToggle("FIU_HomeReturn", { Text = "Return home after auto actions", Default = CFG.homeReturn, Callback = set("homeReturn") })
 HomeBox:AddToggle("FIU_HomeAfterTp", { Text = "Return after tp", Default = CFG.homeAfterTp,
     Tooltip = "Back home after anything that teleported you: auto buy/repair/sell, Buy car, Sell, Repair, Clean, Paint, swaps, and when the distance farm stops. Teleport buttons and Hood are left alone.",
     Callback = set("homeAfterTp") })
@@ -1741,8 +1744,6 @@ ActBox:AddButton({ Text = "Paint", Tooltip = "Puts the car in the paint booth an
     local _, msg = paintCar(selectedCar, paintColor(), CFG.paintMaterial)
     log(msg); notify(msg)
 end) })
-ActBox:AddToggle("FIU_CleanAfter", { Text = "Clean after auto repair", Default = CFG.cleanAfter, Callback = set("cleanAfter") })
-ActBox:AddToggle("FIU_PaintAfter", { Text = "Paint after auto repair", Default = CFG.paintAfter, Callback = set("paintAfter") })
 
 end
 do
@@ -1833,7 +1834,7 @@ do
     for _, c in ipairs(RS.Cache.CarList:GetChildren()) do names[#names + 1] = c.Name end
     table.sort(names)
 
-    local Look = Tabs.Car:AddLeftGroupbox("Car lookup")
+    local Look = Tabs.Junk:AddLeftGroupbox("Car lookup")
     local lookDrop = Look:AddDropdown("FIU_Lookup", { Text = "Search any car", Values = names, Searchable = true, AllowNull = true })
     local lookLabel = Look:AddLabel("Pick a car to see its rarity, price, profit and engines.", true)
     -- filter the search by engine / engine size (needs each car's tune: "Load all car data" fetches and saves them)
@@ -2343,8 +2344,8 @@ do
         return ok, ok and res or ("error: " .. tostring(res))
     end
 
-    local SwapBox = Tabs.Car:AddRightGroupbox("Spec swap")
-    SwapBox:AddLabel("Works on the car picked above. The car goes to the repair shop; new parts are bought first, then the old ones come out and the new ones go in.", true)
+    local SwapBox = Tabs.Shop:AddRightGroupbox("Spec swap")
+    SwapBox:AddLabel("Works on the car picked in the Garage tab. The car goes to the repair shop; new parts are bought first, then the old ones come out and the new ones go in.", true)
     local engDrop = SwapBox:AddDropdown("FIU_SwapEngine", { Text = "Engine", Values = ENGINES, AllowNull = true, Searchable = true })
     local intakeDrop = SwapBox:AddDropdown("FIU_SwapIntake", { Text = "Intake", Values = { "Stock", "Sport", "Turbo" }, Default = "Stock",
         Tooltip = "Uses the stock intake if that engine has no Sport/Turbo one" })
@@ -2352,7 +2353,7 @@ do
     local swapInfo = SwapBox:AddLabel("-", true)
     SwapBox:AddButton({ Text = "Swap engine", DoubleClick = true, Tooltip = "Double-click", Func = function()
         local e, eng = selectedCar, engDrop.Value
-        if not e then notify("Pick a car above first") return end
+        if not e then notify("Pick a car in the Garage tab first") return end
         if not eng then notify("Pick an engine") return end
         queued("engine swap", function()
             local car = carOf(e)
@@ -2372,7 +2373,7 @@ do
     local transDrop = SwapBox:AddDropdown("FIU_SwapTrans", { Text = "Gearbox", Values = TRANS, AllowNull = true })
     SwapBox:AddButton({ Text = "Swap gearbox", DoubleClick = true, Tooltip = "Double-click", Func = function()
         local e, tr = selectedCar, transDrop.Value
-        if not e then notify("Pick a car above first") return end
+        if not e then notify("Pick a car in the Garage tab first") return end
         if not tr then notify("Pick a gearbox") return end
         queued("gearbox swap", function()
             local ok, msg = swap(e, { SPARE.Parts.Transmission[tr] }, { "Transmission" }, ("gearbox swap to %s"):format(tr))
@@ -2384,7 +2385,7 @@ do
         Callback = set("swapOld") })
 
     getgenv().FIU_MAIN.transfer = X.transfer -- for scripted tests
-    X.box = Tabs.Car:AddRightGroupbox("Car to car")
+    X.box = Tabs.Shop:AddRightGroupbox("Car to car")
     X.box:AddLabel("Takes parts out of one of your cars and puts them in another. Swap = the two cars trade; Move = the first car's parts replace the second's (its old parts go to your inventory or the bin, per Old parts above).", true)
     X.from = X.box:AddDropdown("FIU_XFrom", { Text = "From car", Values = {}, AllowNull = true })
     X.to = X.box:AddDropdown("FIU_XTo", { Text = "To car", Values = {}, AllowNull = true })
@@ -2484,7 +2485,7 @@ ShopBox:AddButton({ Text = "Buy + install on selected car", Func = run("shop ins
     if new then fireParts(selectedCar, "ReapplyPart", new); log("installed " .. p.Name) else log("buy failed: " .. tostring(why)) end
 end) })
 
-local ToolBox = Tabs.Shop:AddRightGroupbox("Tools")
+local ToolBox = Tabs.Shop:AddLeftGroupbox("Tools")
 local tools, toolByLabel = {}, {}
 for _, folder in ipairs({ SPARE:FindFirstChild("Tools"), workspace.PartsStore:FindFirstChild("GasStation") and workspace.PartsStore.GasStation:FindFirstChild("Tools") }) do
     for _, t in ipairs(folder and folder:GetChildren() or {}) do
@@ -2587,20 +2588,22 @@ end
 -- ============================== label refresh ==============================
 task.spawn(function()
     local lastJunkVals, lastCarVals = "", ""
+    local shownText = {}
+    local function put(lbl, text) -- SetText re-lays out the label: skip it when nothing changed
+        if shownText[lbl] ~= text then shownText[lbl] = text; lbl:SetText(text) end
+    end
     while running do
         guard("labels", function()
             -- junk list
-            local list, vals, lines = sortedJunk(), {}, {}
+            local list, vals = sortedJunk(), {}
             table.clear(junkByLabel)
             for _, j in ipairs(list) do
                 local l = junkLabel(j)
                 vals[#vals + 1] = l; junkByLabel[l] = j
-                lines[#lines + 1] = ('<font color="%s"><b>[%s]</b> %s</font> <font color="#aaaaaa">%s</font>  %s–%s · +%s · %dm'):format(
-                    hex(CFG.color[j.tier]), j.tier, j.name, chanceText(j.sc), money(j.lo), money(j.hi), money(j.profitHi), j.dist or 0)
             end
             local key = table.concat(vals, "|")
             if key ~= lastJunkVals then lastJunkVals = key; junkDrop:SetValues(vals) end
-            junkLabelBox:SetText(#lines > 0 and ("%d junk car%s · click one to pick it"):format(#lines, #lines == 1 and "" or "s") or "no junk cars loaded")
+            put(junkLabelBox, #vals > 0 and ("%d junk car%s · click one to pick it"):format(#vals, #vals == 1 and "" or "s") or "no junk cars loaded")
 
             -- cars
             local cvals = {}
@@ -2647,19 +2650,19 @@ task.spawn(function()
                 else
                     lines2[#lines2 + 1] = "Not spawned"
                 end
-                carInfo:SetText(table.concat(lines2, "\n"))
+                put(carInfo, table.concat(lines2, "\n"))
                 updateSelTag()
             else
                 selTag.Enabled = false
-                carInfo:SetText("Pick a car")
+                put(carInfo, "Pick a car")
             end
 
             local fl = {}
             for guid, model in pairs(FAV) do fl[#fl + 1] = ("★ %s [%s]%s"):format(model, guid:sub(1, 4), Garage:FindFirstChild(guid) and "" or " (not in garage)") end
             table.sort(fl)
-            favLabel:SetText(#fl > 0 and table.concat(fl, "\n") or "No locked cars")
+            put(favLabel, #fl > 0 and table.concat(fl, "\n") or "No locked cars")
 
-            autoLabel:SetText(("%s\nGarage %d/%d · money %s · reserve %s\nSold by script: %d cars · %s in sales\nProfit: %s over the last %d sale%s (buy price and parts taken off)\nSell timer: %s"):format(
+            put(autoLabel, ("%s\nGarage %d/%d · money %s · reserve %s\nSold by script: %d cars · %s in sales\nProfit: %s over the last %d sale%s (buy price and parts taken off)\nSell timer: %s"):format(
                 busy and ("busy: " .. tostring(busyWhat)) or autoStatus, #entries(), garageSlots(), money(myMoney()), money(CFG.reserve),
                 STATE.sold or 0, money(STATE.earned or 0), money(STATE.profit or 0), STATE.profitSales or 0, (STATE.profitSales or 0) == 1 and "" or "s",
                 CFG.sellCooldown > 0 and (math.floor(CFG.sellCooldown / 60) .. " min") or "learning"))
