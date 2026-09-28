@@ -1665,7 +1665,7 @@ end })
 FavBox:AddButton({ Text = "Unlock selected car", DoubleClick = true, Func = function()
     if selectedCar and FAV[selectedCar.Name] then FAV[selectedCar.Name] = nil; saveFav(); log("unlocked " .. entryModel(selectedCar)) end
 end })
-FavBox:AddToggle("FIU_AutoLock", { Text = "Auto lock rare cars", Default = CFG.autoLock,
+FavBox:AddToggle("FIU_AutoLock", { Text = "Auto lock tier", Default = CFG.autoLock,
     Tooltip = "Cars the script buys at this tier or rarer (or the models below) are locked right away and never sold",
     Callback = function(v)
         CFG.autoLock = v
