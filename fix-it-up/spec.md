@@ -84,7 +84,7 @@ The sale pays `BuyPrice × (1 + ProfitMultiplier)` at 100 % condition. For examp
 - The car must be within about 12 studs of the NPC. Otherwise the server notifies "Car is too far from the sell zone".
 - Confirm text: `"Do you want to sell your <Name> for 12,675€?"`.
 - **Sell timer:** the server refuses a sale for some time after the purchase. The user confirmed it exists. The length and the refusal text are not measured yet; the script learns them from the first refusal.
-- **Collector cars:** the user's pre-existing cars must never be sold. The script only sells GUIDs it recorded at purchase (`FixItUp/owned.json`). It also refuses to sell while any other car of the user is within 40 studs of the NPC.
+- **Collector cars:** the user locks them by hand in the script's Favorites section (`FixItUp/favorites.json`). Favorites are never sold, and the auto loop never touches them. Auto sell only sells GUIDs the script recorded at purchase (`FixItUp/owned.json`). The manual Sell button (double-click) works on any car that isn't a favorite. Nothing is sold while another of the user's cars is within 40 studs of the NPC.
 
 ## Streaming
 

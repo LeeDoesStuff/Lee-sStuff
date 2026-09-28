@@ -9,7 +9,8 @@
     Shop:     spare parts + tools, buy (and install).
     Teleport: every shop, job, garage and player.
 
-    SAFETY: only cars this script bought (FixItUp/owned.json) can ever be sold. Every other car is a collector car.
+    SAFETY: favorited cars (FixItUp/favorites.json, Car tab > Favorites) are locked: never sold, never touched by auto.
+            Auto sell only sells cars this script bought (FixItUp/owned.json). Manual Sell works on any unlocked car.
 
     Mechanics (measured 2026-09-27, see fix-it-up-spec.md):
       junk car      workspace.Vehicles[*] with Junkyard=true; name hidden, matched by Price/ProfitMultiplier/SpawnChance
@@ -132,7 +133,9 @@ local CFG = {
 local STATE = readJSON(DIR .. "/state.json", {})
 local OWNED = readJSON(DIR .. "/owned.json", {}) -- [garage GUID] = { model, boughtAt } — the ONLY sellable cars
 if STATE.sellCooldown then CFG.sellCooldown = STATE.sellCooldown end
+local FAV = readJSON(DIR .. "/favorites.json", {}) -- [garage GUID] = model name — locked by the player
 local function saveOwned() writeJSON(DIR .. "/owned.json", OWNED) end
+local function saveFav() writeJSON(DIR .. "/favorites.json", FAV) end
 local function saveState() STATE.sellCooldown = CFG.sellCooldown; writeJSON(DIR .. "/state.json", STATE) end
 
 local function myMoney() return Status.Money.Value end
@@ -212,7 +215,8 @@ local function entries() return Garage:GetChildren() end
 local function entryModel(e) local v = e:FindFirstChild("Model"); return v and v.Value or "?" end
 local function entryVal(e, n) local v = e:FindFirstChild(n); return v and v.Value end
 local function carOf(e) return Vehicles:FindFirstChild(e.Name) end
-local function isFlip(e) return OWNED[e.Name] ~= nil end
+local function isFav(e) return FAV[e.Name] ~= nil end
+local function isFlip(e) return OWNED[e.Name] ~= nil and not isFav(e) end
 
 local function condition(car)
     local eng = car and car:FindFirstChild("Values") and car.Values:FindFirstChild("Engine")
@@ -454,18 +458,19 @@ local function repairCar(e)
 end
 
 -- ============================== sell ==============================
-local function sellCar(e)
-    if not isFlip(e) then return false, "protected: not bought by this script" end
+local function sellCar(e, manual)
+    if isFav(e) then return false, "locked: " .. entryModel(e) .. " is a favorite" end
+    if not manual and not isFlip(e) then return false, "auto only sells cars it bought" end
     local left = sellCooldownLeft(e)
     if left > 0 then return false, ("sell timer: %dm %02ds"):format(left // 60, left % 60) end
     local npc = workspace.Utils.SellCar
     pcall(function() LP:RequestStreamAroundAsync(npc:GetPivot().Position, 5) end)
     local pr = npc:FindFirstChild("Prompt") or npc:WaitForChild("Prompt", 5)
     if not pr then return false, "sell NPC not loaded" end
-    -- never sell next to a collector car: the prompt sells whatever car is in the zone
+    -- the prompt sells whatever car is in the zone: never with another of your cars there
     for _, o in ipairs(entries()) do
         local c = carOf(o)
-        if o ~= e and c and (c:GetPivot().Position - pr.Position).Magnitude < 40 then return false, "a collector car is parked at the sell zone" end
+        if o ~= e and c and (c:GetPivot().Position - pr.Position).Magnitude < 40 then return false, entryModel(o) .. " is parked at the sell zone, move it first" end
     end
     local car = spawnCar(e, CFrame.lookAt(pr.Position + pr.CFrame.LookVector * 9 + Vector3.new(0, 3, 0), pr.Position))
     if not car then return false, "spawn failed" end
@@ -666,7 +671,7 @@ local function autoStep()
     if busy then return end
     -- 1) finish cars we bought: repair, then sell
     for _, e in ipairs(entries()) do
-        local o = OWNED[e.Name]
+        local o = not isFav(e) and OWNED[e.Name]
         if o and os.time() >= (o.nextTry or 0) then
             if CFG.autoRepair and not o.repaired then
                 busy, busyWhat = true, "repairing " .. entryModel(e)
@@ -913,9 +918,9 @@ CarBox:AddButton({ Text = "Repair (teleports car to the repair shop)", Func = ru
     if ok and isFlip(selectedCar) then OWNED[selectedCar.Name].repaired = true; saveOwned() end
     log(msg); notify(msg)
 end) })
-CarBox:AddButton({ Text = "Sell (script-bought only)", Func = run("sell", function()
+CarBox:AddButton({ Text = "Sell (not favorites)", DoubleClick = true, Tooltip = "Double-click. Favorites are locked and never sold.", Func = run("sell", function()
     if not selectedCar then return end
-    local ok, msg = sellCar(selectedCar)
+    local ok, msg = sellCar(selectedCar, true)
     log(msg); notify(msg)
 end) })
 CarBox:AddButton({ Text = "Open / close hood", Func = run("hood", function()
@@ -924,6 +929,16 @@ CarBox:AddButton({ Text = "Open / close hood", Func = run("hood", function()
     if cd then tpTo(c:GetPivot() * CFrame.new(0, 2, -8)); task.wait(0.3); fireclickdetector(cd) end
 end) })
 local carInfo = CarBox:AddLabel("-", true)
+
+local FavBox = Tabs.Car:AddRightGroupbox("Favorites / collection")
+FavBox:AddLabel("Locked cars are never sold, and the auto loop never touches them. Pick a car above, then lock it.", true)
+FavBox:AddButton({ Text = "★ Lock selected car", Func = function()
+    if selectedCar then FAV[selectedCar.Name] = entryModel(selectedCar); saveFav(); log("locked " .. entryModel(selectedCar)) end
+end })
+FavBox:AddButton({ Text = "Unlock selected car", DoubleClick = true, Func = function()
+    if selectedCar and FAV[selectedCar.Name] then FAV[selectedCar.Name] = nil; saveFav(); log("unlocked " .. entryModel(selectedCar)) end
+end })
+local favLabel = FavBox:AddLabel("-", true)
 
 local RepBox = Tabs.Car:AddRightGroupbox("Repair settings")
 RepBox:AddDropdown("FIU_Station", { Text = "Repair shop", Values = { "Dealership", "Pitstop" }, Default = CFG.station,
@@ -1045,7 +1060,7 @@ task.spawn(function()
             local cvals = {}
             table.clear(carByLabel)
             for _, e in ipairs(entries()) do
-                local l = ("%s %s [%s]"):format(isFlip(e) and "FLIP" or "COLLECTION", entryModel(e), e.Name:sub(1, 4))
+                local l = ("%s%s [%s]"):format(isFav(e) and "★ " or isFlip(e) and "FLIP " or "", entryModel(e), e.Name:sub(1, 4))
                 cvals[#cvals + 1] = l; carByLabel[l] = e
             end
             local ckey = table.concat(cvals, "|")
@@ -1054,7 +1069,7 @@ task.spawn(function()
             local e = selectedCar
             if e then
                 local c = carOf(e)
-                local lines2 = { ("<b>%s</b> · %s"):format(entryModel(e), isFlip(e) and '<font color="#5ee07a">flip car</font>' or '<font color="#ff6b6b">collection (never sold)</font>') }
+                local lines2 = { ("<b>%s</b> · %s"):format(entryModel(e), isFav(e) and '<font color="#ffd24a">★ favorite (locked)</font>' or isFlip(e) and '<font color="#5ee07a">flip car</font>' or '<font color="#aaaaaa">not locked</font>') }
                 local buy = tonumber(entryVal(e, "BuyPrice")) or 0
                 local pm = c and c:GetAttribute("ProfitMultiplier")
                 lines2[#lines2 + 1] = ("Bought %s%s"):format(money(buy), pm and (" · sells for %s at 100%%"):format(money(buy * (1 + pm))) or "")
@@ -1079,6 +1094,11 @@ task.spawn(function()
             else
                 carInfo:SetText("Pick a car")
             end
+
+            local fl = {}
+            for guid, model in pairs(FAV) do fl[#fl + 1] = ("★ %s [%s]%s"):format(model, guid:sub(1, 4), Garage:FindFirstChild(guid) and "" or " (not in garage)") end
+            table.sort(fl)
+            favLabel:SetText(#fl > 0 and table.concat(fl, "\n") or "No locked cars")
 
             autoLabel:SetText(("%s\nGarage %d/%d · money %s · reserve %s\nSold by script: %d (%s)\nSell timer: %s"):format(
                 busy and ("busy: " .. tostring(busyWhat)) or autoStatus, #entries(), garageSlots(), money(myMoney()), money(CFG.reserve),
