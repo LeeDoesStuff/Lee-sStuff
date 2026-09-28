@@ -17,6 +17,7 @@ Started 2026-09-27. The user's first question was where **MRKET** is. They typed
   - All three were verified live with one small real buy each. Bubbles were only tested with a fake button; a real wash is untested.
   - v3 adds a **MRKET tab**: auto pack (enter the apartment with `ApartmentEvent "Enter"`, fire the station prompt) and auto deliver (go to the meeting place, equip the box, `ToolEvent(box, true)`). **Not yet run on a live order.** It needs the user to list an item and accept an offer; then watch the tab's status line and warnings.
   - The user's autoload config has pods and bubbles on (seen 2026-09-27).
+  - The MRKET tab has a **"List held item"** button (user request): it checks the held tool against the dashboard's own rules, then sends `RopopEvent("ListItem", ItemInstanceId)`. The server answered an invalid item from afar with `ListingError`. A real listing hasn't been confirmed; the user lists on purpose.
 - User pattern: they asked for features mid-build ("add a category for matcha", then laundry). Each system gets its own tab.
 - Decompiled sources: Potassium workspace `thrift_src_*.lua`.
 

@@ -480,11 +480,13 @@ task.spawn(guard, "bubbles", hookBubbles)
 local RopopEvent = Events:WaitForChild("DataEvents"):WaitForChild("RopopEvent")
 local ApartmentEvent = Events:WaitForChild("DataEvents"):WaitForChild("ApartmentEvent")
 local ToolEvent = Events:WaitForChild("RackEvents"):WaitForChild("ToolEvent")
-local mk = { busy = false, status = "off", listings = {}, packed = 0, delivered = 0, earned = 0, warn = nil, pausedUntil = 0 }
+local mk = { busy = false, status = "off", listings = {}, maxListings = 3, packed = 0, delivered = 0, earned = 0,
+    warn = nil, pausedUntil = 0, listMsg = nil, gotListings = false }
 
 table.insert(conns, RopopEvent.OnClientEvent:Connect(function(kind, a)
     if kind == "Listings" and type(a) == "table" then
         mk.listings = type(a.listings) == "table" and a.listings or {}
+        mk.maxListings, mk.gotListings = tonumber(a.maxListings) or mk.maxListings, true
     elseif kind == "MRKETDeliveryComplete" and type(a) == "table" then
         mk.delivered += 1
         mk.earned += tonumber(a.Price) or 0
@@ -521,16 +523,19 @@ local function waitFor(cond, timeout)
     return cond()
 end
 
-local function packAll(char, pk)
+local function enterApartment(char, part) -- ends next to `part` inside your apartment
     local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not (hrp and (hrp.Position - pk.PlrPos.Position).Magnitude < 30) then
-        -- the game's own way in (Teleport app): the server answers "Entered" and the apartment module moves you inside
-        ApartmentEvent:FireServer("Enter")
-        if not waitFor(function() return (hrp.Position - pk.PlrPos.Position).Magnitude < 30 end, 4) then
-            char:PivotTo(pk.PlrPos.CFrame) -- fallback: straight to the station
-        end
-        task.wait(0.5)
+    if hrp and (hrp.Position - part.Position).Magnitude < 30 then return end
+    -- the game's own way in (Teleport app): the server answers "Entered" and the apartment module moves you inside
+    ApartmentEvent:FireServer("Enter")
+    if not waitFor(function() return hrp and (hrp.Position - part.Position).Magnitude < 30 end, 4) then
+        char:PivotTo(part.CFrame + Vector3.new(0, 3, 0)) -- fallback: straight there
     end
+    task.wait(0.5)
+end
+
+local function packAll(char, pk)
+    enterApartment(char, pk.PlrPos)
     local prompt = pk:FindFirstChild("BoxPos") and pk.BoxPos:FindFirstChildOfClass("ProximityPrompt")
     for _ = 1, 10 do
         if not (running and CFG.mkPack and pk:GetAttribute("HasOrder")) then break end
@@ -612,9 +617,73 @@ local function mrketRun()
     mk.busy = false
 end
 
+-- The dashboard's LIST button sends RopopEvent("ListItem", ItemInstanceId); the server answers "ItemListed" or
+-- "ListingError" <text>. The dashboard's own filter (MRKETModule.ToolInfo): clothing types below, Clean, not
+-- Favorite, not a box, and a rarity with a buyer rate (Rare and up).
+local LISTABLE_TYPES = { Shirt = true, InnerLayerTop = true, OuterLayerTop = true, Pants = true, Shoes = true, Accessory = true }
+local LISTABLE_RARITY = { Rare = true, Epic = true, Legendary = true, Mythical = true, Divine = true }
+local function heldListable()
+    local tool = lp.Character and lp.Character:FindFirstChildOfClass("Tool")
+    if not tool then return nil, "hold the item you want to list" end
+    local key = tool:GetAttribute("ItemKey")
+    if type(key) ~= "string" or tool:GetAttribute("MRKETBox") then return nil, tool.Name .. " isn't clothing" end
+    local it, base = parseKey(key)
+    if not it then return nil, "unknown item " .. key end
+    if not LISTABLE_TYPES[it.Type] then return nil, "MRKET doesn't take " .. tostring(it.Type) end
+    local cond = tool:GetAttribute("Condition")
+    if cond and cond ~= "Clean" then return nil, "wash it first (" .. tostring(cond) .. ")" end
+    if tool:GetAttribute("Favorite") then return nil, "unfavorite it first" end
+    if not LISTABLE_RARITY[it.Rarity] then return nil, tostring(it.Rarity) .. " items can't be listed (Rare and up)" end
+    local id = tool:GetAttribute("ItemInstanceId")
+    if not id then return nil, "the item has no instance id" end
+    return tool, displayName(it, base, tool:GetAttribute("Color")), id
+end
+
+local listing = false
+local function listHeld()
+    if listing or mk.busy then mk.listMsg = "busy, try again in a moment"; return end
+    local tool, name, id = heldListable()
+    if not tool then mk.listMsg = name; return end
+    listing = true
+    mk.gotListings = false
+    RopopEvent:FireServer("GetListings")
+    waitFor(function() return mk.gotListings end, 2)
+    if mk.gotListings and #mk.listings >= mk.maxListings then
+        mk.listMsg, listing = ("all %d listing slots are full"):format(mk.maxListings), false
+        return
+    end
+    local reply
+    local conn = RopopEvent.OnClientEvent:Connect(function(kind, a)
+        if kind == "ItemListed" then reply = true
+        elseif kind == "ListingError" then reply = tostring(a or "That item cannot be listed.") end
+    end)
+    mk.listMsg = "listing " .. name .. "..."
+    RopopEvent:FireServer("ListItem", id)
+    waitFor(function() return reply ~= nil end, 3)
+    if reply == nil then
+        -- no answer: maybe it has to be done at your laptop, like the dashboard. Try once from there, then come back.
+        local _, st = myStation()
+        local laptop = st and st:FindFirstChild("Ropop") and st.Ropop:FindFirstChild("Prox")
+        local char = lp.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if laptop and hrp then
+            local saved = hrp.CFrame
+            local wasInside = (hrp.Position - laptop.Position).Magnitude < 60
+            enterApartment(char, laptop)
+            RopopEvent:FireServer("ListItem", id)
+            waitFor(function() return reply ~= nil end, 3)
+            if not wasInside then ApartmentEvent:FireServer("LeftApartment", lp.Name) end
+            char:PivotTo(saved)
+        end
+    end
+    conn:Disconnect()
+    mk.listMsg = reply == true and ("listed " .. name) or ("not listed: " .. (reply or "no answer from the server"))
+    listing = false
+end
+
 task.spawn(function() -- MRKET: pack new orders, deliver held boxes
     while running do
-        if (CFG.mkPack or CFG.mkDeliver) and not mk.busy then
+        if (CFG.mkPack or CFG.mkDeliver) and not mk.busy and not listing then
             guard("mrket", mrketRun)
             mk.busy = false
         end
@@ -656,7 +725,7 @@ local function unload()
     if Library then pcall(Library.Unload, Library) end
 end
 getgenv().THRIFT_ESP = { unload = unload, cfg = CFG, containers = containers, finds = finds, totals = totals, errs = errs,
-    matcha = matcha, pod = pod, bubbles = bubbles, mk = mk }
+    matcha = matcha, pod = pod, bubbles = bubbles, mk = mk, heldListable = heldListable }
 
 task.spawn(function()
     local lastFinds
@@ -698,7 +767,8 @@ task.spawn(function()
                 mrketLabel:SetText(("%s\nListings: %s · station order: %s · boxes: %d\nPacked %d · delivered %d (%s)%s"):format(
                     (CFG.mkPack or CFG.mkDeliver) and mk.status or "off",
                     #parts > 0 and table.concat(parts, ", ") or "none", pk and (pk:GetAttribute("HasOrder") and "yes" or "no") or "no apartment",
-                    #boxes(), mk.packed, mk.delivered, money(mk.earned), mk.warn and ("\nLast warning: " .. mk.warn) or ""))
+                    #boxes(), mk.packed, mk.delivered, money(mk.earned), mk.warn and ("\nLast warning: " .. mk.warn) or "")
+                    .. (mk.listMsg and ("\nList: " .. mk.listMsg) or ""))
             end
         end)
         task.wait(0.5)
@@ -800,6 +870,8 @@ MkBox:AddToggle("MK_Pack", { Text = "Auto pack orders", Default = CFG.mkPack,
 MkBox:AddToggle("MK_Deliver", { Text = "Auto deliver (fulfill)", Default = CFG.mkDeliver,
     Callback = function(v) CFG.mkDeliver = v; mk.pausedUntil = 0 end })
 MkBox:AddToggle("MK_Return", { Text = "Go back after", Default = CFG.mkReturn, Callback = function(v) CFG.mkReturn = v end })
+MkBox:AddButton({ Text = "List held item", Tooltip = "Lists the item in your hand on MRKET (clean, not favorited, Rare and up)",
+    Func = function() task.spawn(guard, "list", listHeld) end })
 mrketLabel = MkBox:AddLabel("-", true)
 
 local Spend = Tabs.Settings:AddRightGroupbox("Spending")
