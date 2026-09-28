@@ -156,7 +156,7 @@ local CFG = {
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
     autoLock = false, autoLockTier = "A", autoLockModels = {},
-    driveSpeed = 60, driveExtra = 2, driveRoute = "Highway",
+    driveSpeed = 60, driveExtra = 2, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
@@ -1743,6 +1743,210 @@ do
     end)
 end
 
+-- Spec swap: put a different engine or gearbox in the selected car. Buys the new parts first (store clicks work from
+-- anywhere), then pulls the old ones at the repair-shop spot and installs the new ones (block first).
+do
+    local ENGINES = {}
+    for _, c in ipairs(SPARE.Parts:GetChildren()) do if c:FindFirstChild("EngineBlock") then ENGINES[#ENGINES + 1] = c.Name end end
+    table.sort(ENGINES)
+    local TRANS = {}
+    for _, t in ipairs(SPARE.Parts.Transmission:GetChildren()) do TRANS[#TRANS + 1] = t.Name end
+    table.sort(TRANS)
+
+    local function slotOf(partName) return (partName:gsub("_.*$", "")) end -- AirIntake_Turbo -> AirIntake
+    local function categoryOf(value) return (tostring(value):match("^([^|]+)")) end -- "V8 4.0|EngineBlock" -> "V8 4.0"
+    assert(slotOf("AirIntake_Turbo") == "AirIntake" and slotOf("EngineBlock") == "EngineBlock" and categoryOf("V8 4.0|EngineBlock") == "V8 4.0"
+        and categoryOf("i3 1.0") == "i3 1.0", "swap helpers self-check")
+
+    -- the full set of store parts for an engine: one per slot, with the chosen intake / block variant
+    local function engineKit(eng, intake, forged)
+        local cat = SPARE.Parts:FindFirstChild(eng)
+        if not cat then return nil end
+        local bySlot = {}
+        for _, p in ipairs(cat:GetChildren()) do
+            local slot = slotOf(p.Name)
+            local want = (slot == "AirIntake" and (intake == "Stock" and "AirIntake" or "AirIntake_" .. intake))
+                or (slot == "EngineBlock" and (forged and "EngineBlock_Forged" or "EngineBlock")) or p.Name
+            if p.Name == want then bySlot[slot] = p -- the variant you picked
+            elseif p.Name == slot and not bySlot[slot] then bySlot[slot] = p end -- stock, unless the picked variant exists
+        end
+        local kit = {}
+        for _, p in pairs(bySlot) do kit[#kit + 1] = p end
+        table.sort(kit, function(a, b) return (slotOf(a.Name) == "EngineBlock" and 0 or 1) < (slotOf(b.Name) == "EngineBlock" and 0 or 1) end)
+        return kit
+    end
+    local function kitCost(kit)
+        local sum = 0
+        for _, p in ipairs(kit or {}) do sum += tonumber(p:GetAttribute("Price")) or 0 end
+        return sum
+    end
+
+    local function openHood(car)
+        local function isOpen() local v = car.Values.Cache:FindFirstChild("IsHoodOpen"); return v ~= nil and v.Value end
+        if isOpen() then return true end
+        local hood = car:WaitForChild("Misc", 5) and car.Misc:WaitForChild("Hood", 5)
+        local det = hood and hood:WaitForChild("Detector", 5)
+        local cd = det and det:FindFirstChildWhichIsA("ClickDetector")
+        if not cd then return false end
+        tpTo(hoodSpot(car))
+        local t = os.clock()
+        repeat fireclickdetector(cd); task.wait(0.5) until isOpen() or os.clock() - t > 10 -- a fresh spawn ignores the hood ~4.5 s
+        return isOpen()
+    end
+
+    local function dealWithOld(parts)
+        for _, p in ipairs(parts) do
+            if p.Parent == MoveParts then
+                if CFG.swapOld == "Delete" then Events.PartsEvent:FireServer("DeletePart", p)
+                else Events.PartsEvent:FireServer("StoreItem", p) end
+                task.wait(0.25)
+            end
+        end
+    end
+
+    -- kit: store models to buy; pull: engine slots to empty first
+    local function swap(e, kit, pull, label)
+        local cost = kitCost(kit)
+        if myMoney() - cost < CFG.reserve then return false, ("%s costs %s: not enough above your reserve"):format(label, money(cost)) end
+        tpTo(liftCF() * CFrame.new(0, 0, 12))
+        local car = spawnCar(e, liftCF())
+        if not car then return false, "the car didn't come to the repair shop" end
+        if not openHood(car) then return false, "couldn't open the hood" end
+        -- 1) buy everything first, so a failed buy never leaves the car without an engine
+        local bought = {}
+        local mine0 = myParts()
+        for _, m in ipairs(kit) do
+            local p, why = buyStore(m)
+            if not p then
+                dealWithOld(bought)
+                return false, ("couldn't buy %s (%s)"):format(m.Name, tostring(why))
+            end
+            bought[#bought + 1] = p
+            mine0[p] = true
+        end
+        -- 2) pull the old parts (the engine block drags its attached parts off with it)
+        local eng = car.Values.Engine
+        for _, slot in ipairs(pull) do
+            local v = eng:FindFirstChild(slot)
+            if v and v.Value ~= "" then fireParts(e, "RemovePart", slot); task.wait(0.35) end
+        end
+        task.wait(1)
+        local old = {}
+        for p in pairs(myParts()) do if not mine0[p] then old[#old + 1] = p end end
+        -- 3) install, block first; a second pass catches parts that needed the block
+        for pass = 1, 2 do
+            for _, p in ipairs(bought) do
+                if p.Parent == MoveParts then fireParts(e, "ReapplyPart", p); task.wait(0.3) end
+            end
+            task.wait(0.8)
+        end
+        local left = 0
+        for _, p in ipairs(bought) do if p.Parent == MoveParts then left += 1 end end
+        -- 4) the old parts: into your inventory, or deleted
+        dealWithOld(old)
+        if left > 0 then return false, ("%s: %d new part(s) didn't fit, check the car"):format(label, left) end
+        return true, ("%s done for %s (%d old part%s %s)"):format(label, money(cost), #old, #old == 1 and "" or "s",
+            CFG.swapOld == "Delete" and "deleted" or "stored")
+    end
+
+    local function engineSlots(car, oldCat)
+        local slots = {}
+        for _, v in ipairs(car.Values.Engine:GetChildren()) do
+            if v:IsA("StringValue") and v.Value ~= "" and v.Name ~= "Transmission" and v.Name ~= "Battery" and v.Name ~= "Radiator"
+                and v.Name ~= "Suspension" and categoryOf(v.Value) == oldCat then
+                slots[#slots + 1] = v.Name
+            end
+        end
+        table.sort(slots, function(a, b) return (a == "EngineBlock" and 0 or 1) < (b == "EngineBlock" and 0 or 1) end)
+        return slots
+    end
+
+    local sizeCache = {}
+    local function maxEngineSize(car)
+        local key = car and car:GetAttribute("Model")
+        if key and sizeCache[key] ~= nil then return sizeCache[key] or nil end
+        local tune = car and car:FindFirstChild("A-Chassis Tune")
+        local ok, src = pcall(decompile, tune)
+        local v = ok and type(src) == "string" and tonumber(src:match("%.MaxEngineSize = ([%d%.]+)")) or nil
+        if key then sizeCache[key] = v or false end
+        return v
+    end
+    local function engineSize(eng)
+        local cat = SPARE.Parts:FindFirstChild(eng)
+        local pi = cat and cat:FindFirstChild("EngineBlock") and cat.EngineBlock:FindFirstChild("PartInfo")
+        local ok, src = pcall(decompile, pi)
+        return ok and type(src) == "string" and tonumber(src:match("EngineSize = ([%d%.]+)")) or nil
+    end
+
+    local SwapBox = Tabs.Car:AddRightGroupbox("Spec swap")
+    SwapBox:AddLabel("Works on the car picked above. The car goes to the repair shop; new parts are bought first, then the old ones come out and the new ones go in.", true)
+    local engDrop = SwapBox:AddDropdown("FIU_SwapEngine", { Text = "Engine", Values = ENGINES, AllowNull = true, Searchable = true })
+    local intakeDrop = SwapBox:AddDropdown("FIU_SwapIntake", { Text = "Intake", Values = { "Stock", "Sport", "Turbo" }, Default = "Stock",
+        Tooltip = "Uses the stock intake if that engine has no Sport/Turbo one" })
+    local forgedToggle = SwapBox:AddToggle("FIU_SwapForged", { Text = "Forged block (if the engine has one)", Default = false })
+    local swapInfo = SwapBox:AddLabel("-", true)
+    SwapBox:AddButton({ Text = "Swap engine", DoubleClick = true, Tooltip = "Double-click", Func = function()
+        local e, eng = selectedCar, engDrop.Value
+        if not e then notify("Pick a car above first") return end
+        if not eng then notify("Pick an engine") return end
+        queued("engine swap", function()
+            local car = carOf(e)
+            local cur = car and categoryOf(car.Values.Engine.EngineBlock.Value)
+            if not car then
+                car = spawnCar(e, liftCF()) -- need it out to read its current engine
+                cur = car and categoryOf(car.Values.Engine.EngineBlock.Value)
+            end
+            if not car then notify("The car didn't spawn") return end
+            local max, size = maxEngineSize(car), engineSize(eng)
+            if max and size and size > max then notify(("%s is size %s, this car takes up to %s"):format(eng, tostring(size), tostring(max))) return end
+            local pull = cur and engineSlots(car, cur) or { "EngineBlock" }
+            local ok, msg = swap(e, engineKit(eng, intakeDrop.Value, forgedToggle.Value), pull, ("engine swap to %s"):format(eng))
+            log(msg); notify(msg)
+        end)
+    end })
+    local transDrop = SwapBox:AddDropdown("FIU_SwapTrans", { Text = "Gearbox", Values = TRANS, AllowNull = true })
+    SwapBox:AddButton({ Text = "Swap gearbox", DoubleClick = true, Tooltip = "Double-click", Func = function()
+        local e, tr = selectedCar, transDrop.Value
+        if not e then notify("Pick a car above first") return end
+        if not tr then notify("Pick a gearbox") return end
+        queued("gearbox swap", function()
+            local ok, msg = swap(e, { SPARE.Parts.Transmission[tr] }, { "Transmission" }, ("gearbox swap to %s"):format(tr))
+            log(msg); notify(msg)
+        end)
+    end })
+    SwapBox:AddDropdown("FIU_SwapOld", { Text = "Old parts", Values = { "Store in inventory", "Delete" }, Default = CFG.swapOld,
+        Tooltip = "Inventory holds 10 items; anything that doesn't fit stays on the floor and the game clears it after 90 s",
+        Callback = set("swapOld") })
+
+    task.spawn(function() -- price + fit preview for the picks
+        while running do
+            pcall(function()
+                local lines = {}
+                local car = selectedCar and carOf(selectedCar)
+                if selectedCar then
+                    local cur = car and categoryOf(car.Values.Engine.EngineBlock.Value)
+                    local tr = car and car.Values.Engine.Transmission.Value:match("|(.+)$")
+                    lines[#lines + 1] = ("Now: %s · %s%s"):format(cur or "?", tr or "?", car and "" or " (spawn the car to read it)")
+                end
+                if engDrop.Value then
+                    local kit = engineKit(engDrop.Value, intakeDrop.Value, forgedToggle.Value)
+                    local names = {}
+                    for _, p in ipairs(kit or {}) do names[#names + 1] = p.Name end
+                    local max, size = car and maxEngineSize(car), engineSize(engDrop.Value)
+                    lines[#lines + 1] = ("%s kit %s: %s"):format(engDrop.Value, money(kitCost(kit)), table.concat(names, ", "))
+                    if max and size then lines[#lines + 1] = size <= max and ("Fits (size %s of %s)"):format(tostring(size), tostring(max))
+                        or ('<font color="#ff6b6b">Too big (size %s, car takes %s)</font>'):format(tostring(size), tostring(max)) end
+                end
+                if transDrop.Value then
+                    lines[#lines + 1] = ("%s: %s"):format(transDrop.Value, money(SPARE.Parts.Transmission[transDrop.Value]:GetAttribute("Price") or 0))
+                end
+                swapInfo:SetText(#lines > 0 and table.concat(lines, "\n") or "Pick a car, then an engine or gearbox")
+            end)
+            task.wait(1.5)
+        end
+    end)
+end
+
 -- Shop
 local ShopBox = Tabs.Shop:AddLeftGroupbox("Spare parts")
 local cats = {}
@@ -1837,7 +2041,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -2277,7 +2481,8 @@ do
         seat:Sit(h)
         task.wait(1.2) -- let it land before measuring its ride height
         if h.SeatPart ~= seat then farm.status = "couldn't sit in the car"; return end
-        local ride = math.clamp(car:GetPivot().Position.Y - (top or pts[1].Y), 0.5, 6)
+        -- +0.6: the tyres float just above the road, so they don't slide (no screech, no slip reported for tyre wear)
+        local ride = math.clamp(car:GetPivot().Position.Y - (top or pts[1].Y), 0.5, 6) + 0.6
         farm.startKm = tonumber(Status.KMs.Value) or 0
         farm.moved = 0
         local i = 2
