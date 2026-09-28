@@ -79,7 +79,7 @@ When a Craig sale is over $1M, the client pops "Craig can't afford this! … Ric
 - **Purchases are per player:** the rack payload's `PurchasedItems` filters your own buys out of the menu, and `ClothingDeleteEvent` deletes the bought slot model on your client only. After a rejoin, the models of items you already bought reappear until the next restock (not tested).
 - `RestockEvent(prompt, items)` swaps rack stock. The rack price is `Item.Price`, or 80% of it for Morieli members (`MorieliPricing.DisplayPrice`, attribute `MorieliMember`).
 - Example (measured): Silver Spades Hoodie on Rack24 costs $1.5M, with catalog `Resale` 2.55M. Detergent can push the finished piece to about $6.4M.
-- **Script:** `%USERPROFILE%\rblx\thrift_esp.lua` (v2). Loader: `loadstring(readfile("thrift_esp.lua"))()`. Config folder: `ThriftESP`.
+- **Script:** `%USERPROFILE%\rblx\thrift_esp.lua` (v3). Loader: `loadstring(readfile("thrift_esp.lua"))()`. Config folder: `ThriftESP`.
   - ESP tab: a dot per item colored by rarity, a per-rack summary and an outline in the best rarity's color, with toggles and colors per rarity.
   - Finds tab: a list of items at or above a chosen rarity.
   - Matcha, Laundry and MRKET tabs: see their sections.
