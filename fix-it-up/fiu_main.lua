@@ -120,7 +120,7 @@ local CFG = {
         EX = Color3.fromRGB(255, 70, 140), S = Color3.fromRGB(255, 200, 40), A = Color3.fromRGB(190, 90, 255),
         B = Color3.fromRGB(60, 150, 255), C = Color3.fromRGB(80, 220, 110), D = Color3.fromRGB(170, 170, 170),
     },
-    esp = true, outline = true, maxDist = 3000, textSize = 14,
+    esp = true, outline = true, maxDist = 600, textSize = 13, espDetail = true,
     alerts = true, alertMin = "B",
     -- auto flip: everything off until the player (or SaveManager autoload) turns it on
     autoBuy = false, autoRepair = false, autoSell = false,
@@ -251,15 +251,19 @@ end
 -- server spawns the car at cf (the old instance is replaced); returns the new instance
 local function spawnCar(e, cf)
     local old = carOf(e)
+    pcall(function() LP:RequestStreamAroundAsync(cf.Position, 5) end) -- a car spawned out of streaming range arrives empty
     local ok, err = pcall(function() Events.Vehicles.RemoteLoad:InvokeServer(e, cf) end)
     if not ok then log("spawn failed: " .. tostring(err)); return nil end
     local t = os.clock()
     repeat
         local c = carOf(e)
-        if c and c ~= old and c:FindFirstChild("PartsEvent") then task.wait(0.5); return c end
+        if c and c ~= old and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") then task.wait(0.5); return c end
         task.wait(0.1)
-    until os.clock() - t > 6
-    return carOf(e)
+    until os.clock() - t > 8
+    local c = carOf(e)
+    if c and c:FindFirstChild("PartsEvent") then return c end
+    log("spawned car didn't load: " .. entryModel(e))
+    return nil
 end
 
 local function sellCooldownLeft(e)
@@ -372,6 +376,7 @@ local busy, busyWhat = false, nil
 local INSTALL_FIRST = { EngineBlock = 1 }
 
 local function repairCar(e)
+    tpTo(liftCF() * CFrame.new(0, 0, 12)) -- be there first so the car streams in with you
     local car = spawnCar(e, liftCF())
     if not car then return false, "spawn failed" end
     local eng, wear = car.Values.Engine, car.Values.Engine.Wear
@@ -662,30 +667,54 @@ local hui = gethui and gethui() or game:GetService("CoreGui")
 local espRoot = Instance.new("Folder")
 espRoot.Name = "FixItUpESP"
 espRoot.Parent = hui
+-- labels hang on our own local anchor parts: a car's real parts are replaced when it streams out and back
+-- in, which left labels with a nil Adornee floating in the wrong place
+local anchorRoot = Instance.new("Folder")
+anchorRoot.Name = "FixItUpAnchors"
+anchorRoot.Parent = workspace.CurrentCamera -- client-only, never replicates
 
-local junk = {} -- [model] = info + { bb, txt, hl }
+local function newAnchor()
+    local p = Instance.new("Part")
+    p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow = true, false, false, false, false
+    p.Transparency, p.Size = 1, Vector3.new(0.2, 0.2, 0.2)
+    p.Parent = anchorRoot
+    return p
+end
+local function placeAnchor(anchor, model) -- above the car's box; false while it's streamed out
+    local ok, cf, size = pcall(model.GetBoundingBox, model)
+    if not ok or size.Magnitude < 2 then return false end
+    anchor.CFrame = CFrame.new(cf.Position + Vector3.new(0, size.Y / 2 + 1, 0))
+    return true
+end
+
+local function makeLabel(w, h)
+    local bb = Instance.new("BillboardGui")
+    bb.AlwaysOnTop, bb.LightInfluence, bb.ResetOnSpawn = true, 0, false
+    bb.Size, bb.SizeOffset = UDim2.fromOffset(w, h), Vector2.new(0, 0.5) -- bottom edge sits on the anchor
+    local txt = Instance.new("TextLabel")
+    txt.Size, txt.BackgroundTransparency, txt.RichText = UDim2.fromScale(1, 1), 1, true
+    txt.Font, txt.TextStrokeTransparency, txt.TextYAlignment = Enum.Font.GothamBold, 0.35, Enum.TextYAlignment.Bottom
+    txt.Parent = bb
+    bb.Parent = espRoot
+    return bb, txt
+end
+
+local junk = {} -- [model] = info + { bb, txt, hl, anchor }
 local function dropJunk(m)
     local j = junk[m]
     junk[m] = nil
-    if j then if j.bb then j.bb:Destroy() end if j.hl then j.hl:Destroy() end end
+    if j then for _, k in ipairs({ "bb", "hl", "anchor" }) do if j[k] then j[k]:Destroy() end end end
 end
 
 local function makeEsp(j)
-    local part = j.model:FindFirstChild("DriveSeat") or j.model.PrimaryPart or j.model:FindFirstChildWhichIsA("BasePart", true)
-    if not part then return end
-    local bb = Instance.new("BillboardGui")
-    bb.AlwaysOnTop, bb.LightInfluence, bb.ResetOnSpawn, bb.Adornee = true, 0, false, part
-    bb.Size, bb.StudsOffsetWorldSpace = UDim2.fromOffset(260, 48), Vector3.new(0, 6, 0)
-    local txt = Instance.new("TextLabel")
-    txt.Size, txt.BackgroundTransparency, txt.RichText = UDim2.fromScale(1, 1), 1, true
-    txt.Font, txt.TextStrokeTransparency = Enum.Font.GothamBold, 0.3
-    txt.Parent = bb
-    bb.Parent = espRoot
+    j.anchor = newAnchor()
+    j.bb, j.txt = makeLabel(220, 36)
+    j.bb.Adornee = j.anchor
     local hl = Instance.new("Highlight")
-    hl.Adornee, hl.FillTransparency, hl.OutlineTransparency = j.model, 0.8, 0
+    hl.Adornee, hl.FillTransparency, hl.OutlineTransparency = j.model, 0.85, 0
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     hl.Parent = espRoot
-    j.bb, j.txt, j.hl = bb, txt, hl
+    j.hl = hl
 end
 
 local function hex(c) return ("#%02x%02x%02x"):format(c.R * 255, c.G * 255, c.B * 255) end
@@ -702,19 +731,19 @@ local function scanJunk()
     end
     local cp = camPos()
     for m, j in pairs(junk) do
-        if not j.bb then makeEsp(j) end -- far cars stream in later
         j.dist = (m:GetPivot().Position - cp).Magnitude
         local col, show = CFG.color[j.tier], CFG.show[j.tier]
-        if j.bb then
-            j.bb.Enabled = CFG.esp and show and j.dist <= CFG.maxDist
+        local on = CFG.esp and show and j.dist <= CFG.maxDist
+        local loaded = on and placeAnchor(j.anchor, m)
+        j.bb.Enabled = loaded == true
+        if loaded then
             j.txt.TextSize, j.txt.TextColor3 = CFG.textSize, col
-            j.txt.Text = ("[%s] %s\n<font size=\"%d\" color=\"#ffffff\">%s–%s · +%s–%s · %dm</font>"):format(
-                j.tier, j.name, CFG.textSize - 2, money(j.lo), money(j.hi), money(j.profitLo), money(j.profitHi), j.dist)
+            j.txt.Text = CFG.espDetail
+                and ('[%s] %s\n<font size="%d" color="#dddddd">+%s · %dm</font>'):format(j.tier, j.name, CFG.textSize - 3, money(j.profitHi), j.dist)
+                or ("[%s] %s"):format(j.tier, j.name)
         end
-        if j.hl then
-            j.hl.Enabled = CFG.esp and CFG.outline and show and j.dist <= CFG.maxDist
-            j.hl.OutlineColor, j.hl.FillColor = col, col
-        end
+        j.hl.Enabled = on and CFG.outline
+        j.hl.OutlineColor, j.hl.FillColor = col, col
     end
 end
 
@@ -943,6 +972,7 @@ local function unload()
     for _, c in ipairs(conns) do pcall(c.Disconnect, c) end
     CONFIRM.OnClientInvoke = origConfirm
     espRoot:Destroy()
+    anchorRoot:Destroy()
     if Library then pcall(Library.Unload, Library) end
 end
 getgenv().FIU_MAIN = { unload = unload, cfg = CFG, junk = junk, owned = OWNED, state = STATE,
@@ -1010,6 +1040,7 @@ end
 local Disp = Tabs.Junk:AddLeftGroupbox("Display")
 Disp:AddToggle("FIU_Esp", { Text = "Car labels", Default = CFG.esp, Callback = set("esp") })
 Disp:AddToggle("FIU_Outline", { Text = "Outline cars", Default = CFG.outline, Callback = set("outline") })
+Disp:AddToggle("FIU_EspDetail", { Text = "Profit + distance line", Default = CFG.espDetail, Callback = set("espDetail") })
 Disp:AddSlider("FIU_MaxDist", { Text = "Max distance", Default = CFG.maxDist, Min = 100, Max = 6000, Rounding = 0, Suffix = " studs", Callback = set("maxDist") })
 Disp:AddSlider("FIU_TextSize", { Text = "Text size", Default = CFG.textSize, Min = 10, Max = 24, Rounding = 0, Suffix = "px", Callback = set("textSize") })
 Disp:AddToggle("FIU_Alerts", { Text = "Spawn alerts", Default = CFG.alerts, Tooltip = "Uses the server's 'rare car has appeared' broadcast", Callback = set("alerts") })
@@ -1233,12 +1264,14 @@ local function sellLine(e)
     return ('<font color="#ff9b5e">sell in %d:%02d</font>'):format(left // 60, left % 60)
 end
 
+local selAnchor = newAnchor()
+selTag.Adornee = selAnchor
+selTag.SizeOffset = Vector2.new(0, 0.5)
+selTag.StudsOffsetWorldSpace = Vector3.new(0, 1.5, 0)
 local function updateSelTag()
     local c = selectedCar and carOf(selectedCar)
-    local part = c and (c:FindFirstChild("DriveSeat") or c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true))
-    selTag.Enabled = part ~= nil
-    if not part then return end
-    selTag.Adornee = part
+    selTag.Enabled = c ~= nil and placeAnchor(selAnchor, c)
+    if not selTag.Enabled then return end
     selText.Text = ("%s · %d%%\n%s"):format(entryModel(selectedCar), condition(c) or 0, sellLine(selectedCar))
 end
 
