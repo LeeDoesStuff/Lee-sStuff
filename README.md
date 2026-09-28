@@ -2,6 +2,13 @@
 
 Scripts for Roblox games. Paste a loadstring into your executor; every box has a copy button in its top-right corner.
 
+## Loader
+
+Runs the right script for whatever game you're in (Fix It Up loads the main farm, not the hopper; JJBI and Mog or Die aren't in it yet).
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/loader.lua"))()
+```
+
 ## My scripts
 
 Each title links to the game's folder, which holds the notes and spec behind the script. The menus use the Obsidian UI: **RightCtrl** shows and hides them.
