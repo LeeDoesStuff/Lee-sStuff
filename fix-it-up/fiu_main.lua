@@ -348,19 +348,72 @@ local function sellCooldownLeft(e)
 end
 
 -- ============================== machines ==============================
-local SHOPS = {
-    Dealership = function() return workspace.Map.FirstCity.Buildings.Dealership.Folder end,
-    Pitstop = function() return workspace.Map.FirstCity.Buildings["Pitstop(Large)"] end,
+-- repair shops: 4 buildings with Station1..N machine folders (both small Pitstops share one name, told apart by position)
+local ST = {
+    order = { "Dealership", "Pitstop (large)", "Pitstop (small) south", "Pitstop (small) west" },
+    at = {
+        Dealership = Vector3.new(-511, 14, -779),
+        ["Pitstop (large)"] = Vector3.new(-1048, 25, -389),
+        ["Pitstop (small) south"] = Vector3.new(-557, 15, -1617),
+        ["Pitstop (small) west"] = Vector3.new(-1130, 15, -1546.5),
+    },
+    building = { Dealership = "Dealership", ["Pitstop (large)"] = "Pitstop(Large)", ["Pitstop (small) south"] = "Pitstop(Small)", ["Pitstop (small) west"] = "Pitstop(Small)" },
+    quiet = { t = 0 },
 }
-local function stationRoot() return SHOPS[CFG.station] and SHOPS[CFG.station]() or SHOPS.Dealership() end
+function ST.root(name)
+    local at, bname = ST.at[name], ST.building[name]
+    local function find()
+        for _, b in ipairs(workspace.Map.FirstCity.Buildings:GetChildren()) do
+            if b.Name == bname and (b:GetPivot().Position - at).Magnitude < 150 then
+                return name == "Dealership" and b:FindFirstChild("Folder") or b
+            end
+        end
+    end
+    local r = find()
+    if not r then pcall(function() LP:RequestStreamAroundAsync(at, 5) end); r = find() end
+    return r
+end
+-- "Quietest": the shop with the fewest other players within 80 studs, re-picked at most every 90 s so a repair stays put
+-- ponytail: players streamed out of range aren't seen, so a far shop can look emptier than it is
+function ST.name()
+    local n = CFG.station == "Pitstop" and "Pitstop (large)" or CFG.station -- old saved name
+    if n ~= "Quietest" then return ST.at[n] and n or "Dealership" end
+    if ST.quiet.name and os.clock() - ST.quiet.t < 90 then return ST.quiet.name end
+    local best, bestN
+    for _, s in ipairs(ST.order) do
+        local c = 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            local r = p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            if r and (r.Position - ST.at[s]).Magnitude < 80 then c += 1 end
+        end
+        if not bestN or c < bestN then best, bestN = s, c end
+    end
+    ST.quiet.name, ST.quiet.t = best, os.clock()
+    return best
+end
+local function stationRoot() return ST.root(ST.name()) or ST.root("Dealership") end
 
 -- where the car goes for a repair: open floor, not up on a lift (Dealership spot picked by the player)
 local FLOOR_SPOT = { Dealership = Vector3.new(-533.6, 4.8, -799.0) }
 local function liftCF()
     local root = stationRoot()
-    local lift = root:FindFirstChild("Lift") or (root:FindFirstChild("Lifts") and root.Lifts:FindFirstChild("Lift"))
+    local lift = root:FindFirstChild("Lift")
+    if not lift and root:FindFirstChild("Lifts") then -- Pitstops have several: take one with nobody else's car on it
+        local first
+        for _, l in ipairs(root.Lifts:GetChildren()) do
+            if l.Name == "Lift" then
+                first = first or l
+                local taken = false
+                for _, v in ipairs(Vehicles:GetChildren()) do
+                    if v:GetAttribute("Owner") ~= LP.Name and (v:GetPivot().Position - l:GetPivot().Position).Magnitude < 8 then taken = true break end
+                end
+                if not taken then lift = l break end
+            end
+        end
+        lift = lift or first
+    end
     local rot = lift and lift:GetPivot().Rotation or CFrame.identity
-    local spot = FLOOR_SPOT[CFG.station]
+    local spot = FLOOR_SPOT[ST.name()]
     if spot then return CFrame.new(spot) * rot end
     if lift then return lift:GetPivot() * CFrame.new(0, 4, 0) end
     return CFrame.new(-563.4, 11, -799.9)
@@ -451,6 +504,7 @@ local busy, busyWhat, manualBuy = false, nil, false
 local INSTALL_FIRST = { EngineBlock = 1 }
 
 local function repairCar(e)
+    log(("repairing %s at %s"):format(entryModel(e), ST.name()))
     tpTo(liftCF() * CFrame.new(0, 0, 12)) -- be there first so the car streams in with you
     local car = spawnCar(e, liftCF())
     if not car then return false, "spawn failed" end
@@ -1689,8 +1743,10 @@ local favLabel = FavBox:AddLabel("-", true)
 
 do
 local RepBox = Tabs.Car:AddRightGroupbox("Repair settings")
-RepBox:AddDropdown("FIU_Station", { Text = "Repair shop", Values = { "Dealership", "Pitstop" }, Default = CFG.station,
-    Tooltip = "Dealership = the quiet one; Pitstop is the busy one", Callback = set("station") })
+RepBox:AddDropdown("FIU_Station", { Text = "Repair shop", Values = { "Quietest", "Dealership", "Pitstop (large)", "Pitstop (small) south", "Pitstop (small) west" },
+    Default = CFG.station == "Pitstop" and "Pitstop (large)" or CFG.station,
+    Tooltip = "Quietest = whichever shop has the fewest other players around when a repair starts. Pitstop (large) is the busy one.",
+    Callback = function(v) CFG.station = v; ST.quiet.t = 0 end })
 RepBox:AddSlider("FIU_RepMin", { Text = "Repair parts worn at least", Default = CFG.repairMin, Min = 1, Max = 90, Rounding = 0, Suffix = "%", Callback = set("repairMin") })
 RepBox:AddToggle("FIU_Replace", { Text = "Replace parts with no machine", Default = CFG.replaceWorn,
     Tooltip = "Sparkplugs, injectors, timing belts...: buys a new one at the parts store", Callback = set("replaceWorn") })
