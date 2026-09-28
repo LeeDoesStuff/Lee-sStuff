@@ -1714,11 +1714,20 @@ do
         task.spawn(function()
             local todo = {}
             for _, n in ipairs(names) do if not CC[n] then todo[#todo + 1] = n end end
+            -- the server stops answering GetModel after ~30 quick calls: 1.5 s apart, backing off while it refuses
+            local gap = 1.5
             for i, n in ipairs(todo) do
                 if not running then break end
-                pcall(tuneOf, n)
+                local ok, info = pcall(tuneOf, n)
+                if not (ok and info) then
+                    gap = math.min(gap * 2, 20)
+                    task.wait(gap)
+                    pcall(tuneOf, n)
+                else
+                    gap = math.max(1.5, gap * 0.8)
+                end
                 F.label:SetText(("Loading car data %d / %d"):format(i, #todo))
-                task.wait(0.3)
+                task.wait(gap)
             end
             F.loading = false
             F.apply()
@@ -1726,6 +1735,7 @@ do
         end)
     end })
     task.defer(F.apply)
+    getgenv().FIU_MAIN.carLookup = { F = F, tuneOf = tuneOf, cache = CC, names = names } -- for scripted tests
     local shown
 
     local function render(name)
@@ -2365,7 +2375,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -2786,7 +2796,7 @@ do
     end
 
     local function farmRun()
-        local e = selectedCar
+        local e = (farm.car and farm.car.Parent and farm.car) or selectedCar -- the Drive tab's own pick, else the Car tab's
         if not e then farm.status = "pick a car in the Car tab first"; return end
         local pts, top, cycle
         if CFG.driveRoute == "Highway" then
@@ -2869,6 +2879,29 @@ do
             farm.on = false
         end
     end })
+    local PICK = "Car tab pick"
+    local carDropF = FarmBox:AddDropdown("FIU_DriveCar", { Text = "Car", Values = { PICK }, Default = PICK,
+        Tooltip = "Which car to drive; \"Car tab pick\" uses the car picked in the Car tab",
+        Callback = function(v) farm.car = v ~= PICK and carByLabel[v] or nil end })
+    task.spawn(function() -- keep the list in step with your garage, keeping the pick
+        local lastKey = ""
+        while running do
+            local labels = {}
+            for l in pairs(carByLabel) do labels[#labels + 1] = l end
+            table.sort(labels)
+            local key = table.concat(labels, "|")
+            if key ~= lastKey then
+                lastKey = key
+                local keep = farm.car
+                table.insert(labels, 1, PICK)
+                carDropF:SetValues(labels)
+                local keepLabel = PICK
+                for l, e2 in pairs(carByLabel) do if e2 == keep then keepLabel = l end end
+                carDropF:SetValue(keepLabel)
+            end
+            task.wait(1)
+        end
+    end)
     FarmBox:AddDropdown("FIU_DriveRoute", { Text = "Route", Values = { "Highway", "City road" }, Default = CFG.driveRoute,
         Tooltip = "Highway: back and forth on the long straight stretch north of town. City road: the longest straight road in town.", Callback = set("driveRoute") })
     FarmBox:AddSlider("FIU_DriveSpeed", { Text = "Speed", Default = CFG.driveSpeed, Min = 20, Max = 150, Rounding = 0, Suffix = " studs/s",
