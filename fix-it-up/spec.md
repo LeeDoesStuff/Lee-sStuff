@@ -146,3 +146,12 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 - **Car dropdown:** rebuilding the dropdown's values cleared the player's pick. The script now restores the same car after each rebuild.
 - **Any car's data on demand:** `Events.Vehicles.GetModel:InvokeServer(name, true)` returns `(modelName, descendantCount)`. The server then puts a preview copy of the car in `PlayerGui[modelName]`; the client fires its `ForceDelete` when done, which is how the garage does it. The copy's `A-Chassis Tune` holds `DefaultEngines`, `DefaultTransmission`, `MaxEngineSize`, `Weight`, `DefaultEngineParts` and `StartBody`. `require` on a loose copy errors, so the script decompiles it and parses the text instead. Engine stats (EngineSize, PeakTorque, Redline, HPLimit, Fuel) come the same way from `PartsStore.SpareParts.Parts[<engine>].EngineBlock.PartInfo`.
 - **One car out at a time:** spawning one of your garage cars (RemoteLoad) puts away the one that was out. Parts pulled into `MoveableParts` stay in the world when their car is put away, which is what makes car-to-car transfers possible. Keep clearing their `DroppedAt` locally so the game's 90 s cleanup doesn't delete them in the meantime.
+- **Distance is counted from the wheels turning, not from the car's position** (measured 2026-09-28). With the tyres floated 0.6 studs above the road, the car moved 0.07 km and 0 km was counted. With the tyres on the road and each wheel's `AssemblyAngularVelocity` set to `(dir × up) · speed / radius` (rolling, no slip, no screech), counting came back. The server credits distance in bursts every 5–10 s. Throughput by farm speed (40 s runs):
+
+  | Speed (studs/s) | km/min counted | Share of moved distance counted |
+  |---|---|---|
+  | 60 | ~0.81 | ~98 % |
+  | 85 | ~1.15 | ~90 % |
+  | 120 | ~0.92 | ~57 % |
+
+  So the server caps the counted rate somewhere around 85–100 studs/s. The farm defaults to 85.

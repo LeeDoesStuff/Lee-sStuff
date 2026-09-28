@@ -156,7 +156,7 @@ local CFG = {
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
     autoLock = false, autoLockTier = "A", autoLockModels = {},
-    driveSpeed = 60, driveExtra = 2, driveRoute = "Highway", swapOld = "Store in inventory",
+    driveSpeed = 85, driveExtra = 2, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
@@ -2619,8 +2619,13 @@ do
         seat:Sit(h)
         task.wait(1.2) -- let it land before measuring its ride height
         if h.SeatPart ~= seat then farm.status = "couldn't sit in the car"; return end
-        -- +0.6: the tyres float just above the road, so they don't slide (no screech, no slip reported for tyre wear)
-        local ride = math.clamp(car:GetPivot().Position.Y - (top or pts[1].Y), 0.5, 6) + 0.6
+        -- tyres stay on the road: the distance only counts while they turn (floating them 0.6 studs up counted 0 km,
+        -- measured 2026-09-28). They're spun to match the car's speed below, so they roll instead of sliding (no screech).
+        local ride = math.clamp(car:GetPivot().Position.Y - (top or pts[1].Y), 0.5, 6)
+        local wheels = {}
+        for _, w in ipairs(car:FindFirstChild("Wheels") and car.Wheels:GetChildren() or {}) do
+            if w:IsA("BasePart") then wheels[#wheels + 1] = { part = w, r = math.max(0.5, math.max(w.Size.X, w.Size.Y, w.Size.Z) / 2) } end
+        end
         farm.startKm = tonumber(Status.KMs.Value) or 0
         farm.moved = 0
         local i = 2
@@ -2640,6 +2645,11 @@ do
                 local nextPos = Vector3.new(pos.X, roadY + ride, pos.Z) + dir * step
                 car:PivotTo(CFrame.lookAt(nextPos, nextPos + dir))
                 seat.AssemblyLinearVelocity = dir * CFG.driveSpeed -- the speedo (and anything reading velocity) sees real speed
+                -- rolling without slip: spin = (dir x up) * speed / radius
+                local axis = dir:Cross(Vector3.yAxis)
+                for _, w in ipairs(wheels) do
+                    if w.part.Parent then w.part.AssemblyAngularVelocity = axis * (CFG.driveSpeed / w.r) end
+                end
                 farm.moved += step
             end
             local km, _, owed = numbers()
