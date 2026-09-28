@@ -1667,6 +1667,65 @@ do
     local Look = Tabs.Car:AddLeftGroupbox("Car lookup")
     local lookDrop = Look:AddDropdown("FIU_Lookup", { Text = "Search any car", Values = names, Searchable = true, AllowNull = true })
     local lookLabel = Look:AddLabel("Pick a car to see its rarity, price, profit and engines.", true)
+    -- filter the search by engine / engine size (needs each car's tune: "Load all car data" fetches and saves them)
+    local F = { engine = "Any", size = "Any", loading = false, done = 0 }
+    do
+        local sizes, seen = { "Any" }, {}
+        for _, c in ipairs(SPARE.Parts:GetChildren()) do
+            local e = engineInfo(c.Name)
+            if e and e.size and not seen[e.size] then seen[e.size] = true; sizes[#sizes + 1] = e.size end
+        end
+        table.sort(sizes, function(a, b) if a == "Any" then return true elseif b == "Any" then return false end return a < b end)
+        for i, v in ipairs(sizes) do sizes[i] = tostring(v) end
+        F.sizes = sizes
+        local engines = { "Any" }
+        for _, c in ipairs(SPARE.Parts:GetChildren()) do if c:FindFirstChild("EngineBlock") then engines[#engines + 1] = c.Name end end
+        table.sort(engines, function(a, b) if a == "Any" then return true elseif b == "Any" then return false end return a < b end)
+        F.engines = engines
+    end
+    function F.matches(name)
+        if F.engine == "Any" and F.size == "Any" then return true end
+        local t = CC[name]
+        if not t then return false end
+        for _, eng in ipairs(t.engines) do
+            local e = engineInfo(eng)
+            if (F.engine == "Any" or eng == F.engine) and (F.size == "Any" or (e and tostring(e.size) == F.size)) then return true end
+        end
+        return false
+    end
+    function F.apply()
+        local vals, unknown = {}, 0
+        for _, n in ipairs(names) do
+            if F.matches(n) then vals[#vals + 1] = n elseif not CC[n] then unknown += 1 end
+        end
+        lookDrop:SetValues(vals)
+        local filtered = F.engine ~= "Any" or F.size ~= "Any"
+        F.label:SetText(("%d car%s%s"):format(#vals, #vals == 1 and "" or "s",
+            filtered and unknown > 0 and (" · %d not loaded yet, press Load all car data"):format(unknown) or ""))
+    end
+    Look:AddDropdown("FIU_LookEngine", { Text = "Filter: engine", Values = F.engines, Default = "Any", Searchable = true,
+        Callback = function(v) F.engine = v or "Any"; F.apply() end })
+    Look:AddDropdown("FIU_LookSize", { Text = "Filter: engine size", Values = F.sizes, Default = "Any",
+        Callback = function(v) F.size = v or "Any"; F.apply() end })
+    F.label = Look:AddLabel("-", true)
+    Look:AddButton({ Text = "Load all car data", Tooltip = "Fetches every car's engines once (a few minutes) and saves them", Func = function()
+        if F.loading then return end
+        F.loading = true
+        task.spawn(function()
+            local todo = {}
+            for _, n in ipairs(names) do if not CC[n] then todo[#todo + 1] = n end end
+            for i, n in ipairs(todo) do
+                if not running then break end
+                pcall(tuneOf, n)
+                F.label:SetText(("Loading car data %d / %d"):format(i, #todo))
+                task.wait(0.3)
+            end
+            F.loading = false
+            F.apply()
+            notify("Car data loaded")
+        end)
+    end })
+    task.defer(F.apply)
     local shown
 
     local function render(name)
@@ -1937,6 +1996,122 @@ do
         return left
     end
 
+    -- ============ tyres: wheels only come off on a lift (server-enforced, measured 2026-09-28) ============
+    -- Spawn the car onto the Dealership lift, press its Up button (OnLift=true in ~0.3 s), then RemovePart "FL".. gives
+    -- one rim+tyre "Parts" model per corner; RenamePart(part, corner) + ReapplyPart puts one on.
+    X.CORNERS = { "FL", "FR", "RL", "RR" }
+    -- lift buttons: one press, then wait for the platform (Holder) to stop moving. Down takes ~3 s, Up ~3.5 s; presses
+    -- while it moves are ignored, and hammering Up kept OnLift from ever being set (measured 2026-09-28).
+    function X.holderY(lift) local h = lift:FindFirstChild("Holder", true); return h and h.Position.Y end
+    function X.waitStill(lift, maxT)
+        local t, last = os.clock(), X.holderY(lift)
+        repeat
+            task.wait(0.4)
+            local y = X.holderY(lift)
+            if y and last and math.abs(y - last) < 0.01 then return y end
+            last = y
+        until os.clock() - t > maxT
+        return last
+    end
+    function X.liftCar(e)
+        local folder = workspace.Map.FirstCity.Buildings.Dealership.Folder
+        local lift
+        for _, l in ipairs(folder:GetChildren()) do if l.Name == "Lift" and l:FindFirstChild("Up") then lift = l break end end
+        if not lift then return nil, "no lift found" end
+        pcall(function() LP:RequestStreamAroundAsync(lift:GetPivot().Position, 5) end)
+        local up = lift.Up:FindFirstChildWhichIsA("ClickDetector")
+        local down = lift:FindFirstChild("Down") and lift.Down:FindFirstChildWhichIsA("ClickDetector")
+        local button = CFrame.new(lift.Up:GetPivot().Position + Vector3.new(0, 2, 3))
+        tpTo(button)
+        local y = X.waitStill(lift, 5)
+        if y and y > 3.1 and down then -- left up from before: bring it down (low ~2.35, high ~3.85)
+            fireclickdetector(down)
+            task.wait(0.5)
+            X.waitStill(lift, 6)
+        end
+        local car = spawnCar(e, lift:GetPivot() * CFrame.new(0, 4, 0))
+        if not car then return nil, "the car didn't come to the lift" end
+        tpTo(button)
+        task.wait(0.6)
+        for _ = 1, 2 do
+            fireclickdetector(up)
+            local t = os.clock()
+            repeat task.wait(0.3) until car:GetAttribute("OnLift") or os.clock() - t > 6
+            if car:GetAttribute("OnLift") then break end
+            X.waitStill(lift, 5)
+        end
+        if not car:GetAttribute("OnLift") then return nil, "the lift didn't go up" end
+        X.waitStill(lift, 5)
+        return car, lift
+    end
+    function X.lowerLift(lift)
+        local down = lift and lift:FindFirstChild("Down") and lift.Down:FindFirstChildWhichIsA("ClickDetector")
+        if not down then return end
+        X.waitStill(lift, 5)
+        fireclickdetector(down)
+        task.wait(0.5)
+        X.waitStill(lift, 6)
+    end
+    function X.pullWheels(e) -- corner -> wheel part
+        local car, lift = X.liftCar(e)
+        if not car then return nil, lift end
+        local got = {}
+        for _, corner in ipairs(X.CORNERS) do
+            local v = car.Values.Wheels:FindFirstChild(corner)
+            if v and v.Value ~= "" then
+                local before = myParts()
+                fireParts(e, "RemovePart", corner)
+                local t = os.clock()
+                repeat
+                    task.wait(0.1)
+                    for p in pairs(myParts()) do if not before[p] and p:GetAttribute("IsWheel") then got[corner] = p end end
+                until got[corner] or os.clock() - t > 3
+                if got[corner] then X.held[got[corner]] = true end
+            end
+        end
+        X.lowerLift(lift)
+        return got
+    end
+    function X.fitWheels(e, byCorner) -- putting wheels on needs no lift (measured), only taking them off does
+        tpTo(liftCF() * CFrame.new(0, 0, 12))
+        local car = spawnCar(e, liftCF())
+        if not car then return 4, "the car didn't come to the shop" end
+        for pass = 1, 2 do
+            for corner, p in pairs(byCorner) do
+                if p.Parent == MoveParts then
+                    fireParts(e, "RenamePart", p, corner) -- tells the server which corner this wheel is for
+                    task.wait(0.2)
+                    fireParts(e, "ReapplyPart", p)
+                    task.wait(0.3)
+                end
+            end
+            task.wait(0.8)
+        end
+        local left = 0
+        for _, p in pairs(byCorner) do if p.Parent == MoveParts then left += 1 end end
+        return left
+    end
+    function X.tireTransfer(eFrom, eTo, mode)
+        local fromA, why = X.pullWheels(eFrom)
+        if not fromA then return 0, 0, why end
+        local fromB, why2 = X.pullWheels(eTo)
+        if not fromB then
+            X.fitWheels(eFrom, fromA) -- never leave car A without wheels
+            return 0, 0, why2 .. " (the first car's wheels were put back)"
+        end
+        local leftB = X.fitWheels(eTo, fromA)
+        local leftA = 0
+        if mode == "Swap" then leftA = X.fitWheels(eFrom, fromB)
+        else
+            local old = {}
+            for _, p in pairs(fromB) do old[#old + 1] = p end
+            dealWithOld(old)
+        end
+        local n = 0
+        for _ in pairs(fromA) do n += 1 end
+        return n, leftA + leftB
+    end
+
     function X.transfer(eFrom, eTo, what, mode)
         if eFrom == eTo then return false, "pick two different cars" end
         -- engine sizes: read both tunes (each car has to be out once to read it)
@@ -1952,6 +2127,15 @@ do
         end
         X.holdParts(true)
         local ok, res = pcall(function()
+            local notes = {}
+            if what.Tires then
+                local n, left, why = X.tireTransfer(eFrom, eTo, mode)
+                if why then return "tyres: " .. why end
+                notes[#notes + 1] = ("%s %d wheel(s)%s"):format(mode == "Swap" and "swapped" or "moved", n, left > 0 and (" (%d didn't go on)"):format(left) or "")
+            end
+            if not (what.Engine or what.Gearbox or what.Battery or what.Radiator) then
+                return ("%s: %s"):format(entryModel(eFrom) .. (mode == "Swap" and " <-> " or " -> ") .. entryModel(eTo), table.concat(notes, " · "))
+            end
             local carA = spawnCar(eFrom, liftCF())
             if not carA then return "car A didn't spawn" end
             local fromA, why = X.pull(eFrom, X.slotsFor(carA, what))
@@ -1971,9 +2155,10 @@ do
             for _, p in ipairs(fromA) do if p.Parent == MoveParts then leftover[#leftover + 1] = p end end
             if mode == "Swap" then for _, p in ipairs(fromB) do if p.Parent == MoveParts then leftover[#leftover + 1] = p end end end
             if #leftover > 0 then dealWithOld(leftover) end
-            return ("%s %d part(s) %s %s%s"):format(mode == "Swap" and "swapped" or "moved", #fromA, mode == "Swap" and "between" or "from",
+            return ("%s %d part(s) %s %s%s%s"):format(mode == "Swap" and "swapped" or "moved", #fromA, mode == "Swap" and "between" or "from",
                 entryModel(eFrom) .. (mode == "Swap" and " and " or " to ") .. entryModel(eTo),
-                (leftA + leftB) > 0 and (" · %d didn't fit and went to %s"):format(leftA + leftB, CFG.swapOld == "Delete" and "the bin" or "your inventory") or "")
+                (leftA + leftB) > 0 and (" · %d didn't fit and went to %s"):format(leftA + leftB, CFG.swapOld == "Delete" and "the bin" or "your inventory") or "",
+                #notes > 0 and (" · " .. table.concat(notes, " · ")) or "")
         end)
         X.holdParts(false)
         return ok, ok and res or ("error: " .. tostring(res))
@@ -2019,11 +2204,12 @@ do
         Tooltip = "Inventory holds 10 items; anything that doesn't fit stays on the floor and the game clears it after 90 s",
         Callback = set("swapOld") })
 
+    getgenv().FIU_MAIN.transfer = X.transfer -- for scripted tests
     X.box = Tabs.Car:AddRightGroupbox("Car to car")
     X.box:AddLabel("Takes parts out of one of your cars and puts them in another. Swap = the two cars trade; Move = the first car's parts replace the second's (its old parts go to your inventory or the bin, per Old parts above).", true)
     X.from = X.box:AddDropdown("FIU_XFrom", { Text = "From car", Values = {}, AllowNull = true })
     X.to = X.box:AddDropdown("FIU_XTo", { Text = "To car", Values = {}, AllowNull = true })
-    X.what = X.box:AddDropdown("FIU_XWhat", { Text = "Parts", Values = { "Engine", "Gearbox", "Battery", "Radiator" }, Multi = true,
+    X.what = X.box:AddDropdown("FIU_XWhat", { Text = "Parts", Values = { "Engine", "Gearbox", "Battery", "Radiator", "Tires" }, Multi = true,
         Default = { "Engine" } })
     X.mode = X.box:AddDropdown("FIU_XMode", { Text = "Mode", Values = { "Swap", "Move" }, Default = "Swap" })
     X.box:AddButton({ Text = "Transfer parts", DoubleClick = true, Tooltip = "Double-click", Func = function()
@@ -2179,7 +2365,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)

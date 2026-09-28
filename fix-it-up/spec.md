@@ -155,3 +155,9 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   | 120 | ~0.92 | ~57 % |
 
   So the server caps the counted rate somewhere around 85–100 studs/s. The farm defaults to 85.
+- **Wheels** (measured 2026-09-28):
+  - **Removal:** `car.PartsEvent:FireServer("RemovePart", "FL"|"FR"|"RL"|"RR")` only works while the car has `OnLift=true`; the server refuses it on the floor. It returns one rim+tyre model named `Parts` (`IsWheel`, `RimName`, `TireName`, `Diameter`, `Width`, `Category="Rim|Tire|None|diam|width"`).
+  - **Install** works without a lift: `RenamePart(part, corner)`, then `ReapplyPart(part)`.
+  - **Lift** (Dealership `Folder.Lift`): spawn the car at `lift:GetPivot()*CFrame.new(0,4,0)` (inside the lift's `Detector`), then press the `Up` ClickDetector (14.3-stud range) **once**. `OnLift` becomes true within ~0.3 s, and the platform (`Holder`) rises from y 2.35 to 3.85 in ~3.5 s. Presses while the platform is moving are ignored, and pressing Up every 0.5 s kept `OnLift` from ever being set. `Down` takes ~3 s.
+  - A car-to-car tyre swap once left car A without wheels when the lift failed for car B. The transfer now puts A's wheels straight back on A if B's pull fails.
+- **Tyre shops** (`PartsStore["PitWheels WEST"/"EAST"].Wheels.Rims/Tires`) sell rims and tyres separately (MeshParts with `Price`, ClickDetector 32 studs). After the click, the server calls `Events.HUD.WheelBuy:InvokeClient(label, priceFactor)`, and the client returns `(diameter 12–24, width/200 [0.5–2], x4 bool)`. Price = factor × diameter × width / 200. Buying isn't implemented yet.
