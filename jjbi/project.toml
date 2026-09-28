@@ -1,0 +1,6 @@
+name = "JJBI"
+status = "v1"
+script = "jjbi_hub.lua"
+loader = 'loadstring(readfile("jjbi_hub.lua"))()'
+ui = "Rayfield"
+notes = []
