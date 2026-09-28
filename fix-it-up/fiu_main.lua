@@ -509,8 +509,10 @@ local function repairCar(e)
         if w >= CFG.repairMin and rm then
             jobs[#jobs + 1] = { part = p, kind = rm }
         elseif w >= CFG.repairMin and CFG.replaceWorn then
-            local new, why = buyStore(storeModel(p:GetAttribute("Category") or "", p:GetAttribute("PartName") or p.Name))
+            local sm = storeModel(p:GetAttribute("Category") or "", p:GetAttribute("PartName") or p.Name)
+            local new, why = buyStore(sm)
             if new then
+                if OWNED[e.Name] then OWNED[e.Name].parts = (OWNED[e.Name].parts or 0) + (tonumber(sm and sm:GetAttribute("Price")) or 0) end
                 installs[#installs + 1] = new
                 pinned[new] = parkCF
                 Events.PartsEvent:FireServer("DeletePart", p)
@@ -675,6 +677,9 @@ local function sellCar(e, manual)
         if o ~= e and c and (c:GetPivot().Position - pr.Position).Magnitude < 40 then return false, entryModel(o) .. " is parked at the sell zone, move it first" end
     end
     local want, offer = entryModel(e), nil
+    local o = OWNED[e.Name]
+    local cost = (o and o.price) or tonumber(entryVal(e, "BuyPrice")) or 0
+    local partsCost = o and o.parts or 0
     confirmFn = function(text)
         offer = parsePrice(text)
         return text:find("sell your", 1, true) ~= nil and text:find(want, 1, true) ~= nil -- only the car we meant
@@ -692,7 +697,13 @@ local function sellCar(e, manual)
         if gone then
             confirmFn = nil
             OWNED[e.Name] = nil; saveOwned()
-            STATE.sold = (STATE.sold or 0) + 1; STATE.earned = (STATE.earned or 0) + (offer or 0); saveState()
+            -- "earned" was always revenue (sale prices); profit = sale - buy price - parts bought for it, tracked from now on
+            STATE.sold = (STATE.sold or 0) + 1; STATE.earned = (STATE.earned or 0) + (offer or 0)
+            if offer and cost > 0 then
+                STATE.profit = (STATE.profit or 0) + offer - cost - partsCost
+                STATE.profitSales = (STATE.profitSales or 0) + 1
+            end
+            saveState()
             return true, ("sold %s for %s"):format(want, money(offer))
         end
         if lastNotify.t >= nt0 then
@@ -1477,6 +1488,47 @@ List:AddButton({ Text = "Buy car", Tooltip = "Teleports to the car and buys it a
 end })
 quoteLabel = List:AddLabel("", true)
 local junkLabelBox = List:AddLabel("-", true)
+-- the junk list as clickable rows: clicking one picks that car in the dropdown above (for Buy / Teleport)
+do
+    local rows = {}
+    for i = 1, 20 do
+        local row = {}
+        row.btn = List:AddButton({ Text = "", Func = function()
+            if row.label then
+                junkDrop:SetValue(row.label)
+                notify("Picked " .. tostring(row.name))
+            end
+        end })
+        row.btn.Base.RichText = true
+        row.btn.Base.TextXAlignment = Enum.TextXAlignment.Left
+        row.btn.Base.TextTruncate = Enum.TextTruncate.AtEnd
+        row.btn:SetVisible(false)
+        rows[i] = row
+    end
+    task.spawn(function()
+        while running do
+            pcall(function()
+                local list = sortedJunk()
+                for i, row in ipairs(rows) do
+                    local j = list[i]
+                    if j then
+                        local label = junkLabel(j)
+                        local text = ('%s<font color="%s"><b>[%s]</b> %s</font> <font color="#aaaaaa">%s</font>  %s · +%s · %dm'):format(
+                            junkDrop.Value == label and "▶ " or "", hex(CFG.color[j.tier]), j.tier, j.name, chanceText(j.sc),
+                            money(j.hi), money(j.profitHi), j.dist or 0)
+                        row.label, row.name = label, j.name
+                        if row.text ~= text then row.text = text; row.btn:SetText(text) end
+                        if not row.shown then row.shown = true; row.btn:SetVisible(true) end
+                    else
+                        row.label = nil
+                        if row.shown then row.shown = false; row.btn:SetVisible(false) end
+                    end
+                end
+            end)
+            task.wait(0.5)
+        end
+    end)
+end
 
 -- Auto
 local AutoBox = Tabs.Auto:AddLeftGroupbox("Flip loop")
@@ -2472,7 +2524,7 @@ task.spawn(function()
             end
             local key = table.concat(vals, "|")
             if key ~= lastJunkVals then lastJunkVals = key; junkDrop:SetValues(vals) end
-            junkLabelBox:SetText(#lines > 0 and table.concat(lines, "\n") or "no junk cars loaded")
+            junkLabelBox:SetText(#lines > 0 and ("%d junk car%s · click one to pick it"):format(#lines, #lines == 1 and "" or "s") or "no junk cars loaded")
 
             -- cars
             local cvals = {}
@@ -2531,9 +2583,10 @@ task.spawn(function()
             table.sort(fl)
             favLabel:SetText(#fl > 0 and table.concat(fl, "\n") or "No locked cars")
 
-            autoLabel:SetText(("%s\nGarage %d/%d · money %s · reserve %s\nSold by script: %d (%s)\nSell timer: %s"):format(
+            autoLabel:SetText(("%s\nGarage %d/%d · money %s · reserve %s\nSold by script: %d cars · %s in sales\nProfit: %s over the last %d sale%s (buy price and parts taken off)\nSell timer: %s"):format(
                 busy and ("busy: " .. tostring(busyWhat)) or autoStatus, #entries(), garageSlots(), money(myMoney()), money(CFG.reserve),
-                STATE.sold or 0, money(STATE.earned or 0), CFG.sellCooldown > 0 and (math.floor(CFG.sellCooldown / 60) .. " min") or "learning"))
+                STATE.sold or 0, money(STATE.earned or 0), money(STATE.profit or 0), STATE.profitSales or 0, (STATE.profitSales or 0) == 1 and "" or "s",
+                CFG.sellCooldown > 0 and (math.floor(CFG.sellCooldown / 60) .. " min") or "learning"))
         end)
         task.wait(0.5)
     end
