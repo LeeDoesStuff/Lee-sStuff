@@ -9,7 +9,7 @@
     Shop:     spare parts + tools, buy (and install).
     Teleport: every shop, job, garage and player.
 
-    SAFETY: favorited cars (FixItUp/favorites.json, Car tab > Favorites) are locked: never sold, never touched by auto.
+    SAFETY: favorited cars (FixItUp/favorites.json, Garage tab > Favorites) are locked: never sold, never touched by auto.
             Auto sell only sells cars this script bought (FixItUp/owned.json). Manual Sell works on any unlocked car.
 
     Mechanics (measured 2026-09-27, see fix-it-up-spec.md):
@@ -1183,7 +1183,7 @@ end
 local PLACE_NAMES, PLACE_POS = {}, {}
 for _, p in ipairs(PLACES) do PLACE_NAMES[#PLACE_NAMES + 1] = p[1]; PLACE_POS[p[1]] = p[2] end
 
-local selectedCar -- garage entry picked in the Car tab
+local selectedCar -- garage entry picked in the Garage tab
 local function goPlace(name)
     local pos = PLACE_POS[name]
     if type(pos) == "function" then pos = pos() end
@@ -1413,7 +1413,7 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Junk     = Window:AddTab("Junkyard"),
     Auto     = Window:AddTab("Auto"),
-    Car      = Window:AddTab("Car"),
+    Car      = Window:AddTab("Garage"),
     Shop     = Window:AddTab("Shop"),
     Teleport = Window:AddTab("Teleport"),
     Players  = Window:AddTab("Players"),
@@ -2436,7 +2436,7 @@ GarBox:AddLabel("Teleports to the front door of each garage.", true)
 local garDrop = GarBox:AddDropdown("FIU_GaragePlace", { Text = "Garage", Values = garageNames, AllowNull = true })
 GarBox:AddButton({ Text = "Go", Func = run("tp garage", function() if garDrop.Value then goPlace(garDrop.Value) end end) })
 TpBox:AddToggle("FIU_BringCar", { Text = "Bring selected car", Default = CFG.bringCar,
-    Tooltip = "Spawns the car picked in the Car tab next to you when you teleport", Callback = set("bringCar") })
+    Tooltip = "Spawns the car picked in the Garage tab next to you when you teleport", Callback = set("bringCar") })
 local PlBox = Tabs.Teleport:AddRightGroupbox("Players")
 local plDrop = PlBox:AddDropdown("FIU_Player", { Text = "Player", SpecialType = "Player", ExcludeLocalPlayer = true })
 PlBox:AddButton({ Text = "Go to player", Func = run("tp player", function()
@@ -2476,7 +2476,7 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
 -- ============================== selected car tag ==============================
--- floating tag over the car picked in the Car tab: name, condition, and how long until it can be sold
+-- floating tag over the car picked in the Garage tab: name, condition, and how long until it can be sold
 local selTag = Instance.new("BillboardGui")
 selTag.AlwaysOnTop, selTag.LightInfluence, selTag.ResetOnSpawn = true, 0, false
 selTag.Size, selTag.StudsOffsetWorldSpace = UDim2.fromOffset(240, 54), Vector3.new(0, 7, 0)
@@ -2909,9 +2909,9 @@ do
             farm.on = false
             return
         end
-        local e = (farm.chosen and farm.car) or selectedCar -- the Drive tab's own pick, else the Car tab's
+        local e = (farm.chosen and farm.car) or selectedCar -- the Drive tab's own pick, else the Garage tab's
         CFG.farmCarGuid = e and e.Name or nil -- auto sell never sells the car being farmed
-        if not e then farm.status = "pick a car in the Car tab first"; return end
+        if not e then farm.status = "pick a car in the Garage tab first"; return end
         local pts, top, cycle
         if CFG.driveRoute == "Highway" then
             pts, top = highwayRoute()
@@ -2981,7 +2981,7 @@ do
         Tooltip = "Learned from the server's message when it refuses a sale for distance; set it by hand if you know it",
         Callback = function(v) D.kmPerCar = v; saveD() end })
     local FarmBox = Tabs.Drive:AddRightGroupbox("Distance farm")
-    FarmBox:AddLabel("Spawns the car picked in the Car tab on the route, seats you and drives until your distance debt is paid plus the extra below. Get out of the car to stop.", true)
+    FarmBox:AddLabel("Spawns the car picked in the Garage tab on the route, seats you and drives until your distance debt is paid plus the extra below. Get out of the car to stop.", true)
     local farmToggle = FarmBox:AddToggle("FIU_DriveFarm", { Text = "Farm distance", Default = false, Callback = function(v)
         if v and not farm.on then
             farm.on = true
@@ -3010,9 +3010,9 @@ do
     FarmBox:AddToggle("FIU_DriveYield", { Text = "Pause for auto flips", Default = CFG.farmYield,
         Tooltip = "Steps out while Auto has a car to buy, repair or sell (sell timer up), then keeps driving. Needs the Auto toggles on.",
         Callback = set("farmYield") })
-    local PICK = "Car tab pick"
+    local PICK = "Garage tab pick"
     local carDropF = FarmBox:AddDropdown("FIU_DriveCar", { Text = "Car", Values = { PICK }, Default = PICK,
-        Tooltip = "Which car to drive; \"Car tab pick\" uses the car picked in the Car tab",
+        Tooltip = "Which car to drive; \"Garage tab pick\" uses the car picked in the Garage tab",
         Callback = function(v)
             if farm.refreshing then return end -- the list being rebuilt isn't a new pick
             farm.chosen = v ~= nil and v ~= PICK
@@ -3033,7 +3033,7 @@ do
                 carDropF:SetValues(labels)
                 local keepLabel = PICK
                 for l, e2 in pairs(carByLabel) do if e2 == keep then keepLabel = l end end
-                carDropF:SetValue(keepLabel) -- a sold farm car shows "Car tab pick" but the farm still stops (farm.chosen stays)
+                carDropF:SetValue(keepLabel) -- a sold farm car shows "Garage tab pick" but the farm still stops (farm.chosen stays)
                 farm.refreshing = false
             end
             task.wait(1)
