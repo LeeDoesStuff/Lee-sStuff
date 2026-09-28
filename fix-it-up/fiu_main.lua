@@ -1213,7 +1213,7 @@ local TeleportService = game:GetService("TeleportService")
 local req = request or http_request or (syn and syn.request)
 local HOP_FILE, VISIT_TTL = "fiu_hop.json", 3600
 local HOP = readJSON(HOP_FILE, {})
-for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {} }) do if HOP[k] == nil then HOP[k] = v end end
+for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500 }) do if HOP[k] == nil then HOP[k] = v end end
 local function saveHop() writeJSON(HOP_FILE, HOP) end
 do
     local now = os.time()
@@ -1232,13 +1232,21 @@ if not ok then pcall(writefile, "FixItUp/reload_error.txt", os.date() .. " " .. 
 ]==]
 
 -- values = Cars Sold of every other player (math.huge = stats never loaded, counts as over)
+-- c.hard: anyone at/over c.hardMax fails the server outright, whatever c.over allows
+-- ponytail: "?" (stats never loaded) only counts toward the normal limit, not the hard block
 local function judge(values, c)
-    local over = 0
-    for _, v in ipairs(values) do if v >= c.max then over += 1 end end
-    return #values >= 1 and over <= c.over, over
+    local over, hard = 0, 0
+    for _, v in ipairs(values) do
+        if v >= c.max then over += 1 end
+        if c.hard and v ~= math.huge and v >= c.hardMax then hard += 1 end
+    end
+    return #values >= 1 and over <= c.over and hard == 0, over, hard
 end
 assert(judge({ 10, 49 }, { max = 50, over = 0 }) and not judge({ 10, 50 }, { max = 50, over = 0 })
-    and judge({ 10, 900 }, { max = 50, over = 1 }) and not judge({}, { max = 50, over = 0 }), "judge self-check")
+    and judge({ 10, 900 }, { max = 50, over = 1 }) and not judge({}, { max = 50, over = 0 })
+    and not judge({ 10, 1500 }, { max = 50, over = 1, hard = true, hardMax = 1500 })
+    and judge({ 10, 1499 }, { max = 50, over = 1, hard = true, hardMax = 1500 })
+    and judge({ 10, math.huge }, { max = 50, over = 1, hard = true, hardMax = 1500 }), "judge self-check")
 
 local function soldOf(pl)
     local ls = pl:FindFirstChild("leaderstats")
@@ -1267,10 +1275,11 @@ end
 
 local function checkServer()
     local vals = scanServer()
-    local ok, over = judge(vals, HOP)
+    local ok, over, hard = judge(vals, HOP)
     local shown = {}
     for i, v in ipairs(vals) do shown[i] = v == math.huge and "?" or tostring(v) end
-    hopServer = ("%d others · %d at/over %d\nlowest %s · highest %s\n%s"):format(#vals, over, HOP.max,
+    hopServer = ("%d others · %d at/over %d%s\nlowest %s · highest %s\n%s"):format(#vals, over, HOP.max,
+        HOP.hard and (" · %d hard-blocked (%d+)"):format(hard, HOP.hardMax) or "",
         shown[1] or "-", shown[#shown] or "-", ok and "PASSES" or "fails")
     return ok, #vals, over
 end
@@ -2487,7 +2496,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -3107,6 +3116,11 @@ HopBox:AddSlider("FIU_HopMax", { Text = "Cars Sold must be under", Default = HOP
     Callback = function(v) HOP.max = v; saveHop() end })
 HopBox:AddSlider("FIU_HopOver", { Text = "Players allowed over limit", Default = HOP.over, Min = 0, Max = 10, Rounding = 0,
     Tooltip = "0 = everyone must be under. Raise it if hunting takes forever.", Callback = function(v) HOP.over = v; saveHop() end })
+HopBox:AddToggle("FIU_HopHard", { Text = "Hard block big sellers", Default = HOP.hard,
+    Tooltip = "Any player at or over the number below fails the server, even if the allowance above would let them through",
+    Callback = function(v) HOP.hard = v; saveHop(); task.spawn(checkServer) end })
+HopBox:AddInput("FIU_HopHardMax", { Text = "Hard block at Cars Sold", Default = tostring(HOP.hardMax), Numeric = true, Finished = true,
+    Callback = function(v) HOP.hardMax = math.max(1, math.floor(tonumber(v) or 1500)); saveHop() end })
 HopBox:AddSlider("FIU_HopMaxP", { Text = "Max other players", Default = HOP.maxp, Min = 1, Max = 21, Rounding = 0,
     Tooltip = "Only hop into servers with at most this many players", Callback = function(v) HOP.maxp = v; saveHop() end })
 local hopLabel = HopBox:AddLabel("-", true)
