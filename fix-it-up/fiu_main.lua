@@ -126,6 +126,12 @@ end
 local TIERS = { "EX", "S", "A", "B", "C", "D" }
 local TIER_RANK = {} for i, t in ipairs(TIERS) do TIER_RANK[t] = i end
 local TIER_TEXT = { EX = "Exclusive", S = "S ≤0.1%", A = "A ≤1%", B = "B ≤5%", C = "C ≤15%", D = "D >15%" }
+local function chanceText(sc) -- spawn chance as the server words it: "3%", "0.02%"; exclusives have none
+    sc = tonumber(sc)
+    if not sc or sc <= 0 then return "exclusive" end
+    return (("%.2f"):format(sc):gsub("%.?0+$", "")) .. "%"
+end
+assert(chanceText(3) == "3%" and chanceText(0.02) == "0.02%" and chanceText(0.5) == "0.5%" and chanceText(0) == "exclusive", "chanceText self-check")
 local function tierOf(sc, exclusive)
     if exclusive or not sc or sc <= 0 then return "EX" end
     if sc <= 0.1 then return "S" elseif sc <= 1 then return "A" elseif sc <= 5 then return "B" elseif sc <= 15 then return "C" end
@@ -824,8 +830,8 @@ local function scanJunk()
         if loaded then
             j.txt.TextSize, j.txt.TextColor3 = CFG.textSize, col
             j.txt.Text = CFG.espDetail
-                and ('[%s] %s\n<font size="%d" color="#dddddd">+%s · %dm</font>'):format(j.tier, j.name, CFG.textSize - 3, money(j.profitHi), j.dist)
-                or ("[%s] %s"):format(j.tier, j.name)
+                and ('[%s] %s\n<font size="%d" color="#dddddd">%s · +%s · %dm</font>'):format(j.tier, j.name, CFG.textSize - 3, chanceText(j.sc), money(j.profitHi), j.dist)
+                or ("[%s] %s %s"):format(j.tier, j.name, chanceText(j.sc))
         end
         if j.reAdorn then j.reAdorn = false; j.hl.Adornee = nil; j.hl.Adornee = m end
         j.hl.Enabled = on and CFG.outline
@@ -1345,6 +1351,8 @@ task.spawn(function()
 end)
 
 -- ============================== Obsidian UI ==============================
+local ThemeManager, SaveManager
+do
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local function obsidian(file, remote)
     local path = "BattleBotFarm/lib/" .. file -- shared local copy (a hung HttpGet once jammed the executor queue)
@@ -1352,8 +1360,9 @@ local function obsidian(file, remote)
     return loadstring(ok and src or game:HttpGet(repo .. remote))()
 end
 Library            = obsidian("Library.lua", "Library.lua")
-local ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
-local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
+ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
+SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
+end
 notify = function(msg) Library:Notify(msg, 5) end
 
 local Window = Library:CreateWindow({
@@ -1385,6 +1394,7 @@ local function run(name, f) -- buttons: one action at a time, off the UI thread
 end
 
 -- Junkyard
+do
 local Tier = Tabs.Junk:AddLeftGroupbox("Tiers")
 Tier:AddLabel("Tier = spawn chance. Toggle shows/hides a tier's labels and outlines; the swatch recolors it.", true)
 for _, t in ipairs(TIERS) do
@@ -1400,6 +1410,7 @@ Disp:AddSlider("FIU_TextSize", { Text = "Text size", Default = CFG.textSize, Min
 Disp:AddToggle("FIU_Alerts", { Text = "Spawn alerts", Default = CFG.alerts, Tooltip = "Uses the server's 'rare car has appeared' broadcast", Callback = set("alerts") })
 Disp:AddDropdown("FIU_AlertMin", { Text = "Alert from tier", Values = TIERS, Default = CFG.alertMin, Callback = set("alertMin") })
 
+end
 local List = Tabs.Junk:AddRightGroupbox("Junk cars now")
 local junkDrop = List:AddDropdown("FIU_JunkPick", { Text = "Car", Values = {}, AllowNull = true })
 local junkByLabel = {}
@@ -1445,6 +1456,7 @@ AutoBox:AddToggle("FIU_AutoRepair", { Text = "Auto repair after buy", Default = 
 AutoBox:AddToggle("FIU_AutoSell", { Text = "Auto sell", Tooltip = "Only sells cars this script bought", Default = CFG.autoSell, Callback = set("autoSell") })
 local autoLabel = AutoBox:AddLabel("-", true)
 
+do
 local Filt = Tabs.Auto:AddRightGroupbox("Buy filters")
 Filt:AddDropdown("FIU_BuyTier", { Text = "Tier at least", Values = { "S", "A", "B", "C", "D" }, Default = CFG.buyMinTier, Callback = set("buyMinTier") })
 Filt:AddDropdown("FIU_BuyModels", { Text = "Only these models", Tooltip = "None picked = any model", Values = CAT_NAMES, Multi = true, Default = {},
@@ -1458,6 +1470,7 @@ Timer:AddLabel("The server refuses to sell a car for a while after you buy it. 0
 Timer:AddSlider("FIU_SellCd", { Text = "Sell timer", Default = math.ceil(CFG.sellCooldown / 60), Min = 0, Max = 60, Rounding = 0, Suffix = " min",
     Callback = function(v) CFG.sellCooldown = v * 60; saveState() end })
 
+end
 -- Car
 local CarBox = Tabs.Car:AddLeftGroupbox("Your cars")
 local carDrop = CarBox:AddDropdown("FIU_CarPick", { Text = "Car", Values = {}, AllowNull = true })
@@ -1694,8 +1707,8 @@ task.spawn(function()
             for _, j in ipairs(list) do
                 local l = junkLabel(j)
                 vals[#vals + 1] = l; junkByLabel[l] = j
-                lines[#lines + 1] = ('<font color="%s"><b>[%s]</b> %s</font>  %s–%s · +%s · %dm'):format(
-                    hex(CFG.color[j.tier]), j.tier, j.name, money(j.lo), money(j.hi), money(j.profitHi), j.dist or 0)
+                lines[#lines + 1] = ('<font color="%s"><b>[%s]</b> %s</font> <font color="#aaaaaa">%s</font>  %s–%s · +%s · %dm'):format(
+                    hex(CFG.color[j.tier]), j.tier, j.name, chanceText(j.sc), money(j.lo), money(j.hi), money(j.profitHi), j.dist or 0)
             end
             local key = table.concat(vals, "|")
             if key ~= lastJunkVals then lastJunkVals = key; junkDrop:SetValues(vals) end
