@@ -150,6 +150,7 @@ local CFG = {
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
     autoLock = false, autoLockTier = "A", autoLockModels = {},
+    driveSpeed = 60, driveExtra = 2,
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
@@ -777,7 +778,10 @@ local junk = {} -- [model] = info + { bb, txt, hl, anchor }
 local function dropJunk(m)
     local j = junk[m]
     junk[m] = nil
-    if j then for _, k in ipairs({ "bb", "hl", "anchor" }) do if j[k] then j[k]:Destroy() end end end
+    if j then
+        for _, k in ipairs({ "bb", "hl", "anchor" }) do if j[k] then j[k]:Destroy() end end
+        if j.partConn then j.partConn:Disconnect() end
+    end
 end
 
 local function makeEsp(j)
@@ -789,6 +793,8 @@ local function makeEsp(j)
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     hl.Parent = espRoot
     j.hl = hl
+    -- a Highlight doesn't pick up parts that stream in after it was set: re-attach when the car gains parts
+    j.partConn = j.model.DescendantAdded:Connect(function(d) if d:IsA("BasePart") then j.reAdorn = true end end)
 end
 
 local function hex(c) return ("#%02x%02x%02x"):format(c.R * 255, c.G * 255, c.B * 255) end
@@ -816,6 +822,7 @@ local function scanJunk()
                 and ('[%s] %s\n<font size="%d" color="#dddddd">+%s · %dm</font>'):format(j.tier, j.name, CFG.textSize - 3, money(j.profitHi), j.dist)
                 or ("[%s] %s"):format(j.tier, j.name)
         end
+        if j.reAdorn then j.reAdorn = false; j.hl.Adornee = nil; j.hl.Adornee = m end
         j.hl.Enabled = on and CFG.outline
         j.hl.OutlineColor, j.hl.FillColor = col, col
     end
@@ -1314,6 +1321,7 @@ local function unload()
     running = false
     for _, c in ipairs(conns) do pcall(c.Disconnect, c) end
     CONFIRM.OnClientInvoke = origConfirm
+    for m in pairs(junk) do dropJunk(m) end
     espRoot:Destroy()
     anchorRoot:Destroy()
     for _, d in ipairs(Vehicles:GetDescendants()) do if d.Name == "FIU_Title" and d:IsA("Attachment") then d:Destroy() end end
@@ -1367,6 +1375,8 @@ local Tabs = {
     Shop     = Window:AddTab("Shop"),
     Teleport = Window:AddTab("Teleport"),
     Players  = Window:AddTab("Players"),
+    Gold     = Window:AddTab("Gold"),
+    Drive    = Window:AddTab("Drive"),
     Hop      = Window:AddTab("Server hop"),
     Settings = Window:AddTab("Settings"),
 }
@@ -1637,7 +1647,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -1810,6 +1820,305 @@ task.spawn(function()
     end
 end)
 
+end
+
+-- Gold tab: live price + history (FixItUp/gold.json) + a buy contract: N gold (or a budget) at or under a price.
+-- Money -> gold is Events.Exchange:FireServer("mtg", amount) at price floor(GoldPrice + 0.5); selling back costs 20 % tax.
+do
+    local GP = RS.Cache:WaitForChild("GoldPrice")
+    local GOLD_FILE = DIR .. "/gold.json"
+    local G = readJSON(GOLD_FILE, {})
+    G.hist = G.hist or {}
+    G.c = G.c or { on = false, mode = "Amount", amount = 1, budget = 100000, maxPrice = 0, filled = 0, spent = 0 }
+    local function saveGold() writeJSON(GOLD_FILE, G) end
+    local function priceNow() return math.floor(GP.Value + 0.5) end
+    local function record(p)
+        p = math.floor(p + 0.5)
+        local h = G.hist
+        if #h == 0 or h[#h][2] ~= p then
+            h[#h + 1] = { os.time(), p }
+            if #h > 3000 then table.remove(h, 1) end
+            saveGold()
+        end
+    end
+    record(GP.Value)
+    on(GP.Changed, record)
+    local function window(secs)
+        local lo, hi, loAt, n = nil, nil, nil, 0
+        local cut = os.time() - secs
+        for _, e in ipairs(G.hist) do
+            if e[1] >= cut then
+                n += 1
+                if not lo or e[2] < lo then lo, loAt = e[2], e[1] end
+                if not hi or e[2] > hi then hi = e[2] end
+            end
+        end
+        return lo, hi, loAt, n
+    end
+    local function ago(t)
+        local d = os.time() - t
+        return d < 90 and (d .. "s ago") or d < 5400 and (math.floor(d / 60) .. "m ago") or (("%.1fh ago"):format(d / 3600))
+    end
+
+    local function nearestBank()
+        local list = {}
+        for _, b in ipairs(workspace.Utils.ExchangeDetectors:GetChildren()) do if b:IsA("BasePart") then list[#list + 1] = b end end
+        local r, best, bd = hrp(), nil, nil
+        for _, b in ipairs(list) do
+            local d = r and (b.Position - r.Position).Magnitude or 0
+            if not bd or d < bd then best, bd = b, d end
+        end
+        return best
+    end
+
+    -- buys up to `amount` gold; tries from where you are first, then from the nearest bank
+    local function buyGold(amount)
+        local gold = Status.Gold
+        local price = priceNow()
+        amount = math.min(amount, math.floor((myMoney() - CFG.reserve) / math.max(1, price)))
+        if amount <= 0 then return 0, "not enough money above your reserve" end
+        local before = gold.Value
+        Events.Exchange:FireServer("mtg", amount)
+        local t = os.clock()
+        repeat task.wait(0.1) until gold.Value ~= before or os.clock() - t > 2
+        if gold.Value == before then
+            local bank = nearestBank()
+            if bank then
+                local back = hrp() and hrp().CFrame
+                tpTo(CFrame.new(bank.Position + Vector3.new(0, 3, 0)))
+                task.wait(0.8)
+                Events.Exchange:FireServer("mtg", amount)
+                t = os.clock()
+                repeat task.wait(0.1) until gold.Value ~= before or os.clock() - t > 3
+                if back then tpTo(back) end
+            end
+        end
+        local got = gold.Value - before
+        if got <= 0 then return 0, "the exchange didn't go through" end
+        return got, ("bought %d gold at %s"):format(got, money(price))
+    end
+
+    local function contractLeft()
+        local c = G.c
+        if c.mode == "Budget" then return math.floor((c.budget - c.spent) / math.max(1, priceNow())) end
+        return c.amount - c.filled
+    end
+
+    task.spawn(function()
+        while running do
+            local c = G.c
+            if c.on and not busy and not manualBuy then
+                local left = contractLeft()
+                if left <= 0 then
+                    c.on = false; saveGold()
+                    notify(("Gold contract done: %d gold for %s"):format(c.filled, money(c.spent)))
+                    log("gold contract done")
+                elseif c.maxPrice > 0 and priceNow() <= c.maxPrice then
+                    busy, busyWhat = true, "buying gold"
+                    local price = priceNow()
+                    local ok, got, msg = pcall(buyGold, left)
+                    busy = false
+                    if ok and got > 0 then
+                        c.filled += got; c.spent += got * price; saveGold()
+                        log(msg); notify(msg)
+                    elseif ok then log("gold: " .. tostring(msg)); task.wait(10) end
+                end
+            end
+            task.wait(1)
+        end
+    end)
+
+    local GoldBox = Tabs.Gold:AddLeftGroupbox("Gold price")
+    local priceLabel = GoldBox:AddLabel("-", true)
+    local ConBox = Tabs.Gold:AddRightGroupbox("Buy contract")
+    ConBox:AddLabel("Buys gold only when the price is at or under your max. Most gold per euro = the lowest max you can wait for. Selling gold back costs 20% tax.", true)
+    ConBox:AddDropdown("FIU_GoldMode", { Text = "Contract", Values = { "Amount", "Budget" }, Default = G.c.mode,
+        Tooltip = "Amount: buy this many gold. Budget: spend up to this many euros.",
+        Callback = function(v) G.c.mode = v; saveGold() end })
+    ConBox:AddInput("FIU_GoldAmount", { Text = "Gold to buy", Default = tostring(G.c.amount), Numeric = true, Finished = true,
+        Callback = function(v) G.c.amount = math.max(1, math.floor(tonumber(v) or 1)); saveGold() end })
+    ConBox:AddInput("FIU_GoldBudget", { Text = "Budget (€)", Default = tostring(G.c.budget), Numeric = true, Finished = true,
+        Callback = function(v) G.c.budget = math.max(0, math.floor(tonumber(v) or 0)); saveGold() end })
+    local maxInput = ConBox:AddInput("FIU_GoldMax", { Text = "Max price per gold (€)", Default = tostring(G.c.maxPrice), Numeric = true, Finished = true,
+        Callback = function(v) G.c.maxPrice = math.max(0, math.floor(tonumber(v) or 0)); saveGold() end })
+    ConBox:AddButton({ Text = "Use cheapest price seen (24h)", Func = function()
+        local lo = window(86400)
+        if lo then G.c.maxPrice = lo; saveGold(); maxInput:SetValue(tostring(lo)); notify("Max price set to " .. money(lo)) end
+    end })
+    local conToggle = ConBox:AddToggle("FIU_GoldOn", { Text = "Contract active", Default = G.c.on,
+        Callback = function(v)
+            if v and not G.c.on then G.c.filled, G.c.spent = 0, 0 end
+            G.c.on = v; saveGold()
+        end })
+    ConBox:AddButton({ Text = "Buy now at current price", DoubleClick = true, Func = function()
+        task.spawn(function()
+            local amt = G.c.mode == "Budget" and math.floor(G.c.budget / math.max(1, priceNow())) or G.c.amount
+            local got, msg = buyGold(amt)
+            log(msg); notify(msg)
+        end)
+    end })
+    local conLabel = ConBox:AddLabel("-", true)
+
+    task.spawn(function()
+        while running do
+            pcall(function()
+                local p = priceNow()
+                local h = G.hist
+                local last = h[#h]
+                local prev = h[#h - 1]
+                local lo1, hi1 = window(3600)
+                local lo24, hi24, loAt24 = window(86400)
+                local loAll, hiAll, loAtAll = window(10 ^ 9)
+                priceLabel:SetText(table.concat({
+                    ("<b>%s per gold</b>%s"):format(money(p), prev and (" (%s%s since %s)"):format(p >= prev[2] and "+" or "", money(p - prev[2]), ago(last[1])) or ""),
+                    ("Gold per €100K: %.2f"):format(100000 / math.max(1, p)),
+                    ("Last hour: %s – %s"):format(money(lo1 or p), money(hi1 or p)),
+                    ("Last 24h: %s – %s · cheapest %s"):format(money(lo24 or p), money(hi24 or p), loAt24 and ago(loAt24) or "-"),
+                    ("All seen: %s – %s · cheapest %s"):format(money(loAll or p), money(hiAll or p), loAtAll and ago(loAtAll) or "-"),
+                    ("Price changes logged: %d · your gold %s"):format(#h, tostring(Status.Gold.Value)),
+                    ("Sell back now: %s per gold after 20%% tax"):format(money(math.floor(p * 0.8))),
+                }, "\n"))
+                local c = G.c
+                conLabel:SetText(("%s · %s\n%s"):format(c.on and '<font color="#5ee07a">active</font>' or "off",
+                    c.mode == "Budget" and ("%s of %s spent"):format(money(c.spent), money(c.budget)) or ("%d of %d gold"):format(c.filled, c.amount),
+                    c.maxPrice > 0 and (p <= c.maxPrice and "price is under your max: buying" or ("waiting for %s (now %s)"):format(money(c.maxPrice), money(p))) or "set a max price"))
+                if conToggle.Value ~= c.on then conToggle:SetValue(c.on) end
+            end)
+            task.wait(1)
+        end
+    end)
+end
+
+-- Drive tab: distance owed for cars sold + a farm that drives your selected car along the traffic loop.
+-- The server counts distance from the car really moving (the client never sends it). 3937 studs = 1 km in the game's own math.
+do
+    local DRIVE_FILE = DIR .. "/drive.json"
+    local D = readJSON(DRIVE_FILE, {})
+    if D.kmPerCar == nil then D.kmPerCar = 1 end
+    local function saveD() writeJSON(DRIVE_FILE, D) end
+    -- the server's words about distance, whenever it says something (e.g. when a sale is refused)
+    on(Events.HUD.Notifiy.OnClientEvent, function(text)
+        text = tostring(text)
+        local low = text:lower()
+        if low:find("km") or low:find("drive") or low:find("kilomet") or low:find("distance") then
+            D.lastMsg, D.lastMsgAt = text, os.time(); saveD()
+            log("server about distance: " .. text)
+        end
+    end)
+    local function numbers()
+        local km, sold = tonumber(Status.KMs.Value) or 0, tonumber(Status.CarsSold.Value) or 0
+        local owed = sold * D.kmPerCar - km        -- > 0 = behind
+        local spare = math.floor((km - sold * D.kmPerCar) / math.max(0.001, D.kmPerCar)) -- sales left before you owe
+        return km, sold, owed, spare
+    end
+
+    local farm = { on = false, status = "off", startKm = 0 }
+    local function laneNodes()
+        local lane = RS.Assets:FindFirstChild("TrafficNodes") and RS.Assets.TrafficNodes:FindFirstChild("Lane1")
+        local nodes = {}
+        for _, n in ipairs(lane and lane:GetChildren() or {}) do if tonumber(n.Name) and n:IsA("BasePart") then nodes[#nodes + 1] = n end end
+        table.sort(nodes, function(a, b) return tonumber(a.Name) < tonumber(b.Name) end)
+        local pts = {}
+        for i, n in ipairs(nodes) do pts[i] = n.Position end
+        return pts
+    end
+
+    local function farmRun()
+        local e = selectedCar
+        if not e then farm.status = "pick a car in the Car tab first"; return end
+        local pts = laneNodes()
+        if #pts < 3 then farm.status = "no traffic route found"; return end
+        local car = spawnCar(e, CFrame.lookAt(pts[1] + Vector3.new(0, 3, 0), pts[2] + Vector3.new(0, 3, 0)))
+        if not car then farm.status = "car didn't spawn"; return end
+        local h, seat = hum(), car:FindFirstChild("DriveSeat")
+        if not (h and seat) then farm.status = "no seat"; return end
+        tpTo(seat.CFrame * CFrame.new(0, 3, 0))
+        task.wait(0.3)
+        seat:Sit(h)
+        task.wait(0.8)
+        if h.SeatPart ~= seat then farm.status = "couldn't sit in the car"; return end
+        local groundOff = (function() -- how high the car's pivot sits above the road
+            local hit = workspace:Raycast(car:GetPivot().Position + Vector3.new(0, 2, 0), Vector3.new(0, -30, 0), rayParams)
+            return hit and (car:GetPivot().Position.Y - hit.Position.Y) or 2.5
+        end)()
+        farm.startKm = tonumber(Status.KMs.Value) or 0
+        local i = 2
+        local conn
+        conn = RunService.Heartbeat:Connect(function(dt)
+            if not farm.on or h.SeatPart ~= seat or not car.Parent then return end
+            local pos = car:GetPivot().Position
+            local target = pts[i]
+            local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
+            if flat.Magnitude < 10 then i = i % #pts + 1; return end
+            local dir = flat.Unit
+            local nextPos = pos + dir * math.min(CFG.driveSpeed * dt, flat.Magnitude)
+            rayParams.FilterDescendantsInstances = { char(), Vehicles, MoveParts }
+            local hit = workspace:Raycast(nextPos + Vector3.new(0, 6, 0), Vector3.new(0, -40, 0), rayParams)
+            local y = hit and (hit.Position.Y + groundOff) or pos.Y
+            car:PivotTo(CFrame.lookAt(Vector3.new(nextPos.X, y, nextPos.Z), Vector3.new(nextPos.X, y, nextPos.Z) + dir))
+            seat.AssemblyLinearVelocity = dir * CFG.driveSpeed -- the speedo and the server see a car moving at this speed
+        end)
+        farm.status = "driving"
+        while farm.on and running do
+            local km, _, owed = numbers()
+            farm.status = ("driving · %.2f km this run · %s"):format(km - farm.startKm,
+                owed + CFG.driveExtra > 0 and ("%.2f km to go"):format(owed + CFG.driveExtra) or "target reached")
+            if h.SeatPart ~= seat then farm.status = "stopped: you left the car"; break end
+            if owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
+            task.wait(1)
+        end
+        conn:Disconnect()
+        pcall(function() seat.AssemblyLinearVelocity = Vector3.zero end)
+        farm.on = false
+    end
+
+    local DistBox = Tabs.Drive:AddLeftGroupbox("Distance owed")
+    local distLabel = DistBox:AddLabel("-", true)
+    DistBox:AddSlider("FIU_KmPerCar", { Text = "Km needed per car sold", Default = D.kmPerCar, Min = 0.1, Max = 10, Rounding = 1, Suffix = " km",
+        Tooltip = "Learned from the server's message when it refuses a sale for distance; set it by hand if you know it",
+        Callback = function(v) D.kmPerCar = v; saveD() end })
+    local FarmBox = Tabs.Drive:AddRightGroupbox("Distance farm")
+    FarmBox:AddLabel("Spawns the car picked in the Car tab on the traffic route, seats you and drives the loop until your distance debt is paid plus the extra below. Get out of the car to stop.", true)
+    local farmToggle = FarmBox:AddToggle("FIU_DriveFarm", { Text = "Farm distance", Default = false, Callback = function(v)
+        if v and not farm.on then
+            farm.on = true
+            task.spawn(function()
+                if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on end
+                if not farm.on then return end
+                busy, busyWhat = true, "farming distance"
+                local ok, err = pcall(farmRun)
+                busy = false
+                farm.on = false
+                if not ok then farm.status = "error: " .. tostring(err); log("drive farm: " .. tostring(err)) end
+            end)
+        elseif not v then
+            farm.on = false
+        end
+    end })
+    FarmBox:AddSlider("FIU_DriveSpeed", { Text = "Speed", Default = CFG.driveSpeed, Min = 20, Max = 150, Rounding = 0, Suffix = " studs/s",
+        Tooltip = "3937 studs = 1 km. Faster finishes sooner but looks less like real driving.", Callback = set("driveSpeed") })
+    FarmBox:AddSlider("FIU_DriveExtra", { Text = "Keep driving past the debt", Default = CFG.driveExtra, Min = 0, Max = 50, Rounding = 0, Suffix = " km",
+        Callback = set("driveExtra") })
+    local farmLabel = FarmBox:AddLabel("-", true)
+
+    task.spawn(function()
+        while running do
+            pcall(function()
+                local km, sold, owed, spare = numbers()
+                distLabel:SetText(table.concat({
+                    ("Driven <b>%.2f km</b> · %d cars sold"):format(km, sold),
+                    ("Needed for %d sales at %.1f km each: %.1f km"):format(sold, D.kmPerCar, sold * D.kmPerCar),
+                    owed > 0 and ('<font color="#ff6b6b">You owe %.2f km</font>'):format(owed)
+                        or ('<font color="#5ee07a">Ahead by %.2f km · %d more sale%s before you owe</font>'):format(-owed, spare, spare == 1 and "" or "s"),
+                    ("Next sale needs %.2f km total (%.2f to go)"):format((sold + 1) * D.kmPerCar, math.max(0, (sold + 1) * D.kmPerCar - km)),
+                    D.lastMsg and ("Server said (%s): %s"):format(os.date("%H:%M", D.lastMsgAt or 0), D.lastMsg) or "No distance message from the server seen yet",
+                }, "\n"))
+                farmLabel:SetText(farm.status)
+                if farmToggle.Value ~= farm.on and not farm.on then farmToggle:SetValue(false) end
+            end)
+            task.wait(1)
+        end
+    end)
 end
 
 do
