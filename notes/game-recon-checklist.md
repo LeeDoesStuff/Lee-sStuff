@@ -136,6 +136,7 @@ Finding where money comes from is step one, not the analysis. Before writing cod
   - The payload must `repeat task.wait() until game:IsLoaded() and Players.LocalPlayer`, then `pcall` the script and write any error to a file.
   - The script itself should wait for everything it reads at load time.
   - Add a load/unload trail file (`life.log`, with a traceback on unload), so hop runs can be debugged without a console.
+- **Luau allows at most 200 locals per function, and the main chunk counts as one.** A long single-file script hits it (fiu_main at ~1,600 lines). Wrapping only the new code in `do … end` isn't enough, because the outer locals still count. Scope whole UI sections whose locals nothing else reads.
 - **Don't parent client objects to `workspace.CurrentCamera` at load time:** the join camera can be replaced. Parent them to `workspace` instead; client-created instances don't replicate.
 - **Spawning or teleporting an object far from the player:** it can arrive before its children stream in (missing `PartsEvent`). Stream the destination first, or go there first, and wait for the children you need.
 - **StreamingEnabled games:** models stay but their parts are missing until streamed in (`GetPivot` still works on the Model). Call `LocalPlayer:RequestStreamAroundAsync(pos)` before reading a machine's parts or firing a remote prompt/ClickDetector.

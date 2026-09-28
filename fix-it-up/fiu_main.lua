@@ -149,6 +149,7 @@ local CFG = {
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
+    playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
 local STATE = readJSON(DIR .. "/state.json", {})
 local OWNED = readJSON(DIR .. "/owned.json", {}) -- [garage GUID] = { model, boughtAt } — the ONLY sellable cars
@@ -243,6 +244,14 @@ local function entries() return Garage:GetChildren() end
 local function entryModel(e) local v = e:FindFirstChild("Model"); return v and v.Value or "?" end
 local function entryVal(e, n) local v = e:FindFirstChild(n); return v and v.Value end
 local function carOf(e) return Vehicles:FindFirstChild(e.Name) end
+-- always the car's current instance: a respawn mid-job destroys the one we started with
+local function fireParts(e, ...)
+    local c = carOf(e)
+    local pe = c and (c:FindFirstChild("PartsEvent") or c:WaitForChild("PartsEvent", 3))
+    if pe then pe:FireServer(...) return true end
+    log("car not loaded: " .. entryModel(e))
+    return false
+end
 -- the hood ClickDetector only reaches 10 studs: stand just outside the hood, away from the car's middle
 local function hoodSpot(car)
     local det = car:FindFirstChild("Misc") and car.Misc:FindFirstChild("Hood") and car.Misc.Hood:FindFirstChild("Detector")
@@ -436,7 +445,7 @@ local function repairCar(e)
 
     local before = myParts()
     for _, slot in ipairs(pull) do
-        if eng[slot].Value ~= "" then car.PartsEvent:FireServer("RemovePart", slot); task.wait(0.3) end
+        if eng[slot].Value ~= "" then fireParts(e, "RemovePart", slot); task.wait(0.3) end
     end
     task.wait(1)
     -- everything that came off, including parts the engine block dragged along
@@ -517,7 +526,7 @@ local function repairCar(e)
     table.sort(installs, function(a, b) return rank(a) < rank(b) end)
     for pass = 1, 2 do
         for _, p in ipairs(installs) do
-            if p.Parent == MoveParts then car.PartsEvent:FireServer("ReapplyPart", p); task.wait(0.3) end
+            if p.Parent == MoveParts then fireParts(e, "ReapplyPart", p); task.wait(0.3) end
         end
         task.wait(0.8)
     end
@@ -780,6 +789,92 @@ local function junkLabel(j) return ("[%s] %s  %s–%s"):format(j.tier, j.name, m
 
 -- my loose parts: wear + game's delete countdown
 local partEsp = {}
+-- other players: a label over each one (name, cars sold, what they have spawned) + a title over each of their cars
+local plEsp, carEsp = {}, {} -- [Player] = { anchor, bb, txt, hl }, [car model] = { anchor, bb, txt }
+local function dropEsp(t, k)
+    local e = t[k]
+    t[k] = nil
+    if e then for _, n in ipairs({ "bb", "hl", "anchor" }) do if e[n] then e[n]:Destroy() end end end
+end
+local function carTier(c)
+    local sc = c:GetAttribute("SpawnChance")
+    return tierOf(sc, (sc or 0) <= 0)
+end
+local function scanPlayers()
+    local cp = camPos()
+    -- spawned cars by owner
+    local byOwner = {}
+    for _, c in ipairs(Vehicles:GetChildren()) do
+        local owner = c:GetAttribute("Owner")
+        if owner and owner ~= LP.Name and not c:GetAttribute("Junkyard") then
+            byOwner[owner] = byOwner[owner] or {}
+            table.insert(byOwner[owner], c)
+        end
+    end
+    -- player labels
+    for p in pairs(plEsp) do if not p.Parent or not CFG.playerEsp then dropEsp(plEsp, p) end end
+    if CFG.playerEsp then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP then
+                local e = plEsp[p]
+                if not e then
+                    e = { anchor = newAnchor() }
+                    e.bb, e.txt = makeLabel(240, 60)
+                    e.bb.Adornee = e.anchor
+                    e.hl = Instance.new("Highlight")
+                    e.hl.FillTransparency, e.hl.OutlineTransparency, e.hl.DepthMode = 1, 0, Enum.HighlightDepthMode.AlwaysOnTop
+                    e.hl.Parent = espRoot
+                    plEsp[p] = e
+                end
+                local ch = p.Character
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                local dist = root and (root.Position - cp).Magnitude or math.huge
+                local on = root ~= nil and dist <= CFG.playerMaxDist and placeAnchor(e.anchor, ch)
+                e.bb.Enabled = on == true
+                e.hl.Adornee, e.hl.Enabled = ch, on == true and CFG.playerOutline
+                e.hl.OutlineColor = CFG.playerColor
+                if on then
+                    local cars = {}
+                    for _, c in ipairs(byOwner[p.Name] or {}) do
+                        cars[#cars + 1] = ('<font color="%s">%s</font>'):format(hex(CFG.color[carTier(c)]), tostring(c:GetAttribute("Model")))
+                    end
+                    e.txt.TextSize, e.txt.TextColor3 = CFG.textSize, CFG.playerColor
+                    e.txt.Text = ('%s\n<font size="%d" color="#dddddd">%s sold · %dm</font>%s'):format(p.DisplayName, CFG.textSize - 3,
+                        tostring((function() local ls = p:FindFirstChild("leaderstats"); local v = ls and ls:FindFirstChild("Cars Sold"); return v and v.Value or "?" end)()), dist, #cars > 0 and ('\n<font size="%d">%s</font>'):format(CFG.textSize - 3, table.concat(cars, ", ")) or "")
+                end
+            end
+        end
+    end
+    -- titles over their cars
+    for c in pairs(carEsp) do
+        local owner = c:GetAttribute("Owner")
+        if not c.Parent or not (CFG.playerEsp and CFG.playerCarTitles) or not owner or owner == LP.Name then dropEsp(carEsp, c) end
+    end
+    if CFG.playerEsp and CFG.playerCarTitles then
+        for owner, list in pairs(byOwner) do
+            for _, c in ipairs(list) do
+                local e = carEsp[c]
+                if not e then
+                    e = { anchor = newAnchor() }
+                    e.bb, e.txt = makeLabel(220, 34)
+                    e.bb.Adornee = e.anchor
+                    carEsp[c] = e
+                end
+                local dist = (c:GetPivot().Position - cp).Magnitude
+                local on = dist <= CFG.playerMaxDist and placeAnchor(e.anchor, c)
+                e.bb.Enabled = on == true
+                if on then
+                    local tier = carTier(c)
+                    e.txt.TextSize, e.txt.TextColor3 = CFG.textSize - 1, CFG.color[tier]
+                    local pl = Players:FindFirstChild(owner)
+                    e.txt.Text = ('[%s] %s\n<font size="%d" color="#dddddd">%s</font>'):format(tier, tostring(c:GetAttribute("Model")),
+                        CFG.textSize - 4, pl and pl.DisplayName or owner)
+                end
+            end
+        end
+    end
+end
+
 local function scanParts()
     for p, b in pairs(partEsp) do if not p.Parent or not CFG.partEsp then b:Destroy(); partEsp[p] = nil end end
     if not CFG.partEsp then return end
@@ -1142,7 +1237,7 @@ local function unload()
     anchorRoot:Destroy()
     if Library then pcall(Library.Unload, Library) end
 end
-getgenv().FIU_MAIN = { unload = unload, cfg = CFG, junk = junk, owned = OWNED, state = STATE,
+getgenv().FIU_MAIN = { unload = unload, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
     repairCar = repairCar, sellCar = sellCar, buyJunk = buyJunk, spawnCar = spawnCar, log = logLines,
     machines = machines, liftCF = liftCF, garageSlots = garageSlots, goPlace = goPlace, places = PLACE_NAMES, cleanCar = cleanCar, paintCar = paintCar, buyStore = buyStore }
 
@@ -1151,6 +1246,7 @@ task.spawn(function()
     while running do
         guard("scan", scanJunk)
         guard("parts", scanParts)
+        guard("players", scanPlayers)
         task.wait(0.5)
     end
 end)
@@ -1183,6 +1279,7 @@ local Tabs = {
     Car      = Window:AddTab("Car"),
     Shop     = Window:AddTab("Shop"),
     Teleport = Window:AddTab("Teleport"),
+    Players  = Window:AddTab("Players"),
     Hop      = Window:AddTab("Server hop"),
     Settings = Window:AddTab("Settings"),
 }
@@ -1290,6 +1387,7 @@ FavBox:AddButton({ Text = "Unlock selected car", DoubleClick = true, Func = func
 end })
 local favLabel = FavBox:AddLabel("-", true)
 
+do
 local RepBox = Tabs.Car:AddRightGroupbox("Repair settings")
 RepBox:AddDropdown("FIU_Station", { Text = "Repair shop", Values = { "Dealership", "Pitstop" }, Default = CFG.station,
     Tooltip = "Dealership = the quiet one; Pitstop is the busy one", Callback = set("station") })
@@ -1323,6 +1421,8 @@ end) })
 ActBox:AddToggle("FIU_CleanAfter", { Text = "Clean after auto repair", Default = CFG.cleanAfter, Callback = set("cleanAfter") })
 ActBox:AddToggle("FIU_PaintAfter", { Text = "Paint after auto repair", Default = CFG.paintAfter, Callback = set("paintAfter") })
 
+end
+do
 -- Shop
 local ShopBox = Tabs.Shop:AddLeftGroupbox("Spare parts")
 local cats = {}
@@ -1354,7 +1454,7 @@ ShopBox:AddButton({ Text = "Buy + install on selected car", Func = run("shop ins
     local p, c = partByLabel[partDrop.Value], selectedCar and carOf(selectedCar)
     if not c then notify("Spawn the selected car first") return end
     local new, why = buyStore(p)
-    if new then c.PartsEvent:FireServer("ReapplyPart", new); log("installed " .. p.Name) else log("buy failed: " .. tostring(why)) end
+    if new then fireParts(selectedCar, "ReapplyPart", new); log("installed " .. p.Name) else log("buy failed: " .. tostring(why)) end
 end) })
 
 local ToolBox = Tabs.Shop:AddRightGroupbox("Tools")
@@ -1387,6 +1487,8 @@ PlBox:AddButton({ Text = "Go to player", Func = run("tp player", function()
     if c then tpTo(c:GetPivot() * CFrame.new(0, 0, 4)) end
 end) })
 
+end
+do
 -- Settings
 local Spend = Tabs.Settings:AddRightGroupbox("Spending")
 Spend:AddSlider("FIU_Reserve", { Text = "Always keep", Default = CFG.reserve, Min = 0, Max = 1000000, Rounding = 0, Suffix = "€",
@@ -1402,11 +1504,12 @@ local LogBox = Tabs.Settings:AddLeftGroupbox("Log")
 logLabel = LogBox:AddLabel("-", true)
 local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
+end
 Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_GvPlayer" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -1512,6 +1615,68 @@ task.spawn(function()
     end
 end)
 
+do
+-- Players tab: ESP + garage viewer (every player's PlayerData.Garage replicates, wear values included)
+local PEsp = Tabs.Players:AddLeftGroupbox("Player ESP")
+PEsp:AddToggle("FIU_PlEsp", { Text = "Player ESP", Default = CFG.playerEsp,
+    Tooltip = "Name, cars sold, distance and the cars they have out", Callback = set("playerEsp") })
+    :AddColorPicker("FIU_PlCol", { Default = CFG.playerColor, Title = "Player label color", Callback = function(c) CFG.playerColor = c end })
+PEsp:AddToggle("FIU_PlCars", { Text = "Titles over their cars", Default = CFG.playerCarTitles,
+    Tooltip = "Model + owner over every car another player has spawned, in its tier color", Callback = set("playerCarTitles") })
+PEsp:AddToggle("FIU_PlOutline", { Text = "Outline players", Default = CFG.playerOutline, Callback = set("playerOutline") })
+PEsp:AddSlider("FIU_PlDist", { Text = "Max distance", Default = CFG.playerMaxDist, Min = 100, Max = 6000, Rounding = 0, Suffix = " studs", Callback = set("playerMaxDist") })
+
+local GView = Tabs.Players:AddRightGroupbox("Garage viewer")
+local gvDrop = GView:AddDropdown("FIU_GvPlayer", { Text = "Player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true })
+local gvLabel = GView:AddLabel("Pick a player", true)
+local function valuesCondition(values)
+    local eng = values and values:FindFirstChild("Engine")
+    local wear = eng and eng:FindFirstChild("Wear")
+    if not wear then return nil end
+    local sum, n = 0, 0
+    for _, v in ipairs(eng:GetChildren()) do
+        if v:IsA("StringValue") and v.Value ~= "" and wear:FindFirstChild(v.Name) then sum += wear[v.Name].Value; n += 1 end
+    end
+    return n > 0 and 100 - math.round(sum / n) or 100
+end
+local function garageText(p)
+    local pd = p:FindFirstChild("PlayerData")
+    local g = pd and pd:FindFirstChild("Garage")
+    if not g then return p.DisplayName .. ": garage not loaded" end
+    local gm = pd:FindFirstChild("GarageModel") and pd.GarageModel.Value or "?"
+    local gmodel = workspace.Garages:FindFirstChild(tostring(gm))
+    local slots = gmodel and gmodel:FindFirstChild("CarPositions") and #gmodel.CarPositions:GetChildren() or "?"
+    local st = pd:FindFirstChild("Status")
+    local lines = { ("<b>%s</b> · %s garage %d/%s"):format(p.DisplayName, tostring(gm), #g:GetChildren(), tostring(slots)),
+        ("Money %s · %s cars sold"):format(st and money(st.Money.Value) or "?", st and tostring(st.CarsSold.Value) or "?") }
+    local cars = g:GetChildren()
+    table.sort(cars, function(a, b) return (tonumber(entryVal(a, "BuyPrice")) or 0) > (tonumber(entryVal(b, "BuyPrice")) or 0) end)
+    for _, e in ipairs(cars) do
+        local model = tostring(entryVal(e, "Model") or "?")
+        local cat = RS.Cache.CarList:FindFirstChild(model)
+        local sc = cat and cat:GetAttribute("SpawnChance")
+        local tier = tierOf(sc, (sc or 0) <= 0)
+        local cond = valuesCondition(e:FindFirstChild("Values"))
+        lines[#lines + 1] = ('<font color="%s">[%s] %s</font> · %s%s%s'):format(hex(CFG.color[tier]), tier, model,
+            money(tonumber(entryVal(e, "BuyPrice")) or 0), cond and (" · " .. cond .. "%") or "", Vehicles:FindFirstChild(e.Name) and " · out" or "")
+    end
+    if #cars == 0 then lines[#lines + 1] = "Empty garage" end
+    return table.concat(lines, "\n")
+end
+task.spawn(function()
+    while running do
+        pcall(function()
+            local p = gvDrop.Value
+            p = typeof(p) == "Instance" and p or (p and Players:FindFirstChild(tostring(p)))
+            gvLabel:SetText(p and garageText(p) or "Pick a player")
+        end)
+        task.wait(1)
+    end
+end)
+
+end
+
+do
 -- Server hop tab (settings live in fiu_hop.json, not SaveManager, so they survive the teleport before autoload)
 local HopBox = Tabs.Hop:AddLeftGroupbox("Auto hop")
 HopBox:AddLabel("Hops to servers where the other players have sold few cars (less competition at the junkyard). Reloads this script after every hop.", true)
@@ -1553,6 +1718,7 @@ task.spawn(function()
         task.wait(1)
     end
 end)
+end
 if HOP.auto then task.spawn(hopRun) else task.spawn(checkServer) end
 
 lifeLog("ready")

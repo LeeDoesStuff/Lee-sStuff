@@ -119,3 +119,13 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 - **Sell price depends on condition:** an unrepaired Fia-Te Ponto bought for €1.6K sold for €1.1K. The repaired Ontel got the full ×(1+PM).
 - **Sell timer:** 184 s after purchase. The refusal text is `You need to wait N seconds to sell this car`.
 - **Sell zone:** a car freshly respawned 9 studs from the NPC was once "too far". Retrying 6 studs out worked.
+
+## Other players (measured 2026-09-28)
+
+- Every player's `PlayerData` replicates to everyone:
+  - `Garage.<GUID>` with `Model`, `BuyPrice`, `BoughtAt` and the full `Values` (engine wear included);
+  - `GarageModel` (their garage type);
+  - `Status` (Money, CarsSold, …).
+
+  The script's Players tab shows any player's garage from this data: tier, price, condition, and whether the car is spawned.
+- Spawned cars in `workspace.Vehicles` carry `Owner=<Name>`, `Model` and `SpawnChance`. That's enough to title other players' cars with their tier.
