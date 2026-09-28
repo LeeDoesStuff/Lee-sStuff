@@ -41,6 +41,7 @@ When a Craig sale is over $1M, the client pops "Craig can't afford this! … Ric
   - Measured 2026-09-27: from outside the apartment, a matcha drink got `ListingError "That item cannot be listed."` straight back, and the tool stayed in the backpack. So the server handles list requests away from the laptop, but a real listing from afar isn't confirmed yet.
   - The dashboard's filter (`ToolInfo`) takes clothing types Shirt / InnerLayerTop / OuterLayerTop / Pants / Shoes / Accessory that are Clean, not Favorite, not a box, and Rare or better.
   - The script's "List held item" button checks those rules, then sends `ListItem` from where you are. It retries once from the laptop only if the server stays silent.
+  - The button has an optional hotkey: an Obsidian `Press`-mode key picker, unbound by default, ignored while typing, and saved with the config. The result also appears as a toast.
 - **Offers** (Messages): `{Id, Buyer, BuyerId, BuyerType, Price, ItemValue, ItemName, Status (Accepted/Packaged/Sold/HeldOut/Lost), MeetingPlace, FinalPrice}`. Accept with `AcceptMRKETOffer id`, hold out with `HoldMRKETOffer`, counter with the timing minigame `StartMRKETCounter` → `ResolveMRKETCounter {Id, ClickTime = GetServerTimeNow()}`.
 - **State on 2026-09-27:** you own Apartment1, your MRKET store is "OFN", and you have 0 listings and 0 offers. MRKET slots: 3, plus 3 more for Robux.
 

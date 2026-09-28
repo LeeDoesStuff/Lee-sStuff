@@ -294,6 +294,7 @@ local function countTools(pred)
     return n
 end
 local function mmss(s) s = math.max(0, math.floor(s)); return ("%d:%02d"):format(s // 60, s % 60) end
+local notify = function() end -- becomes Library:Notify once the UI has loaded
 
 -- ============================== matcha ==============================
 -- Measured 2026-09-27: MatchaOrderEvent:FireServer(key, os.time()) is ignored from 90 studs but works 6 studs in
@@ -640,16 +641,21 @@ local function heldListable()
 end
 
 local listing = false
+local function listResult(msg) -- status line + a toast, since the hotkey is used with the menu closed
+    mk.listMsg = msg
+    notify("MRKET: " .. msg)
+end
 local function listHeld()
-    if listing or mk.busy then mk.listMsg = "busy, try again in a moment"; return end
+    if listing or mk.busy then listResult("busy, try again in a moment"); return end
     local tool, name, id = heldListable()
-    if not tool then mk.listMsg = name; return end
+    if not tool then listResult(name); return end
     listing = true
     mk.gotListings = false
     RopopEvent:FireServer("GetListings")
     waitFor(function() return mk.gotListings end, 2)
     if mk.gotListings and #mk.listings >= mk.maxListings then
-        mk.listMsg, listing = ("all %d listing slots are full"):format(mk.maxListings), false
+        listing = false
+        listResult(("all %d listing slots are full"):format(mk.maxListings))
         return
     end
     local reply
@@ -677,8 +683,8 @@ local function listHeld()
         end
     end
     conn:Disconnect()
-    mk.listMsg = reply == true and ("listed " .. name) or ("not listed: " .. (reply or "no answer from the server"))
     listing = false
+    listResult(reply == true and ("listed " .. name) or ("not listed: " .. (reply or "no answer from the server")))
 end
 
 task.spawn(function() -- MRKET: pack new orders, deliver held boxes
@@ -872,6 +878,8 @@ MkBox:AddToggle("MK_Deliver", { Text = "Auto deliver (fulfill)", Default = CFG.m
 MkBox:AddToggle("MK_Return", { Text = "Go back after", Default = CFG.mkReturn, Callback = function(v) CFG.mkReturn = v end })
 MkBox:AddButton({ Text = "List held item", Tooltip = "Lists the item in your hand on MRKET (clean, not favorited, Rare and up)",
     Func = function() task.spawn(guard, "list", listHeld) end })
+    -- hotkey: pressing it runs the button (Obsidian Press mode); ignored while you type in chat; saved with the config
+    :AddKeyPicker("MK_ListKey", { Default = "None", Mode = "Press", Text = "List held item" })
 mrketLabel = MkBox:AddLabel("-", true)
 
 local Spend = Tabs.Settings:AddRightGroupbox("Spending")
@@ -889,4 +897,5 @@ ThemeManager:SetFolder("ThriftESP")
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
+notify = function(msg) Library:Notify(msg, 3) end
 Library:Notify("Hit The Thrift ready — RightCtrl toggles the UI.", 4)
