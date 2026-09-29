@@ -1339,3 +1339,8 @@ Inventory safety while a trade is open is §8.2 (*Trading, mail & gifting*). The
 - [ ] Claim sweeps run before every reset boundary and before every rebirth.
 - [ ] Every popup source closes the game's way, and every UI-state pause has a timeout. An unattended hour after a rejoin shows no stall.
 - [ ] Admin presence has a setting (normal / remote-only / pause). No social action (join, leave, invite, trade, chat) runs unless the player turned it on.
+
+## Recon scripts must yield (Slayers 2, 2026-09-29)
+- A one-pass dump that ran `game:GetDescendants()` and `getscriptbytecode` over every script **with no `task.wait()` froze the client for 2+ minutes**, blocking the execute queue too (a ping never answered).
+- Every recon loop yields: `task.wait()` every ~500 instances and every ~25 scripts. Scan `ReplicatedStorage`/`workspace`/`LocalPlayer`, not `game`.
+- `writefile` partial output after each section, so a hang still leaves data and shows which section stalled.
