@@ -25,3 +25,4 @@ Quirks of the Potassium MCP execute bridge (`mcp__potassium__execute_script` / `
 - **Don't patch Lua through shell heredocs that contain `"\n"`.** The escaping turned it into a real newline inside a string literal, and the file stopped compiling. Write the patch script to a file with the Write tool, or use Edit.
 
 See [battle-bot-project](../build-a-battle-bot/notes.md), [warfare-project](../warfare/notes.md).
+- **Never loop getscriptbytecode/decompile without yielding** (2026-09-29 Pixel Conquest): 22 remotes × 95 scripts of unyielded bytecode fetches froze the game twice. Cache bytecode once per script, `task.wait()` after each, scope to ReplicatedStorage, and run recon in steps with a status file per step.

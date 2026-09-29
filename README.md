@@ -37,6 +37,19 @@ Daily rewards, quests, codes, banner summons, ascension and evolution, equip bes
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/command-an-army/caa_farm.lua"))()
 ```
 
+### [Pixel Conquest](pixel-conquest/)
+A full-match bot for the OpenFront-style territory game, one tab per system:
+- **Expand:** smart spawn far from everyone, auto expand that holds troops in the fastest-growth band, boats to open islands, and retaking land that was nuked out of your territory.
+- **Combat:** attacks the weakest neighbour, counterattacks sized to cancel incoming attacks 1:1 (and invade when you can afford it), revenge only when you're stronger, and a last stand (nuke, defense post, reinforce, ally request) when you can't hold.
+- **Build:** cities (upgraded in place), ports, defense posts on attacked borders, artillery, airfields and railguns, with a gold reserve.
+- **Weapons:** auto nukes on the biggest enemy's city cluster, revenge nukes on whoever nukes you, an anti-nuke manager that covers your best cities before nukes fly, airstrikes and railgun on cooldown.
+- **Diplomacy and lobby:** auto accept and renew alliances (breaking them is blocked), auto queue, leave and requeue, the free reward, and buying passes with Money.
+
+It uses the game's own ATTACK SIZE slider and blocks the game's Robux prompts.
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/pixel-conquest/pc_main.lua"))()
+```
+
 ### [Fix It Up!](fix-it-up/)
 A flip farm with one menu tab for each part of the game:
 - **Junkyard:** tier and spawn-% ESP on every junk car, a clickable list with one-click Buy, rare-spawn alerts, and a lookup for any car's rarity, engines, cost and profit.
