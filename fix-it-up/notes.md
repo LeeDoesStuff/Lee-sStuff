@@ -22,6 +22,8 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 - Wants teleports for every shop.
 - NEVER sell the collector cars: see fiu-never-sell-collection.
 
+**Distance farm (Drive tab):** spawning the car on the highway takes about 20 s. The first RemoteLoad often drops it at the garage, where it rolls out, and the retry lands it. Toggling off/on during that window used to start a 2nd thread, which the 1st then switched off (stuck on "waiting for farming distance"). Fixed 2026-09-29: one `farm.worker` at a time, with a live status for each step. The server counts only about 40% of the distance moved at 150 studs/s.
+
 **Garage:** the Default garage has 3 slots. The user's Merquis Maibac S650 is locked as a favorite and is no longer parked at the sell NPC.
 
 **Server hop:** merged on 2026-09-28 into the fiu_main "Server hop" tab, at the user's request.

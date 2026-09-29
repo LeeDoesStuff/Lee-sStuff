@@ -3261,11 +3261,13 @@ do
             pts, top = roadRoute()
         end
         if not pts then farm.status = "no route found"; return end
+        farm.status = "spawning " .. entryModel(e) .. " on the route (can take ~20 s)"
         streamAt(pts[1], 5)
         local car = spawnCar(e, CFrame.lookAt(pts[1] + Vector3.new(0, 4, 0), pts[2] + Vector3.new(0, 4, 0)))
         if not car then farm.status = "car didn't spawn"; return end
         local h, seat = hum(), car:FindFirstChild("DriveSeat")
         if not (h and seat) then farm.status = "no seat"; return end
+        farm.status = "getting in"
         tpTo(seat.CFrame * CFrame.new(0, 3, 0))
         task.wait(0.3)
         seat:Sit(h)
@@ -3328,10 +3330,14 @@ do
     local farmToggle = FarmBox:AddToggle("FIU_DriveFarm", { Text = "Farm distance", Default = false, Callback = function(v)
         if v and not farm.on then
             farm.on = true
+            -- one worker only: a run still spawning the car (slow) sees farm.on again and carries on. A second thread
+            -- used to wait on the first one's busy flag, then get switched off by it (stuck on "waiting for farming distance")
+            if farm.worker then return end
+            farm.worker = true
             task.spawn(function()
                 while farm.on and running do
-                    if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on end
-                    if not farm.on then break end
+                    if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on or not running end
+                    if not (farm.on and running) then break end
                     busy, busyWhat = true, "farming distance"
                     farm.yielded = false
                     local ok, err = pcall(farmRun)
@@ -3344,8 +3350,9 @@ do
                     task.wait(1)
                 end
                 farm.on = false
+                farm.worker = nil
                 CFG.farmCarGuid = nil
-                if CFG.homeAfterTp then goHome(true) end
+                if CFG.homeAfterTp and running then goHome(true) end
             end)
         elseif not v then
             farm.on = false
