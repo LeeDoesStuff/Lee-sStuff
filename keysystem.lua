@@ -19,6 +19,17 @@ local function loadVault()
     fn()
 end
 
+local function savedKey()
+    if getgenv().SCRIPT_KEY then return getgenv().SCRIPT_KEY end
+    local ok, has = pcall(isfile, KEY_FILE)
+    return ok and has and readfile(KEY_FILE) or nil
+end
+
+-- The vault decides whether a key is needed; it sets __chv only when it wants one. Nothing here knows the rule.
+getgenv().SCRIPT_KEY, getgenv().__chv = savedKey(), nil
+loadVault()
+if not getgenv().__chv then return end
+
 local okLib, src = pcall(game.HttpGet, game, "https://secure.pandauth.com/pv4/lib")
 local PUSL = okLib and src and loadstring(src)()
 if not PUSL or type(PUSL.configure) ~= "function" then
@@ -37,15 +48,8 @@ local function tryKey(key)
     return false, ok and result and (result.error or result.reason) or "no response"
 end
 
-local function savedKey()
-    if getgenv().SCRIPT_KEY then return getgenv().SCRIPT_KEY end
-    local ok, has = pcall(isfile, KEY_FILE)
-    return ok and has and readfile(KEY_FILE) or nil
-end
-
--- "keyless" only validates while No Key Requirement is on in the Panda dashboard; then the key screen is skipped
-if not tryKey(savedKey()) and not tryKey("keyless") then
-    getgenv().SCRIPT_KEY = nil
+getgenv().SCRIPT_KEY = nil
+do
 
     local function logo() -- CruelHub logo from the repo, cached in the workspace; nil if the executor can't load it
         local ok, id = pcall(function()
