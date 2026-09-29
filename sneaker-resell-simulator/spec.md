@@ -161,6 +161,11 @@ Design that works:
 
 Only real unknown: whether the server rubber-bands a CFrame'd character. Cheap to test — move 20 studs, wait 2s, re-read position.
 
+Measured 2026-09-29 (live):
+- `LimitedShop.Boxes` held **one** box (`Box2`). Its `BuyPrompt.ObjectText` is the sneaker name and `ActionText` is `"Purchase For 5.0M"`. `HoldPart.SurfaceGui` has `SneakerNameText`, `SneakerPriceText` and `UnsellableText = "Unsellable"`. **Limiteds are Unsellable**: they're index/trade-up value, not cash. Match the box to the target by `ObjectText`, and never fire every enabled box.
+- The shop the box shows matches `LimitedShop[utcHour % 6 + 1]` (checked: Air Bogdan 4 Trevor Scott, $5,000,000).
+- `GetShoesAppData` drops (`Sn`, `Pc`, `Cw`, `tm`): `Cw` is display text (`"Stock: 3"`, `"Limited Stock"`, `"Sunset"`), not a number. `tm` is a unix release time. Some drops cost **$1**.
+
 ---
 
 ## 5. Auto-sell: bar sell vs fast sell
@@ -314,6 +319,15 @@ Third, smaller: does the server accept a CFrame'd character (§4), or rubber-ban
 - **`BanEvent` is a manual moderation tool, not detection.** Verified: it has zero game-side listeners, and `MainScreenGui.BanFrame` is a two-child form — a TextBox reading `"Enter UserName"` and a "Ban" button, parked at position `0.98, 0.02` and hidden. The button's only connection is `SoundScript`, which attaches a click sound to *every* button in `MainScreenGui` indiscriminately. A GC-wide constant scan for `BanFrame` / `BanEvent` / `Enter UserName` found no game script referencing them. This is a moderator typing a scammer's name, and it implies nothing about automated detection.
 - `DailyBoughtSneakers` is tracked per day and throttles PC refresh from 1s to 5s at 5,000 buys. That is a real, observable rate limit to design around — read it as a throttle, not as evidence of monitoring.
 - The `warn("GotRewardNil", ..., LocalPlayer.Name)` path fires when a sell result can't resolve a band. It is a client-side `warn`, so it reaches the developers only if they run a log-collection service — unknown either way. Worth not tripping, not worth fearing.
+
+### Panel v2 review findings (2026-09-29)
+
+These bugs came from the panel's own control flow, not the game. Recorded so the next panel avoids them:
+- **Loop restart race.** A loop that checks only `while Running.X` survives a stop/start, because the old coroutine is still parked in a `task.wait` and wakes to find `Running=true` again. The watchdog and a quick UI off/on both did this, and the result was two buy loops on one budget. Fix: a per-start generation token.
+- **Toggle as permission vs toggle as state.** When the Director wrote a *gated* on/off (permission AND "enough stock right now") back into the toggle, the toggle callback stored it in Config. The first low-stock pass revoked the cashier-valve permission for good. Never sync a gated value back into the toggle that grants the permission.
+- **Overlapping tweens** (the bar loop, Reinvest-via-bar, return-to-PC, the sniper) each saved the others' `Anchored=true` as "original state" and left the character anchored. Use one global move lock.
+- **Keep One inflates unit counts.** `SellAllButOneEvent` leaves one of each line, so the dump trigger has to count `Count-1` per line. Otherwise it fires forever once the distinct-line count crosses the threshold.
+- Every outlay path (drops, limited snipe) has to go through `canSpend` + `recordSpend`, or SpendCap silently doesn't cover it.
 
 ### Lesson from the build
 

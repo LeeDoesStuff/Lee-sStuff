@@ -46,7 +46,6 @@ local MysteryBoxModule = require(RS:WaitForChild("MysteryBoxModule"))
 
 local CONST = {
     Sneakers       = SneakerModule.sneakers,
-    RarityColors   = SneakerModule.RarityColors,
     BoughtSentinel = "Bought",
 
     Remote = {
@@ -55,7 +54,6 @@ local CONST = {
         TradeUp     = Remotes:WaitForChild("TradeUpEvent"),         -- (key, {names}) -> reward
         BuyShoesApp = Remotes:WaitForChild("BuyShoesApp"),          -- (name) -> true | err
         ShoesData   = Remotes:WaitForChild("GetShoesAppData"),
-        TeleHome    = Remotes:WaitForChild("TeleportPlayer"),
         BuyNewOffer = Remotes:WaitForChild("BuyNewOfferFunction"),
         Cashier     = Remotes:WaitForChild("CashierEvents"),
     },
@@ -77,7 +75,6 @@ local CONST = {
     GrailRot    = SneakerModule.GrailRotationSneaker, -- [utcHour % #list + 1]
     MoneyBoxes  = MysteryBoxModule.MoneyBoxes,        -- Random.new(yday + h*h)
     BoxPrices   = MysteryBoxModule.Prices,
-    BoxContents = MysteryBoxModule.Boxes or MysteryBoxModule,
 }
 
 -- Paths resolve live, never cached: PCScreenGui/MainScreenGui have ResetOnSpawn, so a
@@ -213,7 +210,6 @@ local Config = {
     -- the handler fires but dies at its own yield, so it only ever completed on the focused
     -- window, and the walking is what put clients at risk. Claim manually, then run the farm.
     AutoClaim    = false,
-    ClaimWait    = 25,                   -- seconds to let the server assign one before hopping
     ClaimHop     = false,                -- opt-in: rejoining is indistinguishable from a crash to a watching human, so never do it unasked
     MaxHops      = 10,
     AutoBuy      = false,
@@ -243,7 +239,6 @@ local Config = {
     SellRouter   = true,                 -- value split: bar the good stock, dump the rest
     BarMinValue  = 3000,                 -- MaxSellPrice at or above this -> bar sell
     BarBatch     = 15,                   -- bar-grade units to accumulate before a sell trip
-    DumpBelow    = true,                 -- cashier-dump lines under BarMinValue
     SellMode     = "Keep One",           -- "Keep One" | "Everything"
     SellAtUnits  = 25,                   -- inventory units that trigger a dump
     InvHardCap   = 120,                  -- above this, dump regardless of value
@@ -286,33 +281,46 @@ local Config = {
 -- Presets are sparse overlays applied over the defaults.
 local PRESETS = {
     ["Max Money"] = {
-        Director = true, AutoBuy = true, AutoUpgrade = true, AutoBar = true, AutoSell = false,
+        Director = true, AutoBuy = true, AutoBar = true, AutoSell = true,
         SellRouter = true, BuyBurst = true, BarApproach = true, AutoReinvest = true,
         AutoROI = true, MarginPct = 12, AutoMaxUnit = true, PerfMode = false,
     },
     ["AFK Safe"] = {
-        Director = true, AutoBuy = true, AutoUpgrade = true, AutoBar = true, AutoSell = false,
+        Director = true, AutoBuy = true, AutoBar = true, AutoSell = true,
         SellRouter = true, BuyBurst = false, BuyDelay = 0.15, BarApproach = true,
         AutoROI = true, MarginPct = 25, AutoMaxUnit = true, MaxUnitPct = 10,
     },
     ["No Travel"] = {   -- cashier only, never moves the character
-        Director = true, AutoBuy = true, AutoUpgrade = true, AutoBar = false, AutoSell = true,
+        Director = true, AutoBuy = true, AutoBar = false, AutoSell = true,
         SellRouter = false, BarApproach = false, AutoROI = true, MarginPct = 12,
         SellAtUnits = 20, ReinvestVia = "Cashier",
     },
     ["Fleet"] = {       -- many clients on one machine
-        Director = true, AutoBuy = true, AutoUpgrade = true, AutoBar = false, AutoSell = true,
+        Director = true, AutoBuy = true, AutoBar = false, AutoSell = true,
         SellRouter = false, BuyBurst = true, PerfMode = true, PollEvery = 2,
         ReinvestVia = "Cashier",
     },
     ["Collector"] = {   -- index / trade-up completion, money secondary
-        Director = false, AutoBuy = true, AutoUpgrade = true, AutoBar = false, AutoSell = false,
-        SellRouter = false, AutoTrade = true, BoxAutoOpen = true, MinROI = 1.0,
+        Director = false, AutoBuy = true, AutoBar = false, AutoSell = false,
+        SellRouter = false, AutoTrade = true, BoxAutoOpen = true, AutoROI = false, MinROI = 1.0,
     },
 }
 
 ----------------------------------------------------------------- helpers
 local function beat(name) Panel.Beat[name] = os.clock() end
+
+-- Loop ownership. A stop sets Running[name]=nil, but the old coroutine is usually parked in
+-- a wait; if a start (watchdog restart, quick UI off/on) lands before it wakes, it saw
+-- Running=true again and kept going - two loops buying off one budget. Each start takes a
+-- fresh generation and a loop only lives while the generation is still its own.
+Panel.Gen = {}
+local function newGen(name)
+    Panel.Gen[name] = (Panel.Gen[name] or 0) + 1
+    return Panel.Gen[name]
+end
+local function live(name, gen)
+    return Panel.Running[name] ~= nil and Panel.Gen[name] == gen
+end
 
 local function log(fmt, ...)
     local line = ("[%s] "):format(os.date("%H:%M:%S")) .. string.format(fmt, ...)
@@ -376,6 +384,15 @@ local function stockLines()
     end
     table.sort(out, function(a, b) return a.Value > b.Value end)
     return out, total, units
+end
+
+-- Units a dump can actually move. Keep One pins a copy of every line, and counting those
+-- made the dump fire every 2s once the distinct-line count alone crossed the threshold.
+local function sellableUnits()
+    local keep = (Config.SellMode == "Keep One") and 1 or 0
+    local n = 0
+    for _, l in ipairs(stockLines()) do n = n + math.max(0, l.Count - keep) end
+    return n
 end
 
 local function pressButton(signal)
@@ -445,6 +462,8 @@ local function recordSpend(amount) Panel.Spent = Panel.Spent + amount end
 local Features = {}
 
 local function stopAll(reason)
+    -- In-flight work (a snipe mid-tween, a bar approach) checks this before its prompt.
+    Panel.KillEpoch = (Panel.KillEpoch or 0) + 1
     for name in pairs(Panel.Running) do Panel.Running[name] = nil end
     local toggles = Panel.Library and Panel.Library.Toggles
     if toggles then
@@ -874,6 +893,7 @@ function Features.Buy.Start()
     local ok, why = storeReady()
     if not ok then return armFail("AutoBuy", why .. " - claim your store first") end
     Panel.Running.AutoBuy = true
+    local gen = newGen("AutoBuy")
     notify("Auto-buy started")
 
     if Config.BuyReturnToPC then
@@ -881,12 +901,16 @@ function Features.Buy.Start()
             local sa = Paths.SellAnim
             if sa and sa.Visible then return end
             if Panel.WentToNpc then return end
+            -- Already at the PC (every watchdog restart and toggle flip): do not move.
+            local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+            local back = Features.Bar and Features.Bar.PCCFrame and Features.Bar.PCCFrame()
+            if hrp and back and (hrp.Position - back.Position).Magnitude < 20 then return end
             if Features.Bar and Features.Bar.ReturnToPC then pcall(Features.Bar.ReturnToPC) end
         end)
     end
 
     task.spawn(function()
-        while Panel.Running.AutoBuy do
+        while live("AutoBuy", gen) do
             beat("AutoBuy")
 
             -- One bad pass must not kill the coroutine: without this an unhandled error
@@ -973,8 +997,9 @@ function Features.Buy.Start()
                     end
                 end
 
-                while Panel.Running.AutoBuy and guard < 20 do
+                while live("AutoBuy", gen) and guard < 20 do
                     guard = guard + 1
+                    beat("AutoBuy")          -- a walked page at max BuyDelay outlasts the 25s stall
 
                     -- One snapshot serves both the pick AND the diagnostic: re-reading for
                     -- the explanation reports on a page that was never judged (right after
@@ -1119,7 +1144,7 @@ end
 -- around it.
 function Features.Slots.BuyOne(manual)
     if Config.SlotsManualOnly and not manual then
-        return false, "slot buying is manual-only (Acquire tab -> Allow automatic slot buying)"
+        return false, "slot buying is locked (Buy tab -> Offer slots -> Lock slot buying)"
     end
     local target = math.min(Config.TargetSlots, CONST.MaxSlots)
     if slotsNow() >= target then return false, "target reached" end
@@ -1139,7 +1164,9 @@ function Features.Slots.BuyOne(manual)
     local before, result = slotsNow(), nil
     local invoked = pcall(function() result = CONST.Remote.BuyNewOffer:InvokeServer() end)
     if not invoked then return false, "unlock remote errored" end
-    if result == false or result == nil then return false, "server refused the unlock" end
+    -- Only an explicit false is a refusal. A nil return may still be a completed unlock,
+    -- so the slot count below decides - otherwise a real purchase skips recordSpend.
+    if result == false then return false, "server refused the unlock" end
 
     local t0 = os.clock()
     repeat task.wait(0.1) until slotsNow() > before or os.clock() - t0 > 4
@@ -1162,7 +1189,7 @@ end
 
 function Features.Slots.Start()
     if Config.SlotsManualOnly then
-        notify("Auto-upgrade blocked: slot buying is manual-only (Acquire tab)")
+        notify("Auto-upgrade blocked: slot buying is locked (Buy tab -> Offer slots)")
         local tg = Panel.Library and Panel.Library.Toggles and Panel.Library.Toggles.AutoUpgrade
         if tg and tg.Value then task.spawn(function() task.wait(0.1) pcall(function() tg:SetValue(false) end) end) end
         return
@@ -1171,10 +1198,11 @@ function Features.Slots.Start()
     local ok, why = storeReady()
     if not ok then return armFail("AutoUpgrade", why .. " - claim your store first") end
     Panel.Running.AutoUpgrade = true
+    local gen = newGen("AutoUpgrade")
     notify("Auto-upgrade running (target " .. math.min(Config.TargetSlots, CONST.MaxSlots) .. " slots)")
 
     task.spawn(function()
-        while Panel.Running.AutoUpgrade do
+        while live("AutoUpgrade", gen) do
             beat("AutoUpgrade")
             local target = math.min(Config.TargetSlots, CONST.MaxSlots)
             if slotsNow() >= target then
@@ -1223,10 +1251,12 @@ function Features.Sell.DumpAll()
     local expected = expectedValue(lines)
     local ev = (Config.SellMode == "Everything") and "SellAllEvent" or "SellAllButOneEvent"
     local mark = Econ.Mark()
+    -- Counted BEFORE the fire: a bar payout closing inside this 0.6s window must see a dump
+    -- happened, or cashier money is learned as a clean bar sample.
+    Panel.Sold = Panel.Sold + 1
     pcall(function() CONST.Remote.Cashier[ev]:FireServer() end)
     task.wait(0.6)
     local gained = Econ.Close("Cashier", expected, mark) or 0
-    Panel.Sold = Panel.Sold + 1
     log("DUMP %s -> +$%s (rate %.2f)", ev, commas(gained), Econ.Rate.Cashier)
     return gained
 end
@@ -1241,6 +1271,7 @@ function Features.Sell.DumpCheap()
     for _, l in ipairs(lines) do
         local n = l.Count - (keepOne and 1 or 0)
         if n > 0 and l.Value < Config.BarMinValue then
+            if count == 0 then Panel.Sold = Panel.Sold + 1 end   -- before the first fire, see DumpAll
             expected = expected + l.Value * n
             count = count + n
             pcall(function() CONST.Remote.Cashier.SingleSellEvent:FireServer(l.Name, n) end)
@@ -1250,7 +1281,6 @@ function Features.Sell.DumpCheap()
     if count == 0 then return 0, "nothing under the bar threshold" end
     task.wait(0.8)
     sold = Econ.Close("Cashier", expected, mark) or 0
-    Panel.Sold = Panel.Sold + 1
     log("DUMP %d cheap units (<$%s) -> +$%s", count, commas(Config.BarMinValue), commas(sold))
     return sold
 end
@@ -1258,6 +1288,10 @@ end
 -- Refill buying power. "Router" prefers the cheap tail so the good stock survives for the
 -- bar; it falls back to a full dump when the tail alone raises nothing.
 function Features.Sell.Reinvest()
+    local sa = Paths.SellAnim
+    if sa and sa.Visible and Config.ReinvestVia ~= "NPC bar" then
+        return nil, "bar sale in progress"
+    end
     if Config.ReinvestVia == "NPC bar" then
         return Features.Bar.SellOne()
     elseif Config.ReinvestVia == "Cashier" then
@@ -1273,16 +1307,17 @@ function Features.Sell.Start()
     local ok, why = storeReady()
     if not ok then return armFail("AutoSell", why .. " - claim your store first") end
     Panel.Running.AutoSell = true
+    local gen = newGen("AutoSell")
     notify(("Cashier loop armed (dump at %d units)"):format(Config.SellAtUnits))
 
     task.spawn(function()
-        while Panel.Running.AutoSell do
+        while live("AutoSell", gen) do
             beat("AutoSell")
             local sa = Paths.SellAnim
             if sa and sa.Visible then
                 task.wait(1)                 -- a dump mid-sale corrupts the sale and the sample
             else
-            local units = unitsHeld()
+            local units = sellableUnits()
             if units >= Config.InvHardCap then
                 Features.Sell.DumpAll()                      -- overflow: value split loses to volume
             elseif units >= Config.SellAtUnits then
@@ -1481,9 +1516,21 @@ local function tweenRootTo(targetCFrame)
         local t = math.clamp(studs / speed, 0.12, 4)
         local tw = TweenService:Create(hrp,
             TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), { CFrame = cf })
+        local done = false
+        tw.Completed:Once(function() done = true end)
         tw:Play()
-        tw.Completed:Wait()
+        -- Completed never fires if the HRP dies mid-tween (respawn); do not hang on it.
+        local t0 = os.clock()
+        repeat task.wait() until done or os.clock() - t0 > t + 1
     end
+
+    -- One mover at a time. The bar loop, Reinvest-via-bar, Buy's return-to-PC and the
+    -- sniper can all travel; overlapping tweens made the second one save the first's
+    -- Anchored=true as "the way we found it" and leave the character anchored.
+    local t0 = os.clock()
+    while Panel.Moving and os.clock() - t0 < 15 do task.wait(0.1) end
+    if Panel.Moving then return false end
+    Panel.Moving = true
 
     local prevAnchored, prevPlatform = hrp.Anchored, hum and hum.PlatformStand
     local ok = pcall(function()
@@ -1504,6 +1551,7 @@ local function tweenRootTo(targetCFrame)
         hrp.Anchored = prevAnchored or false
         if hum then hum.PlatformStand = prevPlatform or false end
     end)
+    Panel.Moving = false
     return ok
 end
 
@@ -1579,6 +1627,8 @@ Features.Bar.BandUnderLine = function()
     return hit and hit.name or nil
 end
 
+Features.Bar.PCCFrame = pcReturnCFrame
+
 function Features.Bar.ReturnToPC()
     local back = pcReturnCFrame()
     if not back then return false, "no PC and no saved position" end
@@ -1603,7 +1653,12 @@ function Features.Bar.SellOne(timeout)
         if not npc then return nil, "no sell NPC found" end
         local prompt = npc:FindFirstChild("ProximityPrompt")
         local reach = prompt and prompt.MaxActivationDistance or 10
-        if dist > reach - 2 then approachNpc(npc) end
+        if dist > reach - 2 then
+            if not Config.BarApproach then return nil, "too far from an NPC and Walk to NPCs is off" end
+            beat("AutoBuy")                       -- called from the buy loop via Reinvest
+            approachNpc(npc)
+            Panel.WentToNpc = true
+        end
         local fired = pcall(function()
             fireproximityprompt(prompt, prompt.HoldDuration > 0 and prompt.HoldDuration or nil)
         end)
@@ -1611,7 +1666,7 @@ function Features.Bar.SellOne(timeout)
     end
 
     local t0 = os.clock()
-    repeat task.wait(0.2) until money() > mark.money or os.clock() - t0 > (timeout or 15)
+    repeat task.wait(0.2) beat("AutoBuy") until money() > mark.money or os.clock() - t0 > (timeout or 15)
     -- No Econ.Close here: the running AutoBar loop (required above) already folds this
     -- payout into the rate via its own saleMark, and closing it twice double-weights it.
     local gained = money() - mark.money
@@ -1624,11 +1679,12 @@ function Features.Bar.Start()
     local ok, why = storeReady()
     if not ok then return armFail("AutoBar", why .. " - claim your store first") end
     Panel.Running.AutoBar = true
+    local gen = newGen("AutoBar")
     notify("Bar-sell armed" .. (Config.BarApproach and " (auto-approach on)" or " - walk to an NPC"))
 
     task.spawn(function()
         local armed, lastApproach, saleMark = nil, 0, nil
-        while Panel.Running.AutoBar do
+        while live("AutoBar", gen) do
             beat("AutoBar")
             local sa = Paths.SellAnim
             local barOpen = sa and sa.Visible
@@ -1646,12 +1702,6 @@ function Features.Bar.Start()
                 task.wait(1)
             end
 
-            -- done selling and we travelled to get here: head back
-            if Config.BarReturn and Panel.WentToNpc and not barOpen and unitsHeld() == 0 then
-                Features.Bar.ReturnToPC()
-                task.wait(0.5)
-            end
-
             -- Stock on hand and nothing open: go find someone. With the router on, only
             -- bar-grade stock justifies the trip; the cheap tail is the cashier's job.
             local barGrade = 0
@@ -1666,6 +1716,14 @@ function Features.Bar.Start()
             local enough = barOpen or barGrade >= batch or unitsHeld() >= Config.InvHardCap
             local worthGoing = enough and
                 (Config.SellRouter and (barGrade > 0) or (not Config.SellRouter and unitsHeld() > 0))
+
+            -- Done selling and we travelled to get here: head back. "Done" is nothing left
+            -- worth a sale, not an empty inventory - Keep One copies and the cheap tail stay
+            -- behind, and parked at the NPC the PC page is unreadable, so buying stalls.
+            if Config.BarReturn and Panel.WentToNpc and not barOpen and not worthGoing then
+                Features.Bar.ReturnToPC()
+                task.wait(0.5)
+            end
 
             if Config.BarApproach and not barOpen and worthGoing and os.clock() - lastApproach > 3 then
                 lastApproach = os.clock()
@@ -1682,6 +1740,8 @@ function Features.Bar.Start()
                         log("approaching %s (%.0f studs)", npc.Name, dist)
                         approachNpc(npc)
                     end
+                    -- Killed or toggled off during the walk: do not open a sale nobody wants.
+                    if not live("AutoBar", gen) then return end
                     local fired = pcall(function()
                         fireproximityprompt(prompt, prompt.HoldDuration > 0 and prompt.HoldDuration or nil)
                     end)
@@ -1826,16 +1886,20 @@ end
 function Features.Trade.Start()
     if Panel.Running.AutoTrade then return end
     Panel.Running.AutoTrade = true
+    local gen = newGen("AutoTrade")
     notify("Auto trade-up running: " .. Config.TradeRecipe)
     task.spawn(function()
-        while Panel.Running.AutoTrade do
+        while live("AutoTrade", gen) do
             beat("AutoTrade")
-            if collectForRecipe(Config.TradeRecipe) then
-                Features.Trade.Run(Config.TradeRecipe)
-                task.wait(1.5)
-            else
-                task.wait(5)
-            end
+            -- pcall'd like Buy: a recipe shaped differently than expected must not kill the
+            -- coroutine while the toggle stays lit. A failed run backs off instead of
+            -- notifying every 1.5s.
+            local ok, res = pcall(function()
+                if not collectForRecipe(Config.TradeRecipe) then return "idle" end
+                return Features.Trade.Run(Config.TradeRecipe) and "done" or "failed"
+            end)
+            if not ok then log("trade pass failed: %s", tostring(res)) end
+            task.wait(res == "done" and 1.5 or res == "idle" and 5 or 30)
         end
     end)
 end
@@ -2122,9 +2186,10 @@ end
 function Features.Claim.Start()
     if Panel.Running.AutoClaim then return end
     Panel.Running.AutoClaim = true
+    local gen = newGen("AutoClaim")
     task.spawn(function()
         local attempts = 0
-        while Panel.Running.AutoClaim do
+        while live("AutoClaim", gen) do
             beat("AutoClaim")
             if claimed() then
                 if attempts > 0 then notify("Plot claimed: " .. tostring(LP.Plot.Value)) end
@@ -2220,18 +2285,22 @@ end
 
 -- travelOnly gets us standing at the box without firing the prompt. Firing early buys
 -- whatever is on sale RIGHT NOW, not the target - the rotation flips on the hour.
-function Features.Market.SnipeNow(travelOnly)
-    local acted = false
+-- `only` restricts it to the box selling that sneaker (the prompt's ObjectText is the
+-- sneaker name, checked live), so a second box can never ride along on one decision.
+function Features.Market.SnipeNow(travelOnly, only)
+    local acted, epoch = false, Panel.KillEpoch
+
     for _, box in ipairs(limitedBoxes()) do
         local hp = box:FindFirstChild("HoldPart")
         local prompt = hp and hp:FindFirstChild("BuyPrompt")
-        if prompt and prompt.Enabled then
+        if prompt and prompt.Enabled and (not only or travelOnly or prompt.ObjectText == only) then
             local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
             local d = hrp and (hp.Position - hrp.Position).Magnitude or 1e9
             if d > (prompt.MaxActivationDistance or 7) - 2 then
                 Features.Bar.TweenTo(hp.CFrame * CFrame.new(0, 0, 4))
                 task.wait(0.4)
             end
+            if Panel.KillEpoch ~= epoch then return acted end   -- kill switch mid-travel
             if not travelOnly then
                 pcall(function()
                     fireproximityprompt(prompt, prompt.HoldDuration > 0 and prompt.HoldDuration or nil)
@@ -2246,26 +2315,42 @@ end
 function Features.Market.SnipeStart()
     if Panel.Running.LimitedSnipe then return end
     Panel.Running.LimitedSnipe = true
-    notify("Limited sniper armed: " .. (Config.WatchTarget ~= "" and Config.WatchTarget or "next rotation"))
+    local gen = newGen("LimitedSnipe")
+    notify("Limited sniper armed: " .. (Config.WatchTarget ~= "" and Config.WatchTarget
+        or "whatever is on sale now (one buy, then disarms)"))
     task.spawn(function()
-        local firedFor = nil
-        while Panel.Running.LimitedSnipe do
+        local firedFor, skippedFor = nil, nil
+        while live("LimitedSnipe", gen) do
             beat("LimitedSnipe")
             local now = Features.Market.At()
             local want = Config.WatchTarget
             local matches = (want == "" ) or (now.Limited == want)
             local secs = Features.Market.SecondsToHour()
             if matches and firedFor ~= now.Hour then
-                if now.LimitedPrice and money() >= now.LimitedPrice then
+                -- Through the spend gate like every other outlay: limiteds run $200k-$10M.
+                local okSpend, spendWhy = canSpend(now.LimitedPrice or 0)
+                if now.LimitedPrice and okSpend then
                     firedFor = now.Hour
+                    local before = money()
                     log("SNIPE %s @ $%s", tostring(now.Limited), commas(now.LimitedPrice or 0))
-                    Features.Market.SnipeNow()
+                    Features.Market.SnipeNow(false, now.Limited)
                     task.wait(3)
-                    if Config.BarReturn then Features.Bar.ReturnToPC() end
-                else
-                    log("snipe skipped: %s costs $%s, you have $%s",
-                        tostring(now.Limited), commas(now.LimitedPrice or 0), commas(money()))
-                    firedFor = now.Hour
+                    if before - money() >= now.LimitedPrice * 0.9 then recordSpend(now.LimitedPrice) end
+                    -- Parked at the shop the PC page is unreadable and buying stalls.
+                    if Config.BarReturn or Panel.Running.AutoBuy then Features.Bar.ReturnToPC() end
+                    -- Blank target means "this one", not "every rotation, forever".
+                    if want == "" then
+                        notify("Limited sniper: bought the current rotation, disarming")
+                        Panel.Running.LimitedSnipe = nil
+                        local tg = Panel.Library and Panel.Library.Toggles.LimitedSnipe
+                        if tg then pcall(function() tg:SetValue(false) end) end
+                        return
+                    end
+                elseif skippedFor ~= now.Hour then
+                    -- Not firedFor: cash can still arrive later in the hour.
+                    skippedFor = now.Hour
+                    log("snipe waiting: %s costs $%s (%s)", tostring(now.Limited),
+                        commas(now.LimitedPrice or 0), tostring(spendWhy or "no price"))
                 end
             end
             -- travel early so we are standing there when the rotation flips. Travel ONLY:
@@ -2308,9 +2393,10 @@ function Features.Drops.List()
     return out
 end
 
-function Features.Drops.Buy(name)
+function Features.Drops.Buy(name, price)
     local ok, res = pcall(function() return CONST.Remote.BuyShoesApp:InvokeServer(name) end)
     if ok and res == true then
+        recordSpend(price or 0)
         notify("Drop bought: " .. name)
     else
         notify("Drop failed: " .. tostring(res))
@@ -2321,19 +2407,31 @@ end
 function Features.Drops.Start()
     if Panel.Running.AutoDrops then return end
     Panel.Running.AutoDrops = true
+    Panel.DropFail = Panel.DropFail or {}
+    local gen = newGen("AutoDrops")
     notify("Drop sniper armed")
     task.spawn(function()
-        while Panel.Running.AutoDrops do
+        while live("AutoDrops", gen) do
             beat("AutoDrops")
-            for _, d in ipairs(Features.Drops.List()) do
-                local priceOk = Config.DropMaxPrice == 0 or (d.Price or 0) <= Config.DropMaxPrice
-                local live = (d.ReleaseAt or 0) <= os.time()
-                if live and priceOk and Econ.Profit(d.Name, d.Price or 0) > 0
-                   and canSpend(d.Price or 0) then
-                    Features.Drops.Buy(d.Name)
-                    task.wait(1)
+            -- pcall'd: one odd field type (Pc arrives as the server sends it) used to kill
+            -- the coroutine silently while the toggle stayed lit.
+            local passOk, passErr = pcall(function()
+                for _, d in ipairs(Features.Drops.List()) do
+                    local price = tonumber(d.Price) or 0
+                    local priceOk = Config.DropMaxPrice == 0 or price <= Config.DropMaxPrice
+                    local released = (tonumber(d.ReleaseAt) or 0) <= os.time()
+                    -- A refused drop (sold out, cooldown) is not retried for 5 minutes.
+                    local backoff = os.clock() - (Panel.DropFail[d.Name] or -1e9) < 300
+                    if released and priceOk and not backoff and Econ.Profit(d.Name, price) > 0
+                       and canSpend(price) then
+                        if Features.Drops.Buy(d.Name, price) ~= true then
+                            Panel.DropFail[d.Name] = os.clock()
+                        end
+                        task.wait(1)
+                    end
                 end
-            end
+            end)
+            if not passOk then log("drops pass failed: %s", tostring(passErr)) end
             task.wait(10)
         end
     end)
@@ -2400,7 +2498,7 @@ local function applyPhase(phase)
         Config.MaxUnitPct  = 35
         Config.SellAtUnits = 12
         Config.MinUnitValue = 0
-        Config.TargetSlots = CONST.MaxSlots
+        -- TargetSlots is NOT a Director dial: an operator's lower target is a spend limit.
     elseif phase == "Scale" then
         Config.MarginPct   = 12
         Config.MaxUnitPct  = 25
@@ -2414,6 +2512,12 @@ local function applyPhase(phase)
         Config.SellAtUnits = 40
         Config.MinUnitValue = math.max(Config.MinUnitValue, 1500)
     end
+    -- A preset's dials win over the phase baseline: otherwise AFK Safe's 25% margin and
+    -- 10% unit cap lasted exactly until the Director's first pass.
+    for _, k in ipairs({ "MarginPct", "MaxUnitPct", "SellAtUnits", "MinUnitValue" }) do
+        local v = Panel.PresetOverlay and Panel.PresetOverlay[k]
+        if v ~= nil then Config[k] = v end
+    end
 end
 
 -- Turn a feature on/off through its toggle when there is one, so the UI never lies about
@@ -2424,27 +2528,40 @@ end
 -- do the starting. That silently never started any feature whose default was already ON:
 -- SetValue(true) on a toggle already true is a no-op, so the callback never fired and the
 -- loop never existed - the UI said AutoBar was on while nothing was running.
-local function setFeature(key, on, startFn, stopFn)
+--
+-- `gated` = the toggle is a PERMISSION and `on` also folds in a runtime condition (stock
+-- level, slot target). Those must not be written back to the toggle: its callback stores the
+-- value in Config, so the first "not needed right now" pass revoked the permission for good
+-- and the cashier valve never re-armed. The Loops readout shows what is actually running.
+local function setFeature(key, on, startFn, stopFn, gated)
     local running = Panel.Running[key] ~= nil
     if on and not running then
         startFn()
     elseif not on and running then
         stopFn()
     end
+    if gated then return end
     local tg = Panel.Library and Panel.Library.Toggles and Panel.Library.Toggles[key]
     if tg and tg.Value ~= on then pcall(function() tg:SetValue(on) end) end
 end
 
-function Features.Director.Start()
+-- `restart` = the watchdog reviving a stalled Director. That is not the operator turning it
+-- on, so it must not re-arm switches the operator has since turned off.
+function Features.Director.Start(restart)
     if Panel.Running.Director then return end
     Panel.Running.Director = true
+    local gen = newGen("Director")
 
     -- Arm the income engine ONCE, here. After this the loop only reads these flags, so
     -- switching one off in the UI stays off until the operator turns the Director off and
     -- on again. Anything already set false by a preset or by hand is left alone.
-    if Config.ArmOnStart ~= false then
+    if Config.ArmOnStart ~= false and not restart then
         Config.AutoBuy = true
         Config.AutoSell = true
+        -- AutoSell is gated in setFeature, so its toggle is not synced there. Show the
+        -- permission here, without firing the callback (that would start the loop now).
+        local tg = Panel.Library and Panel.Library.Toggles and Panel.Library.Toggles.AutoSell
+        if tg and not tg.Value then pcall(function() tg.Value = true; tg:Display() end) end
         -- AutoUpgrade is deliberately NOT armed. A slot unlock is one irreversible purchase
         -- of up to $50,000,000, and arming it here cost a real $2,000,000: a client rejoined,
         -- booted on defaults, and bought slot 14 in the ~90s before its profile was pushed.
@@ -2453,7 +2570,7 @@ function Features.Director.Start()
     notify("Director on - phases and tuning are automatic")
 
     task.spawn(function()
-        while Panel.Running.Director do
+        while live("Director", gen) do
             beat("Director")
             local ok, err = pcall(function()
                 -- Say WHY it is parked. This used to be `if not storeReady() then return end`,
@@ -2504,7 +2621,7 @@ function Features.Director.Start()
                 setFeature("AutoBuy", Config.AutoBuy == true, Features.Buy.Start, Features.Buy.Stop)
                 setFeature("AutoUpgrade",
                            Config.AutoUpgrade == true and slotsNow() < math.min(Config.TargetSlots, CONST.MaxSlots),
-                           Features.Slots.Start, Features.Slots.Stop)
+                           Features.Slots.Start, Features.Slots.Stop, true)
 
                 -- The cashier loop is the pressure valve. It runs whenever the bar is not
                 -- draining stock fast enough, and always when the bar is off.
@@ -2514,14 +2631,14 @@ function Features.Director.Start()
                 -- (player walks, panel times the stop), and stopping it here overrode the
                 -- operator's toggle every 10s.
                 local barOn = Config.AutoBar and Config.BarApproach
-                local units = unitsHeld()
+                local units = sellableUnits()
                 -- Hysteresis: arm at the threshold, disarm only at half of it. Without the
                 -- gap the valve flaps on and off every pass while stock sits on the line.
                 local wantSell = (not barOn)
                     or units >= Config.SellAtUnits
                     or (Panel.Running.AutoSell and units > Config.SellAtUnits / 2)
                 setFeature("AutoSell", Config.AutoSell == true and wantSell and true or false,
-                           Features.Sell.Start, Features.Sell.Stop)
+                           Features.Sell.Start, Features.Sell.Stop, true)
                 setFeature("AutoBar", Config.AutoBar == true, Features.Bar.Start, Features.Bar.Stop)
             end)
             if not ok then log("director pass failed: %s", tostring(err)) end
@@ -2554,7 +2671,9 @@ function Features.Director.Tune()
     -- in two tuner windows. Loosen the demanded margin, never below +2% over break-even -
     -- under that the panel would be buying trades it cannot profit on.
     local sinceBuy = nowT - (Panel.LastBuy or Panel.StartClock)
-    if Config.AutoROI and Panel.Running.AutoBuy and sinceBuy > Config.TuneEvery * 2 then
+    -- Away from the PC (bar trip, snipe) nothing CAN be bought; that is not a filter too tight.
+    local away = Panel.WentToNpc or (Paths.SellAnim and Paths.SellAnim.Visible)
+    if Config.AutoROI and Panel.Running.AutoBuy and not away and sinceBuy > Config.TuneEvery * 2 then
         local before = Config.MarginPct
         Config.MarginPct = math.max(2, Config.MarginPct - 2)
         if Config.MarginPct ~= before then
@@ -2569,7 +2688,7 @@ function Features.Director.Tune()
     -- 2. Cash-bound with stock on hand: the money is sitting in the inventory. Pull the
     -- dump threshold down so it converts sooner. Floor at 5 - below that the cashier call
     -- costs more round trips than it saves.
-    if Panel.LastBlock and tostring(Panel.LastBlock):find("not enough money") and unitsHeld() > 0 then
+    if Panel.LastBlock and tostring(Panel.LastBlock):find("not enough money") and sellableUnits() > 0 then
         local before = Config.SellAtUnits
         Config.SellAtUnits = math.max(5, Config.SellAtUnits - 5)
         if Config.SellAtUnits ~= before then
@@ -2627,19 +2746,31 @@ local Window = Library:CreateWindow({
     Size = UDim2.fromOffset(680, 560),
 })
 
+-- Six tabs, one job each. A setting lives next to the loop that reads it, and every
+-- auto/manual pair shows only the half that is currently in effect (dependency boxes),
+-- so nothing on screen is a dial that does nothing.
 local Tabs = {
-    Director = Window:AddTab("Director"),
-    Acquire  = Window:AddTab("Acquire"),
-    Sell     = Window:AddTab("Liquidate"),
-    Market   = Window:AddTab("Market"),
-    Craft    = Window:AddTab("Craft"),
-    System   = Window:AddTab("System"),
-    Config   = Window:AddTab("Settings"),
+    Home   = Window:AddTab("Home", "gauge"),
+    Buy    = Window:AddTab("Buy", "shopping-cart"),
+    Sell   = Window:AddTab("Sell", "banknote"),
+    Market = Window:AddTab("Market", "store"),
+    Craft  = Window:AddTab("Craft", "hammer"),
+    System = Window:AddTab("System", "cpu"),
+    Config = Window:AddTab("Settings", "settings"),
 }
+
+local L = {}
+
+-- Show `box` only while every { element, value } pair matches.
+local function dependsOn(box, ...)
+    box:SetupDependencies({ ... })
+    return box
+end
 
 local function applyPreset(name)
     local overlay = PRESETS[name]
     if not overlay then return end
+    Panel.PresetOverlay = overlay
     for k, v in pairs(overlay) do
         Config[k] = v
         local tg = Library.Toggles[k]
@@ -2650,8 +2781,8 @@ local function applyPreset(name)
     notify("Preset applied: " .. name)
 end
 
----------------------------------------------------------------- Director tab
-local DirBox = Tabs.Director:AddLeftGroupbox("Money Mode")
+---------------------------------------------------------------- Home tab
+local DirBox = Tabs.Home:AddLeftGroupbox("Director", "brain")
 
 DirBox:AddToggle("Director", {
     Text = "Director (auto strategy)",
@@ -2665,59 +2796,55 @@ DirBox:AddToggle("Director", {
     end,
 })
 
-DirBox:AddDropdown("Preset", {
-    Text = "Preset",
-    Tooltip = "Max Money: everything on, bar-sell routing, no travel limits.\n" ..
-              "AFK Safe: same engine, gentler pacing and a 10% bankroll cap per buy.\n" ..
-              "No Travel: cashier only, character never moves.\n" ..
-              "Fleet: cashier only + perf mode, for many clients on one machine.\n" ..
-              "Collector: index/trade-up focus, money secondary.",
-    Values = { "Max Money", "AFK Safe", "No Travel", "Fleet", "Collector" },
-    Default = Config.Preset,
-    Callback = function(v) Config.Preset = v end,
-})
-
-DirBox:AddButton({ Text = "Apply preset", Func = function() applyPreset(Config.Preset) end })
-
-DirBox:AddToggle("AutoROI", {
-    Text = "Auto ROI floor",
-    Tooltip = "Derives the minimum ROI from the live sell rate instead of a typed number.\n" ..
-              "Break-even is 1.82x through the cashier and 0.91x through a Perfect bar sale,\n" ..
-              "so the correct floor is not a constant - it depends on how you are selling.",
-    Default = Config.AutoROI,
-    Callback = function(v) Config.AutoROI = v end,
-})
-
-DirBox:AddSlider("MarginPct", {
-    Text = "Profit margin over break-even",
-    Default = Config.MarginPct, Min = 2, Max = 60, Rounding = 0, Suffix = "%",
-    Tooltip = "How much better than break-even an offer must be. Higher = fatter trades but\n" ..
-              "fewer of them. The tuner moves this when the page starves or floods.",
-    Callback = function(v) Config.MarginPct = v end,
-})
-
-DirBox:AddToggle("AutoMaxUnit", {
-    Text = "Auto unit-price cap",
-    Tooltip = "Caps any single purchase at a share of your cash, so one expensive offer\n" ..
-              "cannot eat the bankroll the loop needs to keep trading.",
-    Default = Config.AutoMaxUnit,
-    Callback = function(v) Config.AutoMaxUnit = v end,
-})
-
-DirBox:AddSlider("MaxUnitPct", {
-    Text = "Max unit price (% of cash)",
-    Default = Config.MaxUnitPct, Min = 1, Max = 100, Rounding = 0, Suffix = "%",
-    Callback = function(v) Config.MaxUnitPct = v end,
-})
-
-DirBox:AddSlider("TuneEvery", {
+local DirDep = dependsOn(DirBox:AddDependencyBox(), { Library.Toggles.Director, true })
+DirDep:AddSlider("TuneEvery", {
     Text = "Tuner interval",
     Default = Config.TuneEvery, Min = 5, Max = 120, Rounding = 0, Suffix = "s",
     Callback = function(v) Config.TuneEvery = v end,
 })
 
-local StatBox = Tabs.Director:AddRightGroupbox("Live")
-local L = {}
+DirBox:AddDivider()
+
+DirBox:AddDropdown("Preset", {
+    Text = "Preset",
+    Tooltip = "Max Money: everything on, bar-sell routing, walks to NPCs.\n" ..
+              "AFK Safe: same engine, gentler pacing and a 10% bankroll cap per buy.\n" ..
+              "No Travel: cashier only, character never moves.\n" ..
+              "Fleet: cashier only + perf mode, for many clients on one machine.\n" ..
+              "Collector: index/trade-up focus, money secondary.\n" ..
+              "No preset ever unlocks slots - that stays a manual decision (Buy tab).",
+    Values = { "Max Money", "AFK Safe", "No Travel", "Fleet", "Collector" },
+    Default = Config.Preset,
+    Callback = function(v) Config.Preset = v end,
+})
+DirBox:AddButton({ Text = "Apply preset", Func = function() applyPreset(Config.Preset) end })
+
+local SafeBox = Tabs.Home:AddLeftGroupbox("Safety", "shield")
+
+SafeBox:AddButton({ Text = "KILL ALL (F4)", Func = function() stopAll("button") end })
+
+SafeBox:AddToggle("PanicSell", {
+    Text = "Dump inventory on kill",
+    Default = Config.PanicSell,
+    Callback = function(v) Config.PanicSell = v end,
+})
+
+SafeBox:AddSlider("SpendCap", {
+    Text = "Session spend cap",
+    Default = Config.SpendCap, Min = 0, Max = 50000000, Rounding = 0, Suffix = "$",
+    Tooltip = "0 = unlimited. Every outlay in the panel passes one gate, so this covers buys,\n" ..
+              "slot unlocks, drops and snipes alike.",
+    Callback = function(v) Config.SpendCap = v end,
+})
+
+SafeBox:AddButton({ Text = "Reset session counters", Func = function()
+    Panel.Spent, Panel.Bought, Panel.Sold = 0, 0, 0
+    Panel.BarSales, Panel.BarAimed, Panel.Earned = 0, 0, 0
+    Panel.StartMoney, Panel.StartClock, Econ.Hist = money(), os.clock(), {}
+    notify("Session counters reset")
+end })
+
+local StatBox = Tabs.Home:AddRightGroupbox("Live", "activity")
 L.Phase   = StatBox:AddLabel("Phase: -", true)
 L.Rate    = StatBox:AddLabel("$/min: -", true)
 L.Worth   = StatBox:AddLabel("Net worth: -", true)
@@ -2725,13 +2852,14 @@ L.Money   = StatBox:AddLabel("Cash: -", true)
 L.Rates   = StatBox:AddLabel("Sell rates: -", true)
 L.Floor   = StatBox:AddLabel("ROI floor: -", true)
 L.Cap     = StatBox:AddLabel("Unit cap: -", true)
+L.Aim     = StatBox:AddLabel("Bar aim: -", true)
 L.Session = StatBox:AddLabel("Session: -", true)
 
-local FlowBox = Tabs.Director:AddRightGroupbox("Loops")
+local FlowBox = Tabs.Home:AddRightGroupbox("Loops", "list-checks")
 L.Loops = FlowBox:AddLabel("-", true)
 
----------------------------------------------------------------- Acquire tab
-local BuyBox = Tabs.Acquire:AddLeftGroupbox("PC / eBuy")
+---------------------------------------------------------------- Buy tab
+local BuyBox = Tabs.Buy:AddLeftGroupbox("PC offers", "monitor")
 
 BuyBox:AddToggle("AutoBuy", {
     Text = "Auto buy",
@@ -2744,37 +2872,6 @@ BuyBox:AddToggle("AutoBuy", {
     end,
 })
 
-BuyBox:AddDropdown("BuyRarities", {
-    Text = "Rarities",
-    Tooltip = "Rarity does not appear in the payout formula - the ratio does. All on is\n" ..
-              "correct for money; narrow it only when hunting specific index lines.",
-    Values = CONST.Rarities, Multi = true,
-    Default = { "Common", "Uncommon", "Epic", "Legendary", "Special", "Grail", "Limited", "Legacy" },
-    Callback = function(v) Config.BuyRarities = v end,
-})
-
-BuyBox:AddSlider("MinROI", {
-    Text = "Manual ROI floor",
-    Default = Config.MinROI, Min = 0.5, Max = 4, Rounding = 2, Suffix = "x",
-    Tooltip = "Used only when Auto ROI is off. Break-even is enforced regardless:\n" ..
-              "1.82x cashier, 0.91x bar. Below that, every unit loses money.",
-    Callback = function(v) Config.MinROI = v end,
-})
-
-BuyBox:AddSlider("MaxUnitPrice", {
-    Text = "Manual unit cap",
-    Default = Config.MaxUnitPrice, Min = 100, Max = 5000000, Rounding = 0, Suffix = "$",
-    Callback = function(v) Config.MaxUnitPrice = v end,
-})
-
-BuyBox:AddSlider("MinUnitValue", {
-    Text = "Min sneaker value",
-    Default = Config.MinUnitValue, Min = 0, Max = 100000, Rounding = 0, Suffix = "$",
-    Tooltip = "Ignore sneakers whose MaxSellPrice is under this. Once selling costs time\n" ..
-              "rather than money, cheap units are worse than no units.",
-    Callback = function(v) Config.MinUnitValue = v end,
-})
-
 BuyBox:AddToggle("BuyBurst", {
     Text = "Burst buy the page",
     Tooltip = "Fires every eligible buy at once (~0.07s a page vs ~0.74s walked).\n" ..
@@ -2783,25 +2880,12 @@ BuyBox:AddToggle("BuyBurst", {
     Callback = function(v) Config.BuyBurst = v end,
 })
 
-BuyBox:AddSlider("BuyDelay", {
+-- The delay only paces the walked path; a burst fires the page at once.
+dependsOn(BuyBox:AddDependencyBox(), { Library.Toggles.BuyBurst, false }):AddSlider("BuyDelay", {
     Text = "Delay between buys",
     Default = Config.BuyDelay, Min = 0, Max = 2, Rounding = 2, Suffix = "s",
     Tooltip = "0 is measured safe: BuySneakerFunction is not rate limited.",
     Callback = function(v) Config.BuyDelay = v end,
-})
-
-BuyBox:AddToggle("AutoReinvest", {
-    Text = "Reinvest when broke",
-    Tooltip = "Out of cash with stock on hand: liquidate and keep buying instead of idling.",
-    Default = Config.AutoReinvest,
-    Callback = function(v) Config.AutoReinvest = v end,
-})
-
-BuyBox:AddDropdown("ReinvestVia", {
-    Text = "Reinvest via",
-    Values = { "Router", "Cashier", "NPC bar" }, Default = Config.ReinvestVia,
-    Tooltip = "Router dumps the cheap tail first and keeps bar-grade stock for the bar.",
-    Callback = function(v) Config.ReinvestVia = v end,
 })
 
 BuyBox:AddToggle("BuyReturnToPC", {
@@ -2810,47 +2894,93 @@ BuyBox:AddToggle("BuyReturnToPC", {
     Callback = function(v) Config.BuyReturnToPC = v end,
 })
 
-local ClaimBox = Tabs.Acquire:AddLeftGroupbox("Store plot")
+L.Offers = BuyBox:AddLabel("-", true)
+BuyBox:AddButton({ Text = "Refresh page now", Func = function()
+    local ok, why = Features.Buy.RefreshPage()
+    if not ok and why then notify("Refresh: " .. why) end
+end })
 
-ClaimBox:AddToggle("AutoClaim", {
-    Text = "Auto claim a plot",
-    Tooltip = "Walks onto a free pad in StorePositions, waits for the store chooser, and presses Choose on the first unlocked tier. Without a plot there is no PC, no offers, and every loop parks forever.",
-    Default = Config.AutoClaim,
+local FilterBox = Tabs.Buy:AddLeftGroupbox("Profit filter", "filter")
+
+FilterBox:AddToggle("AutoROI", {
+    Text = "Auto ROI floor",
+    Tooltip = "Derives the minimum ROI from the live sell rate instead of a typed number.\n" ..
+              "Break-even is 1.82x through the cashier and 0.91x through a Perfect bar sale,\n" ..
+              "so the correct floor is not a constant - it depends on how you are selling.",
+    Default = Config.AutoROI,
+    Callback = function(v) Config.AutoROI = v end,
+})
+
+dependsOn(FilterBox:AddDependencyBox(), { Library.Toggles.AutoROI, true }):AddSlider("MarginPct", {
+    Text = "Margin over break-even",
+    Default = Config.MarginPct, Min = 2, Max = 60, Rounding = 0, Suffix = "%",
+    Tooltip = "How much better than break-even an offer must be. Higher = fatter trades but\n" ..
+              "fewer of them. The Director and tuner move this.",
+    Callback = function(v) Config.MarginPct = v end,
+})
+
+dependsOn(FilterBox:AddDependencyBox(), { Library.Toggles.AutoROI, false }):AddSlider("MinROI", {
+    Text = "ROI floor",
+    Default = Config.MinROI, Min = 0.5, Max = 4, Rounding = 2, Suffix = "x",
+    Tooltip = "Break-even is enforced regardless: 1.82x cashier, 0.91x bar.\n" ..
+              "Below that, every unit loses money.",
+    Callback = function(v) Config.MinROI = v end,
+})
+
+FilterBox:AddToggle("AutoMaxUnit", {
+    Text = "Auto unit-price cap",
+    Tooltip = "Caps any single purchase at a share of your cash, so one expensive offer\n" ..
+              "cannot eat the bankroll the loop needs to keep trading.",
+    Default = Config.AutoMaxUnit,
+    Callback = function(v) Config.AutoMaxUnit = v end,
+})
+
+dependsOn(FilterBox:AddDependencyBox(), { Library.Toggles.AutoMaxUnit, true }):AddSlider("MaxUnitPct", {
+    Text = "Max unit price (% of cash)",
+    Default = Config.MaxUnitPct, Min = 1, Max = 100, Rounding = 0, Suffix = "%",
+    Callback = function(v) Config.MaxUnitPct = v end,
+})
+
+dependsOn(FilterBox:AddDependencyBox(), { Library.Toggles.AutoMaxUnit, false }):AddSlider("MaxUnitPrice", {
+    Text = "Max unit price",
+    Default = Config.MaxUnitPrice, Min = 100, Max = 5000000, Rounding = 0, Suffix = "$",
+    Callback = function(v) Config.MaxUnitPrice = v end,
+})
+
+FilterBox:AddSlider("MinUnitValue", {
+    Text = "Min sneaker value",
+    Default = Config.MinUnitValue, Min = 0, Max = 100000, Rounding = 0, Suffix = "$",
+    Tooltip = "Ignore sneakers whose MaxSellPrice is under this. Once selling costs time\n" ..
+              "rather than money, cheap units are worse than no units. Cruise phase raises it.",
+    Callback = function(v) Config.MinUnitValue = v end,
+})
+
+FilterBox:AddDropdown("BuyRarities", {
+    Text = "Rarities",
+    Tooltip = "Rarity does not appear in the payout formula - the ratio does. All on is\n" ..
+              "correct for money; narrow it only when hunting specific index lines.",
+    Values = CONST.Rarities, Multi = true,
+    Default = { "Common", "Uncommon", "Epic", "Legendary", "Special", "Grail", "Limited", "Legacy" },
+    Callback = function(v) Config.BuyRarities = v end,
+})
+
+local SlotBox = Tabs.Buy:AddRightGroupbox("Offer slots", "lock")
+L.Store = SlotBox:AddLabel("-", true)
+
+SlotBox:AddToggle("SlotsManualOnly", {
+    Text = "Lock slot buying (manual only)",
+    Tooltip = "ON means no loop can ever unlock a slot - only the button below. Slots cost up to\n" ..
+              "$50,000,000 each and cannot be refunded. Unlock to reveal Auto unlock slots.\n" ..
+              "Never saved: every boot starts locked.",
+    Default = Config.SlotsManualOnly,
     Callback = function(v)
-        Config.AutoClaim = v
-        if v then Features.Claim.Start() else Features.Claim.Stop() end
+        Config.SlotsManualOnly = v
+        if v then pcall(Features.Slots.Stop) end
     end,
 })
 
-ClaimBox:AddToggle("ClaimHop", {
-    Text = "Rejoin when every pad is taken",
-    Tooltip = "Off by default: a rejoin looks exactly like a crash to whoever is watching the window. Needs an executor with queue_on_teleport, or the hop leaves a client with no panel and no bridge.",
-    Default = Config.ClaimHop,
-    Callback = function(v) Config.ClaimHop = v end,
-})
-
-ClaimBox:AddSlider("MaxHops", {
-    Text = "Hop limit",
-    Default = Config.MaxHops, Min = 1, Max = 50, Rounding = 0,
-    Callback = function(v) Config.MaxHops = v end,
-})
-
-ClaimBox:AddButton({ Text = "Claim now", Func = function()
-    local ok, why = Features.Claim.Try()
-    notify(ok and ("Plot claimed: " .. tostring(why)) or ("Claim failed: " .. tostring(why)))
-end })
-
-ClaimBox:AddButton({ Text = "Show pads", Func = function()
-    local free, taken, held = Features.Claim.FreePads()
-    local names = {}
-    for _, p in ipairs(free) do names[#names + 1] = p.Name end
-    notify(("%d free (%s), %d taken"):format(#free, table.concat(names, " "), taken))
-    for pad, owner in pairs(held) do log("  %s -> %s", pad, owner) end
-end })
-
-local SlotBox = Tabs.Acquire:AddLeftGroupbox("Offer slots")
-
-SlotBox:AddToggle("AutoUpgrade", {
+local SlotAuto = dependsOn(SlotBox:AddDependencyBox(), { Library.Toggles.SlotsManualOnly, false })
+SlotAuto:AddToggle("AutoUpgrade", {
     Text = "Auto unlock slots",
     Tooltip = "More slots = more rolls per refresh. The only compounding purchase in the game.",
     Default = Config.AutoUpgrade,
@@ -2859,14 +2989,7 @@ SlotBox:AddToggle("AutoUpgrade", {
         if v then Features.Slots.Start() else Features.Slots.Stop() end
     end,
 })
-
-SlotBox:AddSlider("TargetSlots", {
-    Text = "Target slots",
-    Default = Config.TargetSlots, Min = 1, Max = CONST.MaxSlots, Rounding = 0,
-    Callback = function(v) Config.TargetSlots = v end,
-})
-
-SlotBox:AddSlider("ReservePct", {
+SlotAuto:AddSlider("ReservePct", {
     Text = "Start saving at",
     Default = Config.ReservePct, Min = 0, Max = 100, Rounding = 0, Suffix = "%",
     Tooltip = "Percent of the next slot price at which buying pauses to save for it.\n" ..
@@ -2874,14 +2997,10 @@ SlotBox:AddSlider("ReservePct", {
     Callback = function(v) Config.ReservePct = v end,
 })
 
-SlotBox:AddToggle("SlotsManualOnly", {
-    Text = "Manual-only slot buying",
-    Tooltip = "ON means no loop can ever unlock a slot - only the button below. Slots cost up to $50,000,000 each and cannot be refunded. Turn this off only if you want the Director spending on slots by itself.",
-    Default = Config.SlotsManualOnly,
-    Callback = function(v)
-        Config.SlotsManualOnly = v
-        if v then pcall(Features.Slots.Stop) end
-    end,
+SlotBox:AddSlider("TargetSlots", {
+    Text = "Target slots",
+    Default = Config.TargetSlots, Min = 1, Max = CONST.MaxSlots, Rounding = 0,
+    Callback = function(v) Config.TargetSlots = v end,
 })
 
 SlotBox:AddButton({ Text = "Unlock one now", Func = function()
@@ -2889,77 +3008,13 @@ SlotBox:AddButton({ Text = "Unlock one now", Func = function()
     notify(ok and "Slot unlocked" or ("Unlock failed: " .. tostring(why)))
 end })
 
-local OfferBox = Tabs.Acquire:AddRightGroupbox("Live page")
-L.Offers = OfferBox:AddLabel("-", true)
-local StoreBox = Tabs.Acquire:AddRightGroupbox("Store")
-L.Store = StoreBox:AddLabel("-", true)
+---------------------------------------------------------------- Sell tab
+local CashBox = Tabs.Sell:AddLeftGroupbox("Cashier", "landmark")
 
-OfferBox:AddButton({ Text = "Refresh page now", Func = function()
-    local ok, why = Features.Buy.RefreshPage()
-    if not ok and why then notify("Refresh: " .. why) end
-end })
-OfferBox:AddButton({ Text = "Repair refresh button", Func = function()
-    local fixed = Features.Buy.Repair()
-    notify(fixed and "Refresh button unlocked" or "Refresh button was not locked")
-end })
-
----------------------------------------------------------------- Liquidate tab
-local RouteBox = Tabs.Sell:AddLeftGroupbox("Router")
-
-RouteBox:AddToggle("SellRouter", {
-    Text = "Value routing",
-    Tooltip = "Bar-sell stock worth the trip, cashier-dump the rest. A bar sale pays up to\n" ..
-              "1.10x vs the cashier's 0.55x but costs a trip and a minigame per unit, so the\n" ..
-              "split is by value, not by preference.",
-    Default = Config.SellRouter,
-    Callback = function(v) Config.SellRouter = v end,
-})
-
-RouteBox:AddToggle("AutoBarValue", {
-    Text = "Auto split point",
-    Tooltip = "Puts the bar/cashier threshold at the median value of what you hold, so half\n" ..
-              "the stock goes each way instead of everything queueing for the bar.",
-    Default = Config.AutoBarValue,
-    Callback = function(v) Config.AutoBarValue = v end,
-})
-
-RouteBox:AddSlider("BarMinValue", {
-    Text = "Bar-sell above",
-    Default = Config.BarMinValue, Min = 0, Max = 200000, Rounding = 0, Suffix = "$",
-    Callback = function(v) Config.BarMinValue = v end,
-})
-
-RouteBox:AddSlider("BarBatch", {
-    Text = "Bar trip batch",
-    Default = Config.BarBatch, Min = 1, Max = 60, Rounding = 0, Suffix = " units",
-    Tooltip = "Bar-grade units to accumulate before walking to an NPC. Selling one unit per trip starves the buy loop: the PC reroll is refused for the whole duration of a sale.",
-    Callback = function(v) Config.BarBatch = v end,
-})
-
-RouteBox:AddSlider("SellAtUnits", {
-    Text = "Dump at",
-    Default = Config.SellAtUnits, Min = 1, Max = 200, Rounding = 0, Suffix = " units",
-    Callback = function(v) Config.SellAtUnits = v end,
-})
-
-RouteBox:AddSlider("InvHardCap", {
-    Text = "Hard cap",
-    Default = Config.InvHardCap, Min = 20, Max = 500, Rounding = 0, Suffix = " units",
-    Tooltip = "Above this the whole inventory is dumped regardless of value: at that point\n" ..
-              "volume is costing you more than the split earns.",
-    Callback = function(v) Config.InvHardCap = v end,
-})
-
-RouteBox:AddDropdown("SellMode", {
-    Text = "Cashier mode",
-    Values = { "Keep One", "Everything" }, Default = Config.SellMode,
-    Tooltip = "Keep One leaves a copy of every line for the index.",
-    Callback = function(v) Config.SellMode = v end,
-})
-
-RouteBox:AddToggle("AutoSell", {
+CashBox:AddToggle("AutoSell", {
     Text = "Cashier loop",
-    Tooltip = "Watches the inventory and dumps at the threshold. Remote-only, no proximity.",
+    Tooltip = "Watches the inventory and dumps at the threshold. Remote-only, no proximity.\n" ..
+              "With the Director on this is a permission: it runs as the bar's pressure valve.",
     Default = Config.AutoSell,
     Callback = function(v)
         Config.AutoSell = v
@@ -2967,15 +3022,80 @@ RouteBox:AddToggle("AutoSell", {
     end,
 })
 
-RouteBox:AddButton({ Text = "Dump cheap now", Func = function() Features.Sell.DumpCheap() end })
-RouteBox:AddButton({ Text = "Dump everything now", Func = function() Features.Sell.DumpAll() end })
+CashBox:AddSlider("SellAtUnits", {
+    Text = "Dump at",
+    Default = Config.SellAtUnits, Min = 1, Max = 200, Rounding = 0, Suffix = " units",
+    Callback = function(v) Config.SellAtUnits = v end,
+})
 
-local BarBox = Tabs.Sell:AddRightGroupbox("NPC bar")
+CashBox:AddSlider("InvHardCap", {
+    Text = "Hard cap",
+    Default = Config.InvHardCap, Min = 20, Max = 500, Rounding = 0, Suffix = " units",
+    Tooltip = "Above this the whole inventory is dumped regardless of value: at that point\n" ..
+              "volume is costing you more than the split earns.",
+    Callback = function(v) Config.InvHardCap = v end,
+})
+
+CashBox:AddDropdown("SellMode", {
+    Text = "Cashier mode",
+    Values = { "Keep One", "Everything" }, Default = Config.SellMode,
+    Tooltip = "Keep One leaves a copy of every line for the index.",
+    Callback = function(v) Config.SellMode = v end,
+})
+
+CashBox:AddToggle("AutoReinvest", {
+    Text = "Reinvest when broke",
+    Tooltip = "Buy loop out of cash with stock on hand: liquidate and keep buying instead of idling.",
+    Default = Config.AutoReinvest,
+    Callback = function(v) Config.AutoReinvest = v end,
+})
+
+dependsOn(CashBox:AddDependencyBox(), { Library.Toggles.AutoReinvest, true }):AddDropdown("ReinvestVia", {
+    Text = "Reinvest via",
+    Values = { "Router", "Cashier", "NPC bar" }, Default = Config.ReinvestVia,
+    Tooltip = "Router dumps the cheap tail first and keeps bar-grade stock for the bar.",
+    Callback = function(v) Config.ReinvestVia = v end,
+})
+
+CashBox:AddButton({ Text = "Dump cheap now", Func = function() Features.Sell.DumpCheap() end })
+CashBox:AddButton({ Text = "Dump everything now", Func = function() Features.Sell.DumpAll() end })
+
+local RouteBox = Tabs.Sell:AddLeftGroupbox("Value routing", "split")
+
+RouteBox:AddToggle("SellRouter", {
+    Text = "Route by value",
+    Tooltip = "Bar-sell stock worth the trip, cashier-dump the rest. A bar sale pays up to\n" ..
+              "1.10x vs the cashier's 0.55x but costs a trip and a minigame per unit, so the\n" ..
+              "split is by value, not by preference.",
+    Default = Config.SellRouter,
+    Callback = function(v) Config.SellRouter = v end,
+})
+
+local RouteDep = dependsOn(RouteBox:AddDependencyBox(), { Library.Toggles.SellRouter, true })
+RouteDep:AddToggle("AutoBarValue", {
+    Text = "Auto split point",
+    Tooltip = "Tuner puts the bar/cashier threshold at the median value of what you hold, so\n" ..
+              "half the stock goes each way. Needs the Director on.",
+    Default = Config.AutoBarValue,
+    Callback = function(v) Config.AutoBarValue = v end,
+})
+
+-- Not behind AutoBarValue: Dump cheap reads this threshold whether or not it is tuned.
+RouteBox:AddSlider("BarMinValue", {
+    Text = "Bar-sell above",
+    Default = Config.BarMinValue, Min = 0, Max = 200000, Rounding = 0, Suffix = "$",
+    Tooltip = "Units worth at least this go to the bar; Dump cheap sells everything under it.",
+    Callback = function(v) Config.BarMinValue = v end,
+})
+
+L.Stock = RouteBox:AddLabel("-", true)
+
+local BarBox = Tabs.Sell:AddRightGroupbox("NPC bar", "target")
 
 BarBox:AddToggle("AutoBar", {
     Text = "Auto bar sell",
     Tooltip = "Watches the sweeping line and presses the game's own Stop button on the band\n" ..
-              "you asked for. The callback is never replaced - that freezes the game.",
+              "you asked for. Without Walk to NPCs, you walk and the panel times the stop.",
     Default = Config.AutoBar,
     Callback = function(v)
         Config.AutoBar = v
@@ -2989,7 +3109,8 @@ BarBox:AddDropdown("BarTarget", {
     Callback = function(v) Config.BarTarget = v end,
 })
 
-BarBox:AddToggle("BarAcceptGood", {
+-- Falling back to Good only means something while aiming for Perfect.
+dependsOn(BarBox:AddDependencyBox(), { Library.Options.BarTarget, "Perfect" }):AddToggle("BarAcceptGood", {
     Text = "Take Good over a lost pass",
     Tooltip = "One frame of travel is about as wide as the Perfect band, so roughly half of\n" ..
               "all passes never predict onto it. Good is 1.00x - still ~1.8x the cashier.",
@@ -3005,23 +3126,10 @@ BarBox:AddToggle("BarAutoLead", {
     Callback = function(v) Config.BarAutoLead = v end,
 })
 
-BarBox:AddSlider("BarLead", {
+dependsOn(BarBox:AddDependencyBox(), { Library.Toggles.BarAutoLead, false }):AddSlider("BarLead", {
     Text = "Aim lead (frames)",
     Default = Config.BarLead, Min = 0, Max = 4, Rounding = 2,
     Callback = function(v) Config.BarLead = v end,
-})
-
-BarBox:AddToggle("BarApproach", {
-    Text = "Walk to NPCs",
-    Tooltip = "Bar-sell distance is enforced server-side, so the character genuinely travels.",
-    Default = Config.BarApproach,
-    Callback = function(v) Config.BarApproach = v end,
-})
-
-BarBox:AddToggle("BarReturn", {
-    Text = "Return to the PC after",
-    Default = Config.BarReturn,
-    Callback = function(v) Config.BarReturn = v end,
 })
 
 BarBox:AddToggle("BarAutoClose", {
@@ -3030,7 +3138,34 @@ BarBox:AddToggle("BarAutoClose", {
     Callback = function(v) Config.BarAutoClose = v end,
 })
 
-BarBox:AddToggle("BarTunnel", {
+local TravelBox = Tabs.Sell:AddRightGroupbox("Travel", "footprints")
+
+TravelBox:AddToggle("BarApproach", {
+    Text = "Walk to NPCs",
+    Tooltip = "Bar-sell distance is enforced server-side, so the character genuinely travels.\n" ..
+              "Never saved: every boot starts with the character standing still.",
+    Default = Config.BarApproach,
+    Callback = function(v) Config.BarApproach = v end,
+})
+
+local WalkDep = dependsOn(TravelBox:AddDependencyBox(), { Library.Toggles.BarApproach, true })
+WalkDep:AddSlider("BarBatch", {
+    Text = "Trip batch",
+    Default = Config.BarBatch, Min = 1, Max = 60, Rounding = 0, Suffix = " units",
+    Tooltip = "Bar-grade units to accumulate before walking to an NPC. Selling one unit per\n" ..
+              "trip starves the buy loop: the PC reroll is refused for the whole sale.",
+    Callback = function(v) Config.BarBatch = v end,
+})
+
+-- Travel settings below are shared with the limited sniper, so they stay visible.
+TravelBox:AddToggle("BarReturn", {
+    Text = "Return to the PC after",
+    Tooltip = "After a bar trip or a limited snipe.",
+    Default = Config.BarReturn,
+    Callback = function(v) Config.BarReturn = v end,
+})
+
+TravelBox:AddToggle("BarTunnel", {
     Text = "Tunnel while travelling",
     Tooltip = "Drops below the map, travels flat, surfaces. Avoids ploughing through the\n" ..
               "shopfront and other players.",
@@ -3038,24 +3173,33 @@ BarBox:AddToggle("BarTunnel", {
     Callback = function(v) Config.BarTunnel = v end,
 })
 
-BarBox:AddSlider("BarTunnelDepth", {
+dependsOn(TravelBox:AddDependencyBox(), { Library.Toggles.BarTunnel, true }):AddSlider("BarTunnelDepth", {
     Text = "Tunnel depth", Default = Config.BarTunnelDepth, Min = 0, Max = 120, Rounding = 0, Suffix = " studs",
     Callback = function(v) Config.BarTunnelDepth = v end,
 })
 
-BarBox:AddSlider("BarTweenSpeed", {
+TravelBox:AddSlider("BarTweenSpeed", {
     Text = "Travel speed", Default = Config.BarTweenSpeed, Min = 10, Max = 200, Rounding = 0, Suffix = " st/s",
     Callback = function(v) Config.BarTweenSpeed = v end,
 })
 
-local StockBox = Tabs.Sell:AddLeftGroupbox("Inventory")
-L.Stock = StockBox:AddLabel("-", true)
-
 ---------------------------------------------------------------- Market tab
-local RotBox = Tabs.Market:AddLeftGroupbox("Rotations (UTC)")
+local RotBox = Tabs.Market:AddLeftGroupbox("Rotations (UTC)", "clock")
 L.Rot = RotBox:AddLabel("-", true)
 
-local SnipeBox = Tabs.Market:AddRightGroupbox("Limited shop")
+local SnipeBox = Tabs.Market:AddRightGroupbox("Limited shop", "crosshair")
+
+SnipeBox:AddToggle("LimitedSnipe", {
+    Text = "Auto snipe",
+    Tooltip = "Purchase is a 7-stud server prompt and distance is enforced server-side, so\n" ..
+              "this travels to the shop and fires on the rotation flip. Uses Sell > Travel.\n" ..
+              "Limiteds are Unsellable: index value, not cash. Counts against the spend cap.",
+    Default = Config.LimitedSnipe,
+    Callback = function(v)
+        Config.LimitedSnipe = v
+        if v then Features.Market.SnipeStart() else Features.Market.SnipeStop() end
+    end,
+})
 
 SnipeBox:AddDropdown("WatchTarget", {
     Text = "Target",
@@ -3065,7 +3209,8 @@ SnipeBox:AddDropdown("WatchTarget", {
         return v
     end)(),
     Default = 1,
-    Tooltip = "Blank = buy whatever is in the shop this hour, when you can afford it.",
+    Tooltip = "Blank = buy whatever is on sale now, once, then disarm.\n" ..
+              "A named target is bought every time it rotates in.",
     Callback = function(v) Config.WatchTarget = v end,
 })
 
@@ -3075,28 +3220,11 @@ SnipeBox:AddSlider("SnipeLead", {
     Callback = function(v) Config.SnipeLead = v end,
 })
 
-SnipeBox:AddToggle("LimitedSnipe", {
-    Text = "Auto snipe",
-    Tooltip = "Purchase is a 7-stud server prompt and distance is enforced server-side, so\n" ..
-              "this travels to the shop and fires on the rotation flip.",
-    Default = Config.LimitedSnipe,
-    Callback = function(v)
-        Config.LimitedSnipe = v
-        if v then Features.Market.SnipeStart() else Features.Market.SnipeStop() end
-    end,
-})
-
 SnipeBox:AddButton({ Text = "Buy limited now", Func = function()
     notify(Features.Market.SnipeNow() and "Limited prompt fired" or "No limited box found")
 end })
 
-local DropBox = Tabs.Market:AddRightGroupbox("SHOES drops")
-L.Drops = DropBox:AddLabel("-", true)
-
-DropBox:AddSlider("DropMaxPrice", {
-    Text = "Max drop price", Default = Config.DropMaxPrice, Min = 0, Max = 10000000, Rounding = 0, Suffix = "$",
-    Callback = function(v) Config.DropMaxPrice = v end,
-})
+local DropBox = Tabs.Market:AddRightGroupbox("SHOES drops", "smartphone")
 
 DropBox:AddToggle("AutoDrops", {
     Text = "Auto buy drops",
@@ -3108,8 +3236,17 @@ DropBox:AddToggle("AutoDrops", {
     end,
 })
 
-local BoxBox = Tabs.Market:AddLeftGroupbox("Mystery boxes")
-L.Boxes = BoxBox:AddLabel("-", true)
+DropBox:AddSlider("DropMaxPrice", {
+    Text = "Max drop price", Default = Config.DropMaxPrice, Min = 0, Max = 10000000, Rounding = 0, Suffix = "$",
+    Tooltip = "0 = any price that is still profitable.",
+    Callback = function(v) Config.DropMaxPrice = v end,
+})
+
+L.Drops = DropBox:AddLabel("-", true)
+
+---------------------------------------------------------------- Craft tab
+-- Boxes -> unsellable stock -> trade-ups: one pipeline, one tab.
+local BoxBox = Tabs.Craft:AddLeftGroupbox("Mystery boxes", "package")
 
 BoxBox:AddToggle("BoxAutoOpen", {
     Text = "Game auto-open",
@@ -3123,9 +3260,18 @@ BoxBox:AddToggle("BoxAutoOpen", {
     end,
 })
 
----------------------------------------------------------------- Craft tab
-local TradeBox = Tabs.Craft:AddLeftGroupbox("Trade up")
-L.Plan = TradeBox:AddLabel("-", true)
+L.Boxes = BoxBox:AddLabel("-", true)
+
+local TradeBox = Tabs.Craft:AddLeftGroupbox("Trade up", "repeat")
+
+TradeBox:AddToggle("AutoTrade", {
+    Text = "Auto trade up",
+    Default = Config.AutoTrade,
+    Callback = function(v)
+        Config.AutoTrade = v
+        if v then Features.Trade.Start() else Features.Trade.Stop() end
+    end,
+})
 
 TradeBox:AddDropdown("TradeRecipe", {
     Text = "Recipe",
@@ -3148,20 +3294,55 @@ TradeBox:AddToggle("TradeKeepOne", {
 
 TradeBox:AddButton({ Text = "Run once", Func = function() Features.Trade.Run() end })
 
-TradeBox:AddToggle("AutoTrade", {
-    Text = "Auto trade up",
-    Default = Config.AutoTrade,
-    Callback = function(v)
-        Config.AutoTrade = v
-        if v then Features.Trade.Start() else Features.Trade.Stop() end
-    end,
-})
+local PlanBox = Tabs.Craft:AddRightGroupbox("Plan", "clipboard-list")
+L.Plan = PlanBox:AddLabel("-", true)
 
-local UnsellBox = Tabs.Craft:AddRightGroupbox("Unsellable stock")
+local UnsellBox = Tabs.Craft:AddRightGroupbox("Unsellable stock", "archive")
 L.Unsell = UnsellBox:AddLabel("-", true)
 
 ---------------------------------------------------------------- System tab
-local PerfBox = Tabs.System:AddLeftGroupbox("Performance")
+local ClaimBox = Tabs.System:AddLeftGroupbox("Store plot", "map-pin")
+
+ClaimBox:AddToggle("AutoClaim", {
+    Text = "Auto claim a plot",
+    Tooltip = "Walks onto a free pad, waits for the store chooser, and presses Choose on the\n" ..
+              "first unlocked tier. Without a plot there is no PC and every loop parks.\n" ..
+              "Never saved: moves the character.",
+    Default = Config.AutoClaim,
+    Callback = function(v)
+        Config.AutoClaim = v
+        if v then Features.Claim.Start() else Features.Claim.Stop() end
+    end,
+})
+
+ClaimBox:AddToggle("ClaimHop", {
+    Text = "Rejoin when every pad is taken",
+    Tooltip = "Off by default: a rejoin looks exactly like a crash to whoever is watching the\n" ..
+              "window. Needs queue_on_teleport, or the hop leaves a client with no panel.",
+    Default = Config.ClaimHop,
+    Callback = function(v) Config.ClaimHop = v end,
+})
+
+dependsOn(ClaimBox:AddDependencyBox(), { Library.Toggles.ClaimHop, true }):AddSlider("MaxHops", {
+    Text = "Hop limit",
+    Default = Config.MaxHops, Min = 1, Max = 50, Rounding = 0,
+    Callback = function(v) Config.MaxHops = v end,
+})
+
+ClaimBox:AddButton({ Text = "Claim now", Func = function()
+    local ok, why = Features.Claim.Try()
+    notify(ok and ("Plot claimed: " .. tostring(why)) or ("Claim failed: " .. tostring(why)))
+end })
+
+ClaimBox:AddButton({ Text = "Show pads", Func = function()
+    local free, taken, held = Features.Claim.FreePads()
+    local names = {}
+    for _, p in ipairs(free) do names[#names + 1] = p.Name end
+    notify(("%d free (%s), %d taken"):format(#free, table.concat(names, " "), taken))
+    for pad, owner in pairs(held) do log("  %s -> %s", pad, owner) end
+end })
+
+local PerfBox = Tabs.System:AddLeftGroupbox("Performance", "zap")
 
 PerfBox:AddToggle("PerfMode", {
     Text = "Perf mode (F5)",
@@ -3175,7 +3356,7 @@ PerfBox:AddToggle("PerfMode", {
 })
 
 PerfBox:AddSlider("PerfFps", {
-    Text = "FPS cap",
+    Text = "FPS cap (perf mode)",
     Default = Config.PerfFps, Min = 5, Max = 240, Rounding = 0,
     Tooltip = "Measured: 30 matches 240 for throughput, and below ~30 the bar minigame can\n" ..
               "no longer land on Perfect - Heartbeat samples too coarsely to catch the sweep.",
@@ -3191,45 +3372,22 @@ PerfBox:AddSlider("PollEvery", {
     Callback = function(v) Config.PollEvery = v end,
 })
 
-local HealthBox = Tabs.System:AddRightGroupbox("Health")
-L.Health = HealthBox:AddLabel("-", true)
+PerfBox:AddButton({ Text = "Repair refresh button", Func = function()
+    local fixed = Features.Buy.Repair()
+    notify(fixed and "Refresh button unlocked" or "Refresh button was not locked")
+end })
 
-local LogBox = Tabs.System:AddLeftGroupbox("Log")
+local LogBox = Tabs.System:AddRightGroupbox("Log", "scroll-text")
 local LogLabel = LogBox:AddLabel("", true)
 LogLabel:SetText("panel starting...")
 Panel.OnLog = function()
     local tail = {}
-    for i = math.max(1, #Panel.Log - 11), #Panel.Log do tail[#tail + 1] = Panel.Log[i] end
+    for i = math.max(1, #Panel.Log - 15), #Panel.Log do tail[#tail + 1] = Panel.Log[i] end
     pcall(function() LogLabel:SetText(table.concat(tail, "\n")) end)
 end
 LogBox:AddButton({ Text = "Clear log", Func = function()
     Panel.Log = {}
     LogLabel:SetText("")
-end })
-
----------------------------------------------------------------- Settings tab
-local SafeBox = Tabs.Config:AddLeftGroupbox("Safety")
-
-SafeBox:AddSlider("SpendCap", {
-    Text = "Session spend cap",
-    Default = Config.SpendCap, Min = 0, Max = 50000000, Rounding = 0, Suffix = "$",
-    Tooltip = "0 = unlimited. Every outlay in the panel passes one gate, so this covers buys,\n" ..
-              "slot unlocks, drops and snipes alike.",
-    Callback = function(v) Config.SpendCap = v end,
-})
-
-SafeBox:AddToggle("PanicSell", {
-    Text = "Dump inventory on kill switch",
-    Default = Config.PanicSell,
-    Callback = function(v) Config.PanicSell = v end,
-})
-
-SafeBox:AddButton({ Text = "KILL ALL (F4)", Func = function() stopAll("button") end })
-SafeBox:AddButton({ Text = "Reset session counters", Func = function()
-    Panel.Spent, Panel.Bought, Panel.Sold = 0, 0, 0
-    Panel.BarSales, Panel.BarAimed, Panel.Earned = 0, 0, 0
-    Panel.StartMoney, Panel.StartClock, Econ.Hist = money(), os.clock(), {}
-    notify("Session counters reset")
 end })
 
 ---------------------------------------------------------------- live labels
@@ -3247,17 +3405,22 @@ local function repaintLabels()
         :format(Econ.Rate.Cashier, Econ.Samples.Cashier, Econ.Rate.Bar, Econ.Samples.Bar,
                 Panel.DirtySamples or 0))
     -- Both floors, because the panel is genuinely using two: a unit's drain decides which.
-    local beBar = (1 / math.max(Econ.Rate.Bar, 0.01)) * (1 + math.max(Config.MarginPct, 1) / 100)
+    -- Mirrors Econ.MinROIFor for a bar-grade unit, including the manual floor.
+    local be = 1 / math.max(Econ.Rate.Bar, 0.01)
+    local beBar = Config.AutoROI and be * (1 + math.max(Config.MarginPct, 1) / 100)
+                  or math.max(Config.MinROI, be * 1.01)
     L.Floor:SetText(("ROI floor: %.2fx cashier | %.2fx bar%s"):format(
         Econ.MinROIFor(""), beBar, Econ.BarLive() and "  (bar live)" or "  (bar idle)"))
     L.Cap:SetText(("Unit cap: $%s"):format(commas(Econ.MaxUnit())))
+    L.Aim:SetText(("Bar aim: %s, lead %.2f%s"):format(Config.BarTarget, Config.BarLead or 1,
+        Panel.BarLeadMeasured and (" (measured %.2f)"):format(Panel.BarLeadMeasured) or ""))
     L.Session:SetText(("Session: %d bought / %d dumps / %d bar sales (%d%% on target)  spent $%s")
         :format(Panel.Bought, Panel.Sold, Panel.BarSales,
                 Panel.BarSales > 0 and math.floor(Panel.BarAimed / Panel.BarSales * 100) or 0,
                 commas(Panel.Spent)))
 
     local loops = {}
-    for _, name in ipairs({ "Director", "AutoBuy", "AutoUpgrade", "AutoSell", "AutoBar",
+    for _, name in ipairs({ "Director", "AutoClaim", "AutoBuy", "AutoUpgrade", "AutoSell", "AutoBar",
                             "AutoTrade", "AutoDrops", "LimitedSnipe" }) do
         local live = Panel.Running[name]
         local last = Panel.Beat[name]
@@ -3328,11 +3491,15 @@ local function repaintLabels()
     end
     L.Unsell:SetText(#crows > 0 and table.concat(crows, "\n") or "UnsellableInventory is empty")
 
-    -- health
-    L.Health:SetText(("perf %s | fps cap %d | tuner margin %d%% | split $%s | lead %.2f%s")
-        :format(Perf and Perf.on and "ON" or "off", Config.PerfFps, Config.MarginPct,
-                commas(Config.BarMinValue), Config.BarLead or 1,
-                Panel.BarLeadMeasured and (" (measured %.2f)"):format(Panel.BarLeadMeasured) or ""))
+    -- The Director and tuner write these straight into Config. Pull the sliders along so
+    -- the UI (and a config saved from it) never shows a number the panel is not using.
+    for _, k in ipairs({ "MarginPct", "MaxUnitPct", "SellAtUnits", "MinUnitValue",
+                         "TargetSlots", "BarMinValue", "BarLead" }) do
+        local op = Library.Options[k]
+        if op and type(Config[k]) == "number" and math.abs((op.Value or 0) - Config[k]) >= 0.01 then
+            op:SetValue(Config[k])
+        end
+    end
 end
 
 task.spawn(function()
@@ -3343,7 +3510,7 @@ task.spawn(function()
             for i = 1, math.min(5, #drops) do
                 local d = drops[i]
                 rows[#rows + 1] = ("%s $%s  %s  %s"):format(d.Name, commas(d.Price or 0),
-                    tostring(d.Stock), d.In > 0 and ("in " .. d.In .. "s") or "LIVE")
+                    tostring(d.Stock), d.In > 0 and ("in %dh%02dm"):format(math.floor(d.In / 3600), math.floor(d.In % 3600 / 60)) or "LIVE")
             end
             L.Drops:SetText(#rows > 0 and table.concat(rows, "\n") or "no drops listed")
         end)
@@ -3416,7 +3583,7 @@ end
 -- not. A stall threshold must sit above each loop's slowest LEGITIMATE pass or the watchdog
 -- becomes the bug - AutoBar is the loose one, since a sale plus a round trip takes a while.
 local WATCHED = {
-    Director     = { stall = 45,  start = Features.Director.Start,   stop = Features.Director.Stop },
+    Director     = { stall = 45,  start = function() Features.Director.Start(true) end, stop = Features.Director.Stop },
     AutoClaim    = { stall = 60,  start = Features.Claim.Start,      stop = Features.Claim.Stop },
     AutoBuy      = { stall = 25,  start = Features.Buy.Start,        stop = Features.Buy.Stop },
     AutoUpgrade  = { stall = 30,  start = Features.Slots.Start,      stop = Features.Slots.Stop },
@@ -3519,13 +3686,21 @@ SaveManager:IgnoreThemeSettings()
 -- Never persist or restore the switches that spend money or move the character. A saved
 -- config loads AFTER the defaults and silently wins: the live clients had one that restored
 -- BarApproach=true, so every cold boot resumed walking to NPCs.
+-- LimitedSnipe and AutoDrops join them: a snipe travels and spends up to $10M, a drop
+-- spends without a trip, and neither should resume on a boot nobody is watching.
 SaveManager:SetIgnoreIndexes({ "MenuKeybind", "AutoUpgrade", "SlotsManualOnly",
-                              "AutoBar", "BarApproach", "AutoClaim", "ClaimHop" })
+                              "AutoBar", "BarApproach", "AutoClaim", "ClaimHop",
+                              "LimitedSnipe", "AutoDrops" })
 ThemeManager:SetFolder("SneakerPanelV2")
 SaveManager:SetFolder("SneakerPanelV2/configs")
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
-SaveManager:LoadAutoloadConfig()
+-- SAFEBOOT means nothing starts - including loops a saved config would switch back on.
+if getgenv().SNEAKER_PANEL_SAFEBOOT then
+    log("SAFEBOOT: autoload config skipped (load it from Settings when ready)")
+else
+    SaveManager:LoadAutoloadConfig()
+end
 
 ---------------------------------------------------------------- boot
 do
@@ -3538,6 +3713,8 @@ do
         Features.Director.Start()
     elseif Config.Director then
         Config.Director = false
+        local tg = Library.Toggles.Director
+        if tg then pcall(function() tg.Value = false; tg:Display() end) end
         log("SAFEBOOT: Director not started - flip it on in the UI when ready")
     end
 end
