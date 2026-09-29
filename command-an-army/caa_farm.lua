@@ -85,7 +85,7 @@ local CFG = {
     evolve = false, equipBest = false,
     autoJoin = false, team = "Smaller team", joinDelay = 8,
     antiIdle = true,
-    campLoop = false, autoRespawn = false, autoResupply = false, walkToCamp = false, spawnPriority = "Strongest ready", spawnPreferred = 0, spawnDelay = 0,
+    campLoop = false, autoRespawn = false, autoResupply = false, walkToCamp = false, spawnPriority = "Strongest ready", spawnPreferred = 0, spawnAllowed = {}, spawnDelay = 0,
     keepState = false, keepStateName = "Attack", keepStateEvery = 8, manualPause = 20,
     autoRush = false, rushRange = 120, autoVolley = false,
     autoAttack = false, attackRange = 8, attackPlayers = true, attackTroops = true, faceTarget = false,
@@ -473,7 +473,41 @@ local function unitPower(u)
         + (tonumber(u.DPS) or 0) * (tonumber(u.TroopAmount) or 0) / 1e3
 end
 
--- best loadout slot that is off cooldown, by the chosen priority; skips the unit that just got wiped when others are ready
+-- unlocked loadout slots and what's in them. The unlocked count isn't a recorded field yet, so try the likely names on
+-- UnitsInventory and on the player, else fall back to the loadout entries (the game lists one per unlocked slot).
+local SLOT_FIELDS = { "UnlockedSlots", "LoadoutSlots", "MaxLoadout", "LoadoutSize", "MaxEquipped", "UnlockedLoadoutSlots", "SlotCount" }
+local function unlockedSlots(inv)
+    for _, k in ipairs(SLOT_FIELDS) do
+        local n = tonumber(inv[k]) or tonumber(attr(k))
+        if n and n > 0 then return math.floor(n) end
+    end
+    local n = 0
+    for _, l in ipairs(inv.Loadout or {}) do n = math.max(n, tonumber(l.Slot) or 0) end
+    return math.max(n, #(inv.Loadout or {}))
+end
+local function loadoutSlots()
+    local inv = inventory()
+    if not inv then return {} end
+    local byId, bySlot = {}, {}
+    for _, u in ipairs(inv.Units or {}) do byId[u.CopyId] = u end
+    for _, l in ipairs(inv.Loadout or {}) do if l.Slot then bySlot[tonumber(l.Slot)] = l end end
+    local out = {}
+    for s = 1, unlockedSlots(inv) do
+        local l = bySlot[s]
+        out[#out + 1] = { slot = s, unit = l and l.CopyId and byId[l.CopyId] or nil, troop = l and l.TroopId }
+    end
+    return out
+end
+local function slotLabel(e)
+    local u = e.unit
+    if not u then return ("Slot %d · empty"):format(e.slot) end
+    local asc = tonumber(u.AscensionLevel) or 0
+    return ("Slot %d · %s%s%s"):format(e.slot, tostring(u.TroopId or e.troop or "?"),
+        u.Stars and (" ★" .. tostring(u.Stars)) or "", asc > 0 and (" A" .. asc) or "")
+end
+local function slotOf(label) return tonumber(tostring(label):match("^Slot (%d+)")) end
+
+-- best loadout slot that is off cooldown and allowed, by the chosen priority
 local function pickSlot()
     local inv = inventory()
     if not inv then return nil end
@@ -483,7 +517,7 @@ local function pickSlot()
     for _, l in ipairs(inv.Loadout or {}) do
         local u = byId[l.CopyId]
         local cd = (tonumber(cds[tostring(l.CopyId)]) or 0) - t
-        if u and cd <= 0 then ready[#ready + 1] = { slot = l.Slot, unit = u } end
+        if u and cd <= 0 and CFG.spawnAllowed[tonumber(l.Slot)] ~= false then ready[#ready + 1] = { slot = l.Slot, unit = u } end
     end
     if #ready == 0 then return nil end
     table.sort(ready, function(a, b)
@@ -498,7 +532,7 @@ end
 local function doDeathRespawn()
     if attr("AwaitingRespawnUnit") ~= true or os.clock() - spawnState.lastTry < 3 then return end
     local slot, u = pickSlot()
-    if not slot then status.battle = "death screen: every unit on cooldown, the game will auto-spawn"; return end
+    if not slot then status.battle = "death screen: every allowed unit on cooldown, the game will auto-spawn"; return end
     if CFG.spawnDelay > 0 then task.wait(CFG.spawnDelay) end
     if attr("AwaitingRespawnUnit") ~= true then return end
     spawnState.lastTry, spawnState.respawnReply = os.clock(), nil
@@ -604,7 +638,7 @@ local function doResupply()
     local cd = (tonumber(attr("SupplyPointCooldownEndsAt")) or 0) - now()
     if cd > 0 then status.battle = ("army wiped · at camp · supply cooldown %ds"):format(math.ceil(cd)); return end
     local slot, u = pickSlot()
-    if not slot then status.battle = "army wiped · every unit on cooldown"; return end
+    if not slot then status.battle = "army wiped · every allowed unit on cooldown"; return end
     spawnState.lastTry, spawnState.supply = os.clock(), nil
     fireproximityprompt(best.prompt)
     for _ = 1, 20 do if spawnState.supply == "Opened" or spawnState.supply == "AccessDenied" then break end task.wait(0.1) end
@@ -1100,6 +1134,105 @@ task.spawn(function()
     end
 end)
 
+-- ============================== spectate ==============================
+-- Camera only (CameraSubject), nothing is sent to the server. Player = their Humanoid; army = the troop nearest the
+-- army's centre (sticky, re-picked when it dies). Waits through respawns / resupplies instead of dropping the target.
+local spec = { kind = nil, id = nil, filter = "All", ai = false, anchor = nil, prevType = nil, map = {} }
+local function specWanted(side)
+    return spec.filter == "All" or (spec.filter == "Enemies" and side == "enemy") or (spec.filter == "Teammates" and side == "team")
+end
+local function specTargets(kind)
+    local out = {}
+    if kind == "player" then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= lp and specWanted(playerSide(p)) then
+                out[#out + 1] = { id = p.UserId, label = ("%s (@%s)%s"):format(p.DisplayName, p.Name, p.Team and (" · " .. p.Team.Name) or "") }
+            end
+        end
+    else
+        local tf = workspace:FindFirstChild("Troops")
+        for _, f in ipairs(tf and tf:GetChildren() or {}) do
+            local ai = isAIArmy(f)
+            if f.Name ~= tostring(lp.UserId) and (spec.ai or not ai) and specWanted(armySide(f)) and #troopsOf(f) > 0 then
+                local troop = tostring(f:GetAttribute("TroopId") or "?")
+                local owner = not ai and Players:GetPlayerByUserId(tonumber(f.Name) or 0)
+                out[#out + 1] = { id = f.Name, label = ai and ("AI · %s · %s #%s"):format(troop, tostring(armyTeam(f) or "?"), f.Name:match("^AI_[^_]+_(%d+)") or f.Name:sub(-4))
+                    or ("⚑ %s · %s"):format(owner and owner.DisplayName or f.Name, troop) }
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.label < b.label end)
+    return out
+end
+local function ownSubject()
+    local c = lp.Character
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+local function specSubject()
+    if spec.kind == "player" then
+        local p = Players:GetPlayerByUserId(spec.id)
+        if not p then return nil, "left the game" end
+        local hum = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then return nil, "dead, waiting for respawn" end
+        return hum, ("%s · %d HP"):format(p.DisplayName, math.floor(hum.Health))
+    end
+    local tf = workspace:FindFirstChild("Troops")
+    local f = tf and tf:FindFirstChild(spec.id)
+    local troops = f and troopsOf(f) or {}
+    local c, n = armyCenter(troops)
+    if not c then spec.anchor = nil; return nil, "army gone, waiting for it to respawn" end
+    local a = spec.anchor
+    if not a or not a.Parent or (a.Position - c).Magnitude > 25 then
+        local best = math.huge
+        for _, m in ipairs(troops) do
+            local part = troopPart(m)
+            if part and (part.Position - c).Magnitude < best then a, best = part, (part.Position - c).Magnitude end
+        end
+        spec.anchor = a
+    end
+    return a, ("%s · %d troops"):format(tostring(f:GetAttribute("TroopId") or "?"), n)
+end
+local function startSpectate(kind, id)
+    local cam = workspace.CurrentCamera
+    if not spec.kind then spec.prevType = cam.CameraType end
+    spec.kind, spec.id, spec.anchor = kind, id, nil
+    log(("spectate %s %s"):format(kind, tostring(id)))
+end
+local function stopSpectate()
+    if not spec.kind then return end
+    spec.kind, spec.id, spec.anchor = nil, nil, nil
+    local cam = workspace.CurrentCamera
+    local own = ownSubject()
+    if own then cam.CameraSubject = own end
+    if spec.prevType then cam.CameraType = spec.prevType end
+    status.spec = "not spectating"
+end
+local function cycleSpectate(kind, step)
+    local list = specTargets(kind)
+    if #list == 0 then status.spec = "no " .. kind .. "s match the filter"; return end
+    local i = 0
+    for j, t in ipairs(list) do if spec.kind == kind and t.id == spec.id then i = j end end
+    if i == 0 then i = step > 0 and 1 or #list else i = ((i - 1 + step) % #list) + 1 end
+    startSpectate(kind, list[i].id)
+end
+status.spec = "not spectating"
+task.spawn(function()
+    while running do
+        if spec.kind then
+            guard("spectate", function()
+                local cam = workspace.CurrentCamera
+                local subj, info = specSubject()
+                if subj then
+                    if cam.CameraType ~= Enum.CameraType.Custom then cam.CameraType = Enum.CameraType.Custom end
+                    if cam.CameraSubject ~= subj then cam.CameraSubject = subj end
+                end
+                status.spec = ("spectating %s: %s"):format(spec.kind, tostring(info))
+            end)
+        end
+        task.wait(0.25)
+    end
+end)
+
 -- ============================== heartbeat ==============================
 task.spawn(function()
     while running do
@@ -1114,6 +1247,7 @@ end)
 -- ============================== unload ==============================
 local Library
 local function unload()
+    pcall(stopSpectate)
     running = false
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     pcall(function() espFolder:Destroy() end)
@@ -1145,12 +1279,12 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Command An Army · v1.2 · rewards · units · match · army · combat · ESP",
+    end)(), Footer = "Command An Army · v1.3 · rewards · units · match · army · combat · ESP · spectate",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
     Rewards = Window:AddTab("Rewards", "gift"), Units = Window:AddTab("Units", "users"), Match = Window:AddTab("Match", "swords"),
-    Battle = Window:AddTab("Battle", "flame"), Army = Window:AddTab("Army", "shield"), Combat = Window:AddTab("Combat", "crosshair"), ESP = Window:AddTab("ESP", "eye"),
+    Battle = Window:AddTab("Battle", "flame"), Army = Window:AddTab("Army", "shield"), Combat = Window:AddTab("Combat", "crosshair"), ESP = Window:AddTab("ESP", "eye"), Spectate = Window:AddTab("Spectate", "video"),
     Status = Window:AddTab("Status", "activity"), Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(k) return function(v) CFG[k] = v end end
@@ -1224,10 +1358,55 @@ BA:AddToggle("CA_WalkCamp", { Text = "Walk to nearest friendly camp", Tooltip = 
     Default = CFG.walkToCamp, Callback = set("walkToCamp") })
 local BA2 = Tabs.Battle:AddRightGroupbox("Which unit", "user-check")
 BA2:AddDropdown("CA_SpawnPriority", { Text = "Pick", Values = { "Strongest ready", "Slot order" }, Default = CFG.spawnPriority, Callback = set("spawnPriority") })
-BA2:AddDropdown("CA_SpawnPreferred", { Text = "Prefer slot (if ready)", Values = { "None", "1", "2", "3" }, Default = "None",
-    Callback = function(v) CFG.spawnPreferred = tonumber(v) or 0 end })
+-- options come from your unlocked loadout slots and the unit in each; rebuilt when the loadout changes
+local function slotOptions()
+    local labels, filled = {}, {}
+    for _, e in ipairs(loadoutSlots()) do
+        labels[#labels + 1] = slotLabel(e)
+        if e.unit then filled[#filled + 1] = slotLabel(e) end
+    end
+    return labels, filled
+end
+local _, filled0 = slotOptions()
+local slotsLabel = BA2:AddLabel("-", true)
+local preferDD = BA2:AddDropdown("CA_SpawnPreferred", { Text = "Prefer this unit (if ready)", Values = { "None", table.unpack(filled0) }, Default = "None",
+    Callback = function(v) CFG.spawnPreferred = slotOf(v) or 0 end })
+local allowDD
+allowDD = BA2:AddDropdown("CA_SpawnAllowed", { Text = "Units it may spawn", Values = filled0, Multi = true, AllowNull = true,
+    Tooltip = "Unticked units are never picked. Nothing ticked = all units allowed.",
+    Callback = function(v)
+        local any = next(v or {}) ~= nil
+        CFG.spawnAllowed = {}
+        for _, l in ipairs(allowDD and allowDD.Values or filled0) do
+            local s = slotOf(l)
+            if s and any then CFG.spawnAllowed[s] = v[l] == true end
+        end
+    end })
 BA2:AddLabel("Strongest = stars, then ascension, then mastery. Units on cooldown are skipped.", true)
 local battleLabel = BA2:AddLabel("-", true)
+
+local lastSlotSig = nil
+local function refreshSlotOptions()
+    local labels, filled = slotOptions()
+    local sig = table.concat(labels, "|")
+    if sig == lastSlotSig then return end
+    lastSlotSig = sig
+    slotsLabel:SetText(#labels > 0 and ("%d slots unlocked:\n%s"):format(#labels, table.concat(labels, "\n")) or "loadout not loaded yet")
+    -- keep the selections by slot number when a slot's unit changes
+    local keepPref, keepAllowed = CFG.spawnPreferred, CFG.spawnAllowed
+    preferDD:SetValues({ "None", table.unpack(filled) })
+    local pref = "None"
+    for _, l in ipairs(filled) do if slotOf(l) == keepPref then pref = l end end
+    preferDD:SetValue(pref)
+    allowDD:SetValues(filled)
+    local sel, any = {}, false
+    for _, l in ipairs(filled) do
+        local s = slotOf(l)
+        if keepAllowed[s] == true then sel[l] = true; any = true end
+    end
+    allowDD:SetValue(any and sel or {})
+    CFG.spawnAllowed = keepAllowed
+end
 
 -- Army
 local AR = Tabs.Army:AddLeftGroupbox("Orders", "flag")
@@ -1288,6 +1467,42 @@ EC:AddLabel("Teammate player"):AddColorPicker("CA_TeamColor", { Title = "Teammat
 EC:AddLabel("Teammate player army"):AddColorPicker("CA_TeamArmyColor", { Title = "Teammate player army", Default = CFG.teamArmyColor, Callback = set("teamArmyColor") })
 EC:AddLabel("Teammate AI army"):AddColorPicker("CA_TeamAIColor", { Title = "Teammate AI army", Default = CFG.teamAIColor, Callback = set("teamAIColor") })
 
+-- Spectate
+local SP = Tabs.Spectate:AddLeftGroupbox("Spectate", "video")
+SP:AddLabel("Moves only your camera. Stays on the target through deaths and respawns.", true)
+SP:AddDropdown("CA_SpecFilter", { Text = "Show", Values = { "All", "Enemies", "Teammates" }, Default = spec.filter,
+    Callback = function(v) spec.filter = v end })
+SP:AddToggle("CA_SpecAI", { Text = "Include AI armies", Default = spec.ai, Callback = function(v) spec.ai = v end })
+local specPlayerDD = SP:AddDropdown("CA_SpecPlayer", { Text = "Player", Values = {}, AllowNull = true,
+    Callback = function(v) local t = v and spec.map["p" .. v]; if t then startSpectate("player", t) end end })
+local specArmyDD = SP:AddDropdown("CA_SpecArmy", { Text = "Army", Values = {}, AllowNull = true,
+    Callback = function(v) local t = v and spec.map["a" .. v]; if t then startSpectate("army", t) end end })
+SP:AddButton({ Text = "Stop spectating", Func = function() stopSpectate() end })
+local specLabel = SP:AddLabel("-", true)
+
+local SP2 = Tabs.Spectate:AddRightGroupbox("Quick cycle", "repeat")
+SP2:AddButton({ Text = "◀ Previous player", Func = function() cycleSpectate("player", -1) end })
+SP2:AddButton({ Text = "Next player ▶", Func = function() cycleSpectate("player", 1) end })
+SP2:AddDivider()
+SP2:AddButton({ Text = "◀ Previous army", Func = function() cycleSpectate("army", -1) end })
+SP2:AddButton({ Text = "Next army ▶", Func = function() cycleSpectate("army", 1) end })
+
+-- dropdown lists follow who / which armies are in the server; only rebuilt when the list itself changes
+local specSig = {}
+local function refreshSpecLists()
+    for _, k in ipairs({ { "player", "p", specPlayerDD }, { "army", "a", specArmyDD } }) do
+        local list, labels = specTargets(k[1]), {}
+        for _, t in ipairs(list) do labels[#labels + 1] = t.label; spec.map[k[2] .. t.label] = t.id end
+        local sig = table.concat(labels, "|")
+        if sig ~= specSig[k[1]] then
+            specSig[k[1]] = sig
+            local keep = k[3].Value
+            k[3]:SetValues(labels)
+            if keep and not table.find(labels, keep) then k[3]:SetValue(nil) end
+        end
+    end
+end
+
 -- Status
 local ST = Tabs.Status:AddLeftGroupbox("Status", "activity")
 local statusLabel = ST:AddLabel("-", true)
@@ -1306,6 +1521,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "CA_SpecPlayer", "CA_SpecArmy" }) -- never start spectating from a saved config
 SaveManager:SetFolder("CommandArmy")
 ThemeManager:SetFolder("CommandArmy")
 SaveManager:BuildConfigSection(Tabs.Settings)
@@ -1322,6 +1538,9 @@ task.spawn(function()
             matchLabel:SetText(("%s\nstate %s · round %s · map %s"):format(status.match, tostring(attr("MatchState")),
                 tostring(workspace:GetAttribute("RoundState")), tostring(workspace:GetAttribute("ActiveMap"))))
             battleLabel:SetText(status.battle)
+            pcall(refreshSlotOptions)
+            pcall(refreshSpecLists)
+            specLabel:SetText(status.spec)
             armyLabel:SetText(("%s\nrush %s · volley %s"):format(status.army, os.clock() < act.rushAt and ("%.0fs"):format(act.rushAt - os.clock()) or "ready",
                 act.volleying and "firing" or (os.clock() < act.volleyAt and "cooldown" or "ready")))
             combatLabel:SetText(("%s\nattacks %d · heals %d"):format(status.combat, stats.attacks, stats.heals))
@@ -1335,5 +1554,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v1.2 in place " .. game.PlaceId)
+log("loaded v1.3 in place " .. game.PlaceId)
 Library:Notify("Command An Army v1 ready — RightCtrl toggles the UI. Everything starts off.", 5)
