@@ -212,7 +212,7 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - Confirming sends `GasStation:FireServer(car, liters, pricePerLiter)`. The game reads the price as `Prompts:GetAttribute(<Fuel>.."Price") or 1.5`.
   - Re-tested 2026-09-29: it works about 680 studs from any pump with no pump screen open (+1 L, −€2).
   - The server doesn't cap the tank: +1 L on a full 40 L tank gave 41. The script refuses when the tank is full.
-  - The script's refuel "compare string < number" crash was a price attribute that came back as a string; it now uses `tonumber`.
+  - **The real refuel crash ("compare string < number") was `PlayerData.Status.Money`: a StringValue.** The game's own pump script does `tonumber(Money.Value)`. Arithmetic like `myMoney() - price` converted it silently, but direct comparisons crashed. `myMoney()` now returns `tonumber(...)`. Verified 2026-09-29 on the user's Camaro: 17.42 → 20 L for €4.
 - **Fuel** (measured 2026-09-28): `Events.Vehicles.GasStation:FireServer(car, liters, pricePerLiter)` refuels from anywhere, not just at a pump: +1 L cost €2 (rounded). Each station keeps its prices as `PetrolPrice` / `DieselPrice` attributes on its `Prompts` object (€1.59–1.63 petrol, €1.52–1.54 diesel). The tank size is `A-Chassis Tune.TuneChanges.MaxFuel` and the fuel type is `TuneChanges.Fuel`. The farm doesn't burn fuel: the fuel script only runs with the engine on.
 - **Selling locked cars:** the script's confirm hook now also answers the game's *own* sell prompt (a player at the Used Cars NPC). It declines if the car named in the prompt is a favorite that's out within 60 studs of the NPC.
 

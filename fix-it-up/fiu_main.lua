@@ -172,7 +172,7 @@ local function saveOwned() writeJSON(DIR .. "/owned.json", OWNED) end
 local function saveFav() writeJSON(DIR .. "/favorites.json", FAV) end
 local function saveState() STATE.sellCooldown = CFG.sellCooldown; writeJSON(DIR .. "/state.json", STATE) end
 
-local function myMoney() return Status.Money.Value end
+local function myMoney() return tonumber(Status.Money.Value) or 0 end -- the game stores it as text: comparing it crashed refuel
 
 -- ============================== confirm + notify hooks ==============================
 -- The game's HUD script (PlayerGui.HUD...ConfirmationClient) sets OnClientInvoke itself, and sets it AGAIN when the HUD
