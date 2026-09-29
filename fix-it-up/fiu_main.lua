@@ -154,6 +154,7 @@ local CFG = {
     -- auto flip: everything off until the player (or SaveManager autoload) turns it on
     autoBuy = false, autoRepair = false, autoSell = false,
     buyMinTier = "C", buyBy = "Tier", buyMaxPct = 1, buyModels = {}, buyMaxPrice = 60000, buyMinProfit = 0,
+    contestOn = false, contestRadius = 40, snipeTier = "A", -- leave a car to a player standing at it, unless it's this rare
     reserve = 20000,
     repairMin = 1, replaceWorn = true, station = "Dealership",
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
@@ -247,16 +248,20 @@ end
 
 -- RequestStreamAroundAsync can stop answering for the rest of a session, timeout arg or not (2026-09-29 from 11:27:
 -- every call hung for good; it froze auto at the sell NPC, then waiting out a timeout per call doubled repair times).
--- After one timeout, skip it until a stuck call finally returns: a jam costs one timeout, not one per teleport.
--- Callers wait for the parts they need themselves.
-local STREAM = { jammed = false }
-local function streamAt(pos, timeout)
-    if STREAM.jammed then return end
-    local done = false
-    task.spawn(function() pcall(function() LP:RequestStreamAroundAsync(pos, timeout) end); done = true; STREAM.jammed = false end)
-    local t = os.clock()
-    repeat task.wait() until done or os.clock() - t > timeout
-    if not done then STREAM.jammed = true end
+-- The request itself still works: the far sell prompt loaded 0.2 s after one (measured), only the answer never comes.
+-- So after one timeout, keep sending it but wait a short moment instead of the full timeout. Skipping it outright
+-- broke selling from home ("sell NPC not loaded"). Callers wait for the parts they need themselves.
+local streamAt
+do -- the main chunk is at Luau's 200-local limit: new top-level helpers go in do-blocks or tables
+    local jammed = false
+    function streamAt(pos, timeout)
+        local done = false
+        task.spawn(function() pcall(function() LP:RequestStreamAroundAsync(pos, timeout) end); done = true; jammed = false end)
+        -- ponytail: 0.5 s settle while jammed (0.2 s measured for the sell prompt); a bigger area may need longer
+        local t, limit = os.clock(), jammed and math.min(timeout, 0.5) or timeout
+        repeat task.wait() until done or os.clock() - t > limit
+        if not done then jammed = true end
+    end
 end
 
 local function tpTo(target) -- CFrame or Vector3
@@ -789,6 +794,8 @@ local function sellCar(e, manual)
         if not car then return back(false, "spawn failed") end
         tpTo(pr.CFrame * CFrame.new(0, 0, -4))
         task.wait(1)
+        -- the area loaded from afar can stream out and back in meanwhile: that makes a new Prompt instance
+        if not pr.Parent then pr = npc:FindFirstChild("Prompt") or npc:WaitForChild("Prompt", 3) or pr end
         local nt0, gone = os.clock(), false
         fireproximityprompt(pr.ProximityPrompt)
         local t = os.clock()
@@ -825,6 +832,26 @@ end
 -- ============================== buy ==============================
 -- opts.quote: only read the price (declines). opts.max: accept up to this price (a quoted price); default = Auto limits.
 -- The game's own dialog is never used: shown from a script it didn't take the player's click (measured 2026-09-28).
+-- contested cars: another player standing at a junk car is probably about to buy it. Auto buy leaves it to them unless
+-- it's at the snipe tier or rarer. ponytail: players out of streaming range aren't loaded, so buyJunk looks again once
+-- it has teleported there
+local CONTEST = {} -- one table: the main chunk is at Luau's 200-local limit
+function CONTEST.near(pos) -- other players within the radius
+    local n = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        local r = p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if r and (r.Position - pos).Magnitude <= CFG.contestRadius then n += 1 end
+    end
+    return n
+end
+function CONTEST.snipes(tier, from) return TIER_RANK[tier] <= (TIER_RANK[from] or 0) end -- "Never" ranks 0
+assert(CONTEST.snipes("A", "A") and CONTEST.snipes("S", "A") and not CONTEST.snipes("B", "A") and not CONTEST.snipes("S", "Never"), "snipe self-check")
+function CONTEST.snipe(j) return CONTEST.snipes(j.tier, CFG.snipeTier) end
+function CONTEST.skip(j) -- leave this car to the player at it?
+    if not CFG.contestOn or CONTEST.snipe(j) then return false end
+    return (j.skipUntil or 0) > os.clock() or CONTEST.near(j.model:GetPivot().Position) > 0
+end
+
 local function buyJunk(info, opts)
     opts = opts or {}
     local m = info.model
@@ -842,10 +869,20 @@ local function buyJunk(info, opts)
         return yes
     end
     -- the server checks where it thinks you are: give the teleport time to replicate, retry the click
+    local sniped = false
     for _ = 1, 3 do
         tpTo(m:GetPivot() * CFrame.new(0, 3, 8))
         task.wait(0.8)
         if not m.Parent then break end
+        if opts.auto and CFG.contestOn then -- players near the car are loaded now that we're here
+            local near = CONTEST.near(m:GetPivot().Position)
+            if near > 0 and not CONTEST.snipe(info) then
+                confirmFn = nil
+                info.skipUntil = os.clock() + 30 -- they weren't visible from afar: don't teleport straight back
+                return nil, ("left %s to the player%s at it"):format(info.name, near == 1 and "" or "s")
+            end
+            sniped = near > 0
+        end
         fireclickdetector(m.ClickDetector)
         local t = os.clock()
         repeat task.wait(0.1) until asked or os.clock() - t > 2.5
@@ -868,7 +905,7 @@ local function buyJunk(info, opts)
         OWNED[new.Name] = { model = entryModel(new), boughtAt = os.time(), price = price }
         if maybeAutoLock(new) then notify(("Auto-locked %s: rare, it will not be sold"):format(entryModel(new))) end
         saveOwned()
-        return new, ("bought %s for %s"):format(entryModel(new), money(price))
+        return new, ("bought %s for %s%s"):format(entryModel(new), money(price), sniped and " · sniped from a player at it" or "")
     end
     if not asked then return nil, "the server never offered the car (someone else bought it, or you're too far)" end
     if not yes then
@@ -1148,7 +1185,7 @@ end)
 -- ============================== auto flip ==============================
 local autoStatus = "off"
 local function wantedJunk()
-    local best
+    local best, taken = nil, 0 -- taken = matching cars left to players standing at them
     for _, j in ipairs(sortedJunk()) do
         local modelOk = next(CFG.buyModels) == nil
         for _, n in ipairs(j.names) do if CFG.buyModels[n] then modelOk = true end end
@@ -1157,10 +1194,10 @@ local function wantedJunk()
         else rareOk = TIER_RANK[j.tier] <= TIER_RANK[CFG.buyMinTier] end
         if not j.exclusive and rareOk and modelOk
             and j.lo <= CFG.buyMaxPrice and j.profitLo >= CFG.buyMinProfit and myMoney() - j.lo >= CFG.reserve then
-            best = best or j
+            if CONTEST.skip(j) then taken += 1 else best = best or j end
         end
     end
-    return best
+    return best, taken
 end
 
 -- home: a quiet spot you park at between auto actions (STATE.home = { x, y, z, lookX, lookZ })
@@ -1213,10 +1250,14 @@ local function autoStep()
     -- 2) buy the best junk car that fits
     if CFG.autoBuy then
         if #entries() >= garageSlots() then autoStatus = ("garage full %d/%d"):format(#entries(), garageSlots()) return end
-        local j = wantedJunk()
-        if not j then autoStatus = "no junk car matches the filters" return end
+        local j, taken = wantedJunk()
+        if not j then
+            autoStatus = taken > 0 and ("%d matching car%s left to players at them"):format(taken, taken == 1 and "" or "s")
+                or "no junk car matches the filters"
+            return
+        end
         busy, busyWhat = true, "buying " .. j.name
-        local e, msg = buyJunk(j)
+        local e, msg = buyJunk(j, { auto = true })
         log(msg)
         if not (e and CFG.autoRepair) then goHome() end -- a repair is next anyway: go straight there
         busy = false
@@ -1626,7 +1667,8 @@ getgenv().FIU_MAIN = { unload = unload, lib = function() return Library end,
         return false
     end, sel = function() return selectedCar end, cfg = CFG, plEsp = plEsp, carEsp = carEsp, junk = junk, owned = OWNED, state = STATE,
     repairCar = repairCar, sellCar = sellCar, buyJunk = buyJunk, spawnCar = spawnCar, log = logLines,
-    machines = machines, liftCF = liftCF, garageSlots = garageSlots, goPlace = goPlace, places = PLACE_NAMES, cleanCar = cleanCar, paintCar = paintCar, buyStore = buyStore }
+    machines = machines, liftCF = liftCF, garageSlots = garageSlots, goPlace = goPlace, places = PLACE_NAMES, cleanCar = cleanCar, paintCar = paintCar, buyStore = buyStore,
+    contested = CONTEST.skip } -- for scripted tests
 
 -- watchdog: a newer copy took over -> step aside; the game re-set the confirm callback -> hook it again
 task.spawn(function()
@@ -1725,6 +1767,13 @@ Disp:AddSlider("FIU_MaxDist", { Text = "Max distance", Default = CFG.maxDist, Mi
 Disp:AddSlider("FIU_TextSize", { Text = "Text size", Default = CFG.textSize, Min = 10, Max = 24, Rounding = 0, Suffix = "px", Callback = set("textSize") })
 Disp:AddToggle("FIU_Alerts", { Text = "Spawn alerts", Default = CFG.alerts, Tooltip = "Uses the server's 'rare car has appeared' broadcast", Callback = set("alerts") })
 Disp:AddDropdown("FIU_AlertMin", { Text = "Alert from tier", Values = TIERS, Default = CFG.alertMin, Callback = set("alertMin") })
+local Cont = Tabs.Junk:AddLeftGroupbox("Contested cars")
+Cont:AddLabel("Auto buy leaves a car to another player standing within the radius (they're about to buy it). At the snipe tier or rarer it grabs the car first instead.", true)
+Cont:AddToggle("FIU_ContestOn", { Text = "Skip cars players are at", Default = CFG.contestOn, Callback = set("contestOn") })
+Cont:AddSlider("FIU_ContestRadius", { Text = "Radius", Default = CFG.contestRadius, Min = 10, Max = 150, Rounding = 0, Suffix = " studs",
+    Tooltip = "Junk cars can be bought from 32 studs away", Callback = set("contestRadius") })
+Cont:AddDropdown("FIU_SnipeTier", { Text = "Snipe anyway if tier at least", Values = { "Never", "S", "A", "B", "C", "D" },
+    Default = CFG.snipeTier, Callback = set("snipeTier") })
 
 end
 local List = Tabs.Junk:AddRightGroupbox("Junk cars now")
@@ -1788,9 +1837,10 @@ do
                     local j = list[i]
                     if j then
                         local label = junkLabel(j)
-                        local text = ('%s<font color="%s"><b>[%s]</b> %s</font> <font color="#aaaaaa">%s</font>  %s · +%s · %dm'):format(
-                            junkDrop.Value == label and "▶ " or "", hex(CFG.color[j.tier]), j.tier, j.name, chanceText(j.sc),
-                            money(j.hi), money(j.profitHi), j.dist or 0)
+                        local near = CONTEST.near(j.model:GetPivot().Position) -- up front: the row's end gets cut off
+                        local text = ('%s%s<font color="%s"><b>[%s]</b> %s</font> <font color="#aaaaaa">%s</font>  %s · +%s · %dm'):format(
+                            junkDrop.Value == label and "▶ " or "", near > 0 and ('<font color="#ff6b6b">[%d near]</font> '):format(near) or "",
+                            hex(CFG.color[j.tier]), j.tier, j.name, chanceText(j.sc), money(j.hi), money(j.profitHi), j.dist or 0)
                         row.label, row.name = label, j.name
                         if row.text ~= text then row.text = text; row.btn:SetText(text) end
                         if not row.shown then row.shown = true; row.btn:SetVisible(true) end

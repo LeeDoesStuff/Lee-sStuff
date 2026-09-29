@@ -85,6 +85,12 @@ The sale pays `BuyPrice × (1 + ProfitMultiplier)` at 100 % condition. For examp
 
 During the streaming jam, the same flow took 70–75 s.
 
+**Contested cars (Junkyard tab, added 2026-09-29):**
+- Auto buy leaves a junk car to another player within the radius (default 40 studs; the buy click reaches 32).
+- A car at the "snipe" tier or rarer (default A) is bought anyway.
+- It checks once from afar, then again after teleporting to the car, because far players aren't loaded until then. A car it backs off from is skipped for 30 s.
+- Junk list rows show a red "[N near]" marker.
+
 **Never reload fiu_main mid-repair.** Unloading drops the Heartbeat pins, and the game's client deletes loose parts 90 s after `DroppedAt`. Wait until the status isn't "busy: repairing/selling/buying"; "farming distance" is safe.
 
 **Repair shops:**
@@ -108,9 +114,18 @@ During the streaming jam, the same flow took 70–75 s.
 
 StreamingEnabled is on. Machines, the sell NPC and far junk cars exist as empty models until streamed in. Use `LocalPlayer:RequestStreamAroundAsync(pos)` before touching them.
 
-**RequestStreamAroundAsync can jam for the whole session (2026-09-29).** From about 11:27 every call hung forever, timeout argument or not, even calls aimed at the player's own spot. The first hang froze auto on "busy: selling". A per-call timeout then made every teleport cost 3 s and every spawn or machine scan 5 s, and a repair took 70 s instead of 35 s. Flows still worked during the jam with no streaming, because the sell NPC, the Dealership stations and the home interior were there anyway. fiu_main's `streamAt` now:
-- skips streaming after one timeout, until a stuck call returns;
-- skips it for hops under 64 studs.
+**RequestStreamAroundAsync can jam for the whole session (2026-09-29).** From about 11:27 every call hung forever, timeout argument or not, even calls aimed at the player's own spot. The request still gets processed, though. The far sell prompt loaded 0.2 s after a call that never returned, then streamed out again within 12 s.
+- The first hang froze auto on "busy: selling".
+- A per-call timeout then made every teleport cost 3 s and every spawn or machine scan 5 s; a repair took 70 s instead of 35 s.
+- Skipping the call after a jam broke selling from home: "sell NPC not loaded" on every try, with the garage stuck at 8/8.
+
+fiu_main's `streamAt` now:
+- always sends the request, and after one timeout waits only a 0.5 s settle;
+- skips streaming for hops under 64 studs.
+
+`sellCar` re-finds the prompt after teleporting, because a streamed-out prompt comes back as a new instance.
+
+**fiu_main's main chunk is at Luau's 200-local limit:** "Out of local registers ... exceeded limit 200". New top-level helpers go in a table (`CONTEST`) or a do-block.
 
 ## Other remotes seen
 
