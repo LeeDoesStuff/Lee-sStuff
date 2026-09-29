@@ -538,7 +538,9 @@ local function buyStore(model, isTool)
 end
 
 -- ============================== repair ==============================
-local busy, busyWhat, manualBuy = false, nil, false
+-- manualPending: a button is waiting for its turn. Auto starts nothing new, and the distance farm (which holds busy
+-- the whole time it drives) steps out until the button is done.
+local busy, busyWhat, manualPending = false, nil, false
 local INSTALL_FIRST = { EngineBlock = 1 }
 
 local function repairCar(e)
@@ -678,21 +680,26 @@ end
 -- both need the car inside the shop's Detector box; RemoteLoad drops it straight in
 local function inBox(det) return CFrame.new(det.Position.X, det.Position.Y - det.Size.Y / 2 + 3, det.Position.Z) * det.CFrame.Rotation end
 
-local function nearest(models)
-    local r, best, bd = hrp(), nil, nil
-    for _, m in ipairs(models) do
-        local d = r and (m:GetPivot().Position - r.Position).Magnitude or 0
-        if not bd or d < bd then best, bd = m, d end
+-- nearest car wash with nobody else's car in its bay (a car already there would collide and take the prompt)
+local function freeWash(e)
+    local r = hrp()
+    local from = r and r.Position or Vector3.zero
+    local washes = workspace.Map.CarWashes:GetChildren()
+    table.sort(washes, function(a, b) return (a:GetPivot().Position - from).Magnitude < (b:GetPivot().Position - from).Magnitude end)
+    for _, w in ipairs(washes) do
+        streamAt(w:GetPivot().Position, 5)
+        local det = w:FindFirstChild("Detector") or w:WaitForChild("Detector", 3)
+        local taken = false
+        for _, v in ipairs(det and Vehicles:GetChildren() or {}) do
+            if v.Name ~= e.Name and partInBox(det, v:GetPivot().Position) then taken = true break end
+        end
+        if det and not taken then return w, det end
     end
-    return best
 end
 
 local function cleanCar(e)
-    local wash = nearest(workspace.Map.CarWashes:GetChildren())
-    if not wash then return false, "no car wash" end
-    streamAt(wash:GetPivot().Position, 5)
-    local det = wash:FindFirstChild("Detector") or wash:WaitForChild("Detector", 3)
-    if not det then return false, "car wash not loaded" end
+    local wash, det = freeWash(e)
+    if not wash then return false, "no free car wash (all taken or not loaded)" end
     local backMe, oldCar = hrp() and hrp().CFrame, carOf(e)
     local backCar = oldCar and oldCar:GetPivot()
     local function restore()
@@ -705,10 +712,24 @@ local function cleanCar(e)
     if dirt and dirt.Value <= 0 then restore(); return true, entryModel(e) .. " is already clean" end
     local prompt = wash:FindFirstChild("Prompt")
     local pp = prompt and prompt:FindFirstChildWhichIsA("ProximityPrompt")
-    if pp then tpTo(CFrame.new(prompt.Position + Vector3.new(0, 1, 3))); task.wait(0.3); fireproximityprompt(pp); task.wait(0.8) end
+    if not pp then restore(); return false, "car wash prompt not loaded" end
+    tpTo(CFrame.new(prompt.Position + Vector3.new(0, 1, 3)))
+    task.wait(0.3) -- the prompt's 10-stud range is checked where the server thinks you are
+    -- "Grab Pressure Wash" only switches on once the server sees your car in the bay (~0.8 s after the spawn,
+    -- measured 2026-09-29): wait for it, and press again if no washer arrives. SetDirt is ignored without one.
+    local function washer() return LP.Backpack:FindFirstChild("PressureWasher") or (char() and char():FindFirstChild("PressureWasher")) end
+    local tool = washer()
+    for _ = 1, 3 do
+        if tool then break end
+        local t = os.clock()
+        repeat task.wait(0.1) until pp.Enabled or os.clock() - t > 3
+        fireproximityprompt(pp)
+        t = os.clock()
+        repeat task.wait(0.1); tool = washer() until tool or os.clock() - t > 2
+    end
+    if not tool then restore(); return false, "the car wash didn't hand over a pressure washer" end
     local h = hum()
-    local tool = LP.Backpack:FindFirstChild("PressureWasher") or (char() and char():FindFirstChild("PressureWasher"))
-    if tool and h then h:EquipTool(tool) end
+    if h then h:EquipTool(tool) end
     tpTo(car:GetPivot() * CFrame.new(5, 1, 0))
     local start = dirt and dirt.Value or 100
     for i = 1, 40 do -- 10 s at 4 Hz, the same curve the game's washer sends
@@ -1212,7 +1233,7 @@ local function goHome(force)
 end
 
 local function autoStep()
-    if busy or manualBuy then return end
+    if busy or manualPending then return end
     -- 1) finish cars we bought: repair, then sell
     for _, e in ipairs(entries()) do
         maybeAutoLock(e) -- also catches cars bought before auto lock was turned on
@@ -1740,9 +1761,16 @@ local function set(key) return function(v) CFG[key] = v end end
 local STAY = { ["tp junk"] = true, spawn = true, ["tp car"] = true, tp = true, ["tp garage"] = true, ["tp player"] = true, hood = true }
 local function run(name, f) -- buttons: one action at a time, off the UI thread
     return function()
-        if busy then notify("Busy: " .. tostring(busyWhat)) return end
+        -- the distance farm holds busy all the time it drives: it steps out for a button and resumes after. Teleport
+        -- buttons stay refused while it drives (it would take you straight back to the highway)
+        if busy and (busyWhat ~= "farming distance" or STAY[name]) then notify("Busy: " .. tostring(busyWhat)) return end
+        if manualPending then notify("Another button is still waiting") return end
+        manualPending = true
         task.spawn(function()
-            busy, busyWhat = true, name
+            local t = os.clock()
+            while busy and os.clock() - t < 30 do task.wait(0.1) end -- next frame, or once the farm's car has spawned
+            if busy then manualPending = false; notify("Busy: " .. tostring(busyWhat)) return end
+            busy, busyWhat, manualPending = true, name, false
             local t0 = os.clock()
             local ok = guard(name, f)
             if CFG.homeAfterTp and not STAY[name] and (CFG.lastTp or 0) >= t0 then goHome(true) end
@@ -1784,8 +1812,8 @@ List:AddButton({ Text = "Teleport to car", Func = run("tp junk", function()
     if j and j.model.Parent then tpTo(j.model:GetPivot() * CFrame.new(0, 3, 8)) end
 end) })
 local function queued(what, f) -- one job at a time: wait for a running repair/sell instead of refusing
-    if manualBuy then notify("Already busy with a buy") return end
-    manualBuy = true -- the auto loop starts nothing new while this is pending
+    if manualPending then notify("Another button is still waiting") return end
+    manualPending = true -- auto starts nothing new and the distance farm steps out while this is pending
     task.spawn(function()
         if busy then
             notify("Waiting for " .. tostring(busyWhat) .. " to finish")
@@ -1800,7 +1828,7 @@ local function queued(what, f) -- one job at a time: wait for a running repair/s
             busy = false
             if not ok then log("buy error: " .. tostring(err)); notify("buy error: " .. tostring(err)) end
         end
-        manualBuy = false
+        manualPending = false
     end)
 end
 List:AddButton({ Text = "Buy car", Tooltip = "Teleports to the car and buys it at its real price, confirming for you", Func = function()
@@ -2008,7 +2036,7 @@ ActBox:AddButton({ Text = "Refuel", Tooltip = "Fills the tank of the car picked 
     if need <= 0.05 then notify("The tank is already full") return end
     local price
     for _, d in ipairs(workspace.Map:GetDescendants()) do
-        local p = d.Name == "Prompts" and d:GetAttribute(kind .. "Price") -- each station keeps its prices on its Prompts
+        local p = d.Name == "Prompts" and tonumber(d:GetAttribute(kind .. "Price")) -- each station keeps its prices on its Prompts (was once a string: compare crash)
         if p and (not price or p < price) then price = p end
     end
     price = price or 1.6
@@ -2021,7 +2049,7 @@ ActBox:AddButton({ Text = "Refuel", Tooltip = "Fills the tank of the car picked 
     log(msg); notify(msg)
 end) })
 ActBox:AddButton({ Text = "Clean", Tooltip = "Puts the car in the nearest car wash and washes it (~10 s)", Func = run("clean", function()
-    if not selectedCar then return end
+    if not selectedCar then notify("Pick a car above first") return end
     local _, msg = cleanCar(selectedCar)
     log(msg); notify(msg)
 end) })
@@ -3135,7 +3163,7 @@ do
     task.spawn(function()
         while running do
             local c = G.c
-            if c.on and not busy and not manualBuy then
+            if c.on and not busy and not manualPending then
                 local left = contractLeft()
                 if left <= 0 then
                     c.on = false; saveGold()
@@ -3364,6 +3392,7 @@ do
             local km, _, owed = numbers()
             if not CFG.driveNoLimit and owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
             if farm.chosen and farm.car ~= e then farm.yielded = true; farm.status = "switching car"; break end -- picked another car mid-run
+            if manualPending then farm.yielded = true; farm.status = "paused for a button"; break end
             if CFG.farmYield and os.clock() - (farm.lastCheck or 0) > 1 then
                 farm.lastCheck = os.clock()
                 if farm.pending() then farm.yielded = true; farm.status = "paused: auto flip has work"; break end
@@ -3392,7 +3421,10 @@ do
             task.spawn(function()
                 local okLoop, errLoop = pcall(function() -- any error still reaches the cleanup below (else worker stays set)
                     while farm.on and running do
-                        if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on or not running end
+                        if busy or manualPending then
+                            farm.status = "waiting for " .. (busy and tostring(busyWhat) or "a button")
+                            repeat task.wait(0.5) until not (busy or manualPending) or not farm.on or not running
+                        end
                         if not (farm.on and running) then break end
                         busy, busyWhat = true, "farming distance"
                         farm.yielded = false
@@ -3402,7 +3434,7 @@ do
                         if not (farm.yielded and farm.on) then break end
                         -- the auto loop buys / repairs / sells now (it runs every 2 s once busy is free); drive again after
                         local t = os.clock()
-                        repeat task.wait(1) until (not busy and not (CFG.farmYield and farm.pending())) or not farm.on or os.clock() - t > 600
+                        repeat task.wait(1) until (not busy and not manualPending and not (CFG.farmYield and farm.pending())) or not farm.on or os.clock() - t > 600
                         task.wait(1)
                     end
                 end)

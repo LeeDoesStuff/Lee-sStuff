@@ -21,6 +21,7 @@ Quirks of the Potassium MCP execute bridge (`mcp__potassium__execute_script` / `
   - Right fix: always send the request. After the first timeout, wait only a short settle (0.5 s) and let callers wait for the parts they need.
   - Skip streaming for hops under 64 studs (Roblox's default StreamingMinRadius). `workspace.StreamingMinRadius`/`TargetRadius` aren't readable from the client.
   - **Test every caller after changing a shared helper:** each wrong fix here looked fine until a different action ran.
+- **Fast recon of a game mechanic:** `getscripts()`, then `getscriptbytecode(s):find("<RemoteName>", 1, true)` over all 556 scripts. That finds every script that fires a remote in seconds; then `decompile(s)` and `writefile` the result. Used 2026-09-29 to solve the Fix It Up car wash and fuel. Also: a `notify` global set by a loadstring'd script isn't visible from another execute_script call (each call has its own env). Hook the shared table instead, e.g. `Library.Notify`.
 - **Don't patch Lua through shell heredocs that contain `"\n"`.** The escaping turned it into a real newline inside a string literal, and the file stopped compiling. Write the patch script to a file with the Write tool, or use Edit.
 
 See [battle-bot-project](../build-a-battle-bot/notes.md), [warfare-project](../warfare/notes.md).

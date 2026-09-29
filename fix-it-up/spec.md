@@ -91,6 +91,11 @@ During the streaming jam, the same flow took 70–75 s.
 - It checks once from afar, then again after teleporting to the car, because far players aren't loaded until then. A car it backs off from is skipped for 30 s.
 - Junk list rows show a red "[N near]" marker.
 
+**Buttons vs the distance farm (2026-09-29):**
+- The farm holds `busy` the whole time it drives, so every button refused ("Busy: farming distance") and manual Buy timed out after 180 s. That was the real "clean/refuel don't work".
+- Now a button sets `manualPending`. The farm steps out ("paused for a button"), the button runs, and the farm resumes (measured 7.6 s after Clean).
+- Teleport-type buttons (the STAY list) stay refused while it drives.
+
 **Never reload fiu_main mid-repair.** Unloading drops the Heartbeat pins, and the game's client deletes loose parts 90 s after `DroppedAt`. Wait until the status isn't "busy: repairing/selling/buying"; "farming distance" is safe.
 
 **Repair shops:**
@@ -144,7 +149,13 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 
 - **Store parts can be clicked from anywhere.** `fireclickdetector` on a `PartsStore.SpareParts.Parts` item worked from 452 studs away. The confirm arrives and the part spawns at SpawnPosition, with no teleport. Buying a replacement takes about 0.5 s.
 - **Junk cars can't:** a click from about 1,700 studs gave no confirm. Buying still needs the character within the 32-stud range.
-- **Car wash:** the prompt has a 10-stud range, and it gave no tool on the first tries. `workspace.Map.CarWashes` holds 6 washes, each with a `Detector` bay (16×9.6×23).
+- **Car wash, solved 2026-09-29** (decompiled `PlayerScripts.WashController` and `Assets.Tools.Sponge.LocalScript`):
+  - Each wash's `Prompt.ProximityPrompt` ("Grab Pressure Wash", 10 studs, 0.2 s hold, line of sight) stays **disabled until the server sees your car in the `Detector` bay**. After a RemoteLoad into the bay it switched on about 0.8 s later.
+  - Triggering the prompt puts a `PressureWasher` tool in your Backpack. The server removes it once the wash finishes.
+  - While a tool is equipped and the mouse is held, the game sends `SetDirt:FireServer(level)` every 0.25 s. The level is `startDirt * (1 - elapsed / duration)`, with a duration of 10 s for the PressureWasher and 15 s for the Sponge.
+  - The script's version (spawn into a free bay, wait for the prompt, get the tool, equip it, stand 5 studs from the car, send the same ramp) took dirt from 95 to 0 in 10 s, 15.7 s in total.
+  - Earlier failures came from the prompt still being disabled, streaming, or the farm lock. Occupied bays (another car in the Detector) are skipped.
+- *(older notes)* **Car wash:** the prompt has a 10-stud range, and it gave no tool on the first tries. `workspace.Map.CarWashes` holds 6 washes, each with a `Detector` bay (16×9.6×23).
   - The dirt value is `car.Values.DirtLevel` (0–100).
   - The client sends `Events.Vehicles.SetDirt:FireServer(level)` for the player's own car, from the `PressureWasher` tool (10 s) or the `Sponge` tool (15 s), stepping the level down every 0.25 s.
   - A car spawned into the bay read dirt 0. Whether the bay itself cleans cars, or the earlier stepped SetDirt did it, isn't settled yet.
@@ -196,6 +207,12 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - **Lift** (Dealership `Folder.Lift`): spawn the car at `lift:GetPivot()*CFrame.new(0,4,0)` (inside the lift's `Detector`), then press the `Up` ClickDetector (14.3-stud range) **once**. `OnLift` becomes true within ~0.3 s, and the platform (`Holder`) rises from y 2.35 to 3.85 in ~3.5 s. Presses while the platform is moving are ignored, and pressing Up every 0.5 s kept `OnLift` from ever being set. `Down` takes ~3 s.
   - A car-to-car tyre swap once left car A without wheels when the lift failed for car B. The transfer now puts A's wheels straight back on A if B's pull fails.
 - **Tyre shops** (`PartsStore["PitWheels WEST"/"EAST"].Wheels.Rims/Tires`) sell rims and tyres separately (MeshParts with `Price`, ClickDetector 32 studs). After the click, the server calls `Events.HUD.WheelBuy:InvokeClient(label, priceFactor)`, and the client returns `(diameter 12–24, width/200 [0.5–2], x4 bool)`. Price = factor × diameter × width / 200. Buying isn't implemented yet.
+- **Fuel protocol** (decompiled `HUD.Frames.GasStation.GasStationClient`, 2026-09-29):
+  - Using a pump makes the server fire `GasStation:FireClient(stationPrompts, car)`, which opens the pump screen.
+  - Confirming sends `GasStation:FireServer(car, liters, pricePerLiter)`. The game reads the price as `Prompts:GetAttribute(<Fuel>.."Price") or 1.5`.
+  - Re-tested 2026-09-29: it works about 680 studs from any pump with no pump screen open (+1 L, −€2).
+  - The server doesn't cap the tank: +1 L on a full 40 L tank gave 41. The script refuses when the tank is full.
+  - The script's refuel "compare string < number" crash was a price attribute that came back as a string; it now uses `tonumber`.
 - **Fuel** (measured 2026-09-28): `Events.Vehicles.GasStation:FireServer(car, liters, pricePerLiter)` refuels from anywhere, not just at a pump: +1 L cost €2 (rounded). Each station keeps its prices as `PetrolPrice` / `DieselPrice` attributes on its `Prompts` object (€1.59–1.63 petrol, €1.52–1.54 diesel). The tank size is `A-Chassis Tune.TuneChanges.MaxFuel` and the fuel type is `TuneChanges.Fuel`. The farm doesn't burn fuel: the fuel script only runs with the engine on.
 - **Selling locked cars:** the script's confirm hook now also answers the game's *own* sell prompt (a player at the Used Cars NPC). It declines if the car named in the prompt is a favorite that's out within 60 studs of the NPC.
 

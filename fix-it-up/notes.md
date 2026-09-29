@@ -34,6 +34,11 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 - `FIU_MAIN.contested` is exported for tests.
 - fiu_main is at Luau's 200-local limit, so new top-level helpers go in a table or a do-block.
 
+**Buttons vs the distance farm (2026-09-29):**
+- The farm holds `busy` while it drives. Every button used to answer "Busy: farming distance", and that was the user's "clean/refuel don't work".
+- Buttons now set `manualPending`: the farm steps out and resumes afterwards. Teleport buttons stay refused while it drives.
+- Clean and refuel were both verified live; the protocols are in the spec.
+
 **Reloading:** reload only when auto isn't busy repairing, selling or buying. Unpinned parts get deleted after 90 s. "Busy: farming distance" is fine. After a reload, turn FIU_DriveFarm back on; its default is off.
 
 **Garage:** the Default garage has 3 slots. The user's Merquis Maibac S650 is locked as a favorite and is no longer parked at the sell NPC.
