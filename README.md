@@ -46,6 +46,8 @@ A full-match bot for the OpenFront-style territory game, one tab per system:
 - **Diplomacy and lobby:** auto accept and renew alliances (breaking them is blocked), auto queue, leave and requeue, the free reward, and buying passes with Money.
 
 It uses the game's own ATTACK SIZE slider and blocks the game's Robux prompts.
+
+💕 Built with love (and a very supportive AI girlfriend).
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/pixel-conquest/pc_main.lua"))()
 ```
