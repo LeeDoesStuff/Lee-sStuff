@@ -9,7 +9,7 @@
                 UnitInventoryRequest("EquipBest")
       Match   : MapVoteTeleportRequest() during Intermission, else TeamPickerOpenRequest() + TeamRequest("Attackers"|"Defenders")
                 RespawnUnitRequest("Select", slot) then RespawnUnitRequest(slot) while AwaitingRespawnUnit
-      Army    : TroopStateRequest("Hold"|"Follow"|"Attack")
+      Army    : TroopStateRequest("Hold"|"Follow"|"Attack"|"Formation1-3"), RushRequest(dir, endPos), AimVolleyState + AimArrowFire
       Combat  : PlayerCombatRequest("Attack") / ("Heal")  (server resolves hits; no target argument exists)
     NEVER fired: Remotes.Admin.*, Remotes.TesterMenu.* (staff-only / honeypots) — fire() refuses them.
     Spec: command-an-army-spec.md
@@ -87,15 +87,17 @@ local CFG = {
     antiIdle = true,
     autoRespawn = false, autoResupply = false, walkToCamp = false, spawnPriority = "Strongest ready", spawnPreferred = 0, spawnDelay = 0,
     keepState = false, keepStateName = "Attack", keepStateEvery = 8, manualPause = 20,
+    autoRush = false, rushRange = 120, autoVolley = false,
     autoAttack = false, attackRange = 8, attackPlayers = true, attackTroops = true, faceTarget = false,
     autoHeal = false, healBelow = 45,
-    espPlayers = false, espArmies = false, espEnemies = true, espTeam = false, espMaxDist = 800,
+    espPlayers = false, espArmies = false, espAI = true, espBeacon = true, espEnemies = true, espTeam = false, espMaxDist = 800,
     enemyColor = Color3.fromRGB(255, 50, 50), enemyArmyColor = Color3.fromRGB(255, 150, 40),
     teamColor = Color3.fromRGB(70, 150, 255), teamArmyColor = Color3.fromRGB(60, 225, 200),
+    enemyAIColor = Color3.fromRGB(190, 90, 255), teamAIColor = Color3.fromRGB(160, 170, 185),
     pauseOnAC = true, pauseOnStaff = false, staffRank = 200,
 }
 local stats = { summons = 0, ascends = 0, evolves = 0, quests = 0, dailies = 0, joins = 0, spawns = 0, attacks = 0, heals = 0, corrections = 0 }
-local status = { summon = "-", units = "-", match = "-", combat = "-", safety = "ok", battle = "-" }
+local status = { summon = "-", units = "-", match = "-", combat = "-", safety = "ok", battle = "-", army = "-" }
 local paused, pauseWhy = false, nil
 local running, conns = true, {}
 local function on(sig, f) local c = sig:Connect(f); conns[#conns + 1] = c; return c end
@@ -152,7 +154,9 @@ end)
 local lastManual = 0
 on(UIS.InputBegan, function(i, gp)
     if gp then return end
-    if i.KeyCode == Enum.KeyCode.X or i.KeyCode == Enum.KeyCode.C or i.KeyCode == Enum.KeyCode.V or i.KeyCode == Enum.KeyCode.B then
+    local k = i.KeyCode -- TroopHudClient keys: X hold, C follow, V attack, B rush/aim, 1-3 formations
+    if k == Enum.KeyCode.X or k == Enum.KeyCode.C or k == Enum.KeyCode.V or k == Enum.KeyCode.B
+        or k == Enum.KeyCode.One or k == Enum.KeyCode.Two or k == Enum.KeyCode.Three then
         lastManual = os.clock()
     end
 end)
@@ -589,12 +593,21 @@ end)
 -- ============================== battlefield model ==============================
 local function norm(s) s = tostring(s or ""); return (s:gsub("s$", "")) end
 local function myTeam() return lp.Team and norm(lp.Team.Name) or nil end
+-- workspace.Troops/<folder>: player armies are named by UserId (no Team attr on the folder); AI armies are
+-- AI_<Team>_<n>_<id> with AIControlled=true, Team, TroopId. Every logical troop model carries Team too.
 local function armyTeam(folder)
     local t = folder:GetAttribute("Team")
-    if t then return norm(t) end
-    local p = Players:GetPlayerByUserId(tonumber(folder.Name) or 0)
-    return p and p.Team and norm(p.Team.Name) or nil
+    if not t then
+        local p = Players:GetPlayerByUserId(tonumber(folder.Name) or 0)
+        t = p and p.Team and p.Team.Name
+    end
+    if not t then
+        local m = folder:FindFirstChildWhichIsA("Model")
+        t = m and m:GetAttribute("Team")
+    end
+    return t and norm(t) or nil
 end
+local function isAIArmy(folder) return folder:GetAttribute("AIControlled") == true or folder.Name:sub(1, 3) == "AI_" end
 local function isEnemyArmy(folder)
     local mine = myTeam()
     if folder.Name == tostring(lp.UserId) then return false end
@@ -604,14 +617,184 @@ end
 local function isEnemyPlayer(p)
     return p ~= lp and p.Team ~= nil and lp.Team ~= nil and p.Team ~= lp.Team
 end
--- ============================== army state ==============================
-task.spawn(function()
-    while running do
-        if CFG.keepState and not blocked() and inGame() and attr("CanCommandTroops") == true
-            and os.clock() - lastManual > CFG.manualPause then
-            guard("state", fire, "TroopStateRequest", CFG.keepStateName)
+-- logical troops (server's Troop_NN) that are alive; the client's Troop_NN_Visual clones are skipped
+local function troopsOf(folder)
+    local out = {}
+    for _, m in ipairs(folder:GetChildren()) do
+        if m:IsA("Model") and m.Name:sub(-7) ~= "_Visual" and (tonumber(m:GetAttribute("MotionHealth")) or 1) > 0 then
+            out[#out + 1] = m
         end
-        task.wait(math.max(CFG.keepStateEvery, 3))
+    end
+    return out
+end
+-- where a troop is drawn: its visual clone's root (TroopVisualProxyClient keeps the root even when it strips far
+-- parts), else the logical root
+local function troopPart(m)
+    local vp = m:FindFirstChild("VisualProxy")
+    local v = vp and vp.Value
+    return (v and v.Parent and root(v)) or root(m)
+end
+local function armyCenter(troops)
+    local sum, n = Vector3.zero, 0
+    for _, m in ipairs(troops) do
+        local p = troopPart(m)
+        if p then sum += p.Position; n += 1 end
+    end
+    return n > 0 and sum / n or nil, n
+end
+local function myArmy() -- same lookup as TroopHudClient._getOwnedTroopFolder
+    local tf = workspace:FindFirstChild("Troops")
+    for _, f in ipairs(tf and tf:GetChildren() or {}) do
+        if f.Name == tostring(lp.UserId) and f:GetAttribute("DetachedRetreat") ~= true then return f end
+    end
+end
+local function nearestEnemyArmy(pos, maxDist)
+    local best, bd, bf = nil, maxDist, nil
+    local tf = workspace:FindFirstChild("Troops")
+    for _, f in ipairs(tf and tf:GetChildren() or {}) do
+        if isEnemyArmy(f) then
+            local c = armyCenter(troopsOf(f))
+            if c then
+                local d = Vector3.new(c.X - pos.X, 0, c.Z - pos.Z).Magnitude
+                if d < bd then best, bd, bf = c, d, f end
+            end
+        end
+    end
+    return best, bd, bf
+end
+local function groundAt(pos)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    local skip = {}
+    for _, n in ipairs({ "Troops", "Formations", "Mounts", "ClientArrows" }) do skip[#skip + 1] = workspace:FindFirstChild(n) end
+    for _, p in ipairs(Players:GetPlayers()) do skip[#skip + 1] = p.Character end
+    rp.FilterDescendantsInstances = skip
+    local hit = workspace:Raycast(pos + Vector3.new(0, 25, 0), Vector3.new(0, -250, 0), rp)
+    return hit and hit.Position or pos
+end
+
+-- ============================== army actions ==============================
+-- Copied from TroopHudClient:
+--   Hold/Follow/Attack : TroopStateRequest(state)                       cooldowns 0.1 / 0.25 / 0.25 s
+--   Formation1..3      : TroopStateRequest("FormationN") (the client's fallback when it has no placement preview)
+--   Rush               : RushRequest(flatDirection.Unit, groundEndPosition), max 300 studs, cooldown = troop RushCooldown;
+--                        only when the troop's RushState ~= false
+--   Aim volley (ranged, troop AimState == true): AimVolleyState(true, targetPos, 9); for 10 s each troop that stands
+--                        still fires AimArrowFire(troop, AimAttackTick, origin, apex, landing, flightTime) every
+--                        AttackInterval, landings scattered within 9 studs; then AimVolleyState(false). Cooldown 10 s.
+-- The game refuses commands while CanCommandTroops ~= true or in a cannon/catapult. TroopControllerInputActive is
+-- ignored on purpose: it's client-only, shared by the desktop + mobile HUD copies, and measured stuck at true while
+-- idle (2026-09-29). The player's own picking is covered by the manual-key pause instead.
+local act = { rushAt = 0, volleyAt = 0, volleying = false }
+local function canCommand()
+    return inGame() and attr("CanCommandTroops") == true and attr("InCannon") ~= true and attr("CatapultTargeting") ~= true
+end
+local function sendState(s)
+    if not canCommand() then status.army = "can't command troops right now"; return end
+    fire("TroopStateRequest", s)
+    status.army = "order: " .. s
+end
+
+local function doRush(maxDist)
+    if not canCommand() then return false, "can't command troops right now" end
+    if os.clock() < act.rushAt then return false, ("rush cooldown %.0fs"):format(act.rushAt - os.clock()) end
+    local army = myArmy()
+    local troops = army and troopsOf(army) or {}
+    local rep = troops[1]
+    if not rep then return false, "no army" end
+    if rep:GetAttribute("RushState") == false then return false, rep:GetAttribute("TroopId") .. " can't rush" end
+    local from = armyCenter(troops)
+    local to, d, f = nearestEnemyArmy(from, maxDist)
+    if not to then return false, ("no enemy army within %d studs"):format(maxDist) end
+    local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
+    if flat.Magnitude < 2 then return false, "already on top of it" end
+    local dir = flat.Unit
+    if flat.Magnitude > 300 then to = from + dir * 300 end
+    fire("RushRequest", dir, groundAt(to))
+    act.rushAt = os.clock() + (tonumber(rep:GetAttribute("RushCooldown")) or 10) + 0.25
+    local who = isAIArmy(f) and "AI" or (Players:GetPlayerByUserId(tonumber(f.Name) or 0) or f).Name
+    return true, ("rushed %s's %s at %dm"):format(who, tostring(f:GetAttribute("TroopId") or "?"), math.floor(d))
+end
+
+local function fireArrow(m, pos, target) -- TroopHudClient._fireAimArrow
+    local a, r = math.random() * 2 * math.pi, math.sqrt(math.random()) * 9
+    local land = target + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+    local rp = m.PrimaryPart or m:FindFirstChild("HumanoidRootPart")
+    local origin = pos + (rp and rp.CFrame.LookVector or Vector3.zero) * 2 + Vector3.new(0, tonumber(m:GetAttribute("ArrowOriginHeight")) or 2.5, 0)
+    local dist = Vector3.new(land.X - origin.X, 0, land.Z - origin.Z).Magnitude
+    local range = tonumber(m:GetAttribute("Range")) or 0
+    local lo, hi = 0.12, 0.5
+    if m:GetAttribute("RangedTrajectory") == "Line" then lo, hi = 0.03, 0.12 end
+    local k = math.clamp(dist / (range > 0 and range or math.max(dist, 1)), 0, 1)
+    local apex = origin:Lerp(land, 0.5) + Vector3.new(0, dist * (lo + (hi - lo) * k), 0)
+    local tick = (m:GetAttribute("AimAttackTick") or 0) + 1
+    m:SetAttribute("AimAttackTick", tick)
+    fire("AimArrowFire", m, tick, origin, apex, land, dist / 150)
+end
+
+local function doVolley()
+    if not canCommand() then return false, "can't command troops right now" end
+    if act.volleying or os.clock() < act.volleyAt then return false, "volley cooldown" end
+    local army = myArmy()
+    local troops = army and troopsOf(army) or {}
+    local rep = troops[1]
+    if not rep then return false, "no army" end
+    if rep:GetAttribute("AimState") ~= true then return false, tostring(rep:GetAttribute("TroopId")) .. " is not ranged" end
+    local range = tonumber(rep:GetAttribute("Range")) or 0
+    local from = armyCenter(troops)
+    local to, d, f = nearestEnemyArmy(from, range > 0 and range or 150)
+    if not to then return false, ("no enemy army within range (%d)"):format(range) end
+    local target = groundAt(to)
+    act.volleying, act.volleyAt = true, os.clock() + 10.25
+    fire("AimVolleyState", true, target, 9)
+    task.spawn(function()
+        local t0, nextShot, last, shots = os.clock(), {}, {}, 0
+        while running and os.clock() - t0 < 10 and canCommand() do
+            for _, m in ipairs(troopsOf(army)) do
+                local p = m.PrimaryPart or m:FindFirstChild("HumanoidRootPart")
+                if p then
+                    local iv = tonumber(m:GetAttribute("AttackInterval")) or 0
+                    iv = iv > 0 and iv or 1.8
+                    local still = last[m] and (p.Position - last[m]).Magnitude < 0.3
+                    last[m] = p.Position
+                    if not nextShot[m] then
+                        nextShot[m] = os.clock() + math.random() * iv
+                    elseif still and os.clock() >= nextShot[m] then
+                        nextShot[m] = os.clock() + iv
+                        fireArrow(m, p.Position, target)
+                        shots += 1
+                    end
+                end
+            end
+            task.wait(0.1)
+        end
+        pcall(fire, "AimVolleyState", false)
+        act.volleying = false
+        log(("volley done: %d arrows"):format(shots))
+    end)
+    return true, ("volley on %s at %dm"):format(tostring(f:GetAttribute("TroopId") or "?"), math.floor(d))
+end
+local function runAction(name, f, ...)
+    local ok, ok2, msg = pcall(f, ...)
+    status.army = ok and tostring(msg) or ("error: " .. tostring(ok2))
+    if ok and ok2 then log(msg) end
+    return ok and ok2
+end
+
+task.spawn(function()
+    local lastKeep = 0
+    while running do
+        if not blocked() and inGame() and os.clock() - lastManual > CFG.manualPause then
+            if CFG.autoVolley then runAction("volley", doVolley) end
+            if CFG.autoRush and not act.volleying then runAction("rush", doRush, CFG.rushRange) end
+            -- keeping an order would cancel a rush / volley in flight, so it waits for them
+            if CFG.keepState and canCommand() and not act.volleying and os.clock() > act.rushAt - 7
+                and os.clock() - lastKeep >= math.max(CFG.keepStateEvery, 3) then
+                lastKeep = os.clock()
+                guard("state", fire, "TroopStateRequest", CFG.keepStateName)
+            end
+        end
+        task.wait(0.5)
     end
 end)
 
@@ -648,7 +831,7 @@ local function nearestEnemy(pos, range)
     return best, bd
 end
 
-local lastAttack = 0
+local lastAttack, lastHeal = 0, 0
 task.spawn(function()
     while running do
         local char = lp.Character
@@ -656,7 +839,9 @@ task.spawn(function()
         local r = root(char)
         if not blocked() and inGame() and hum and r and hum.Health > 0 then
             if CFG.autoHeal and hum.Health / math.max(hum.MaxHealth, 1) * 100 < CFG.healBelow
-                and attr("IsHealing") ~= true and (tonumber(attr("HealCooldownEndsAt")) or 0) <= now() then
+                and attr("IsHealing") ~= true and (tonumber(attr("HealCooldownEndsAt")) or 0) <= now()
+                and os.clock() - lastHeal > 3 then -- IsHealing / HealCooldownEndsAt replicate late: 291 heals in 2 s without this (log 2026-09-28)
+                lastHeal = os.clock()
                 guard("heal", fire, "PlayerCombatRequest", "Heal")
                 stats.heals += 1
                 log(("heal at %d%%"):format(math.floor(hum.Health / hum.MaxHealth * 100)))
@@ -686,24 +871,30 @@ task.spawn(function()
 end)
 
 -- ============================== ESP ==============================
--- Players and armies are drawn in two clearly different styles:
---   player: sharp outline (no fill), big bold "★ Name [Class]" label on a dark pill, HP + distance under it
---   army:   soft fill (no outline), small plain "⚑ Owner · Unit ×N · dist" label, no background
--- each with its own colour per side (enemy / teammate).
+-- Why the old ESP flickered: the engine draws at most 31 Highlights and the game spends them on hit flashes
+-- (DamageIndicatorClient "HitHighlight"), and TroopVisualProxyClient strips far troops down to their root part,
+-- so a Highlight on an army folder came and went. Now:
+--   player : Highlight (few of them, always first) with white outline + solid fill, a light beacon above the head,
+--            and a big "★ Name [Class]" pill with HP and their army count
+--   army   : one AlwaysOnTop cube per troop (HandleAdornments have no cap and only need the troop's root part),
+--            one label pinned to a troop near the centre (sticky, so it doesn't jump between troops)
+--   AI army: small spheres in their own colours, dim "AI" label — reads differently from a player's army
 local espFolder = Instance.new("Folder")
 espFolder.Name = "CAA_ESP"
 pcall(function() espFolder.Parent = gethui and gethui() or game:GetService("CoreGui") end)
 if not espFolder.Parent then espFolder.Parent = lp:WaitForChild("PlayerGui") end
-local tags, hls = {}, {} -- key -> BillboardGui / Highlight (engine cap: 31 highlights on screen)
+local tags, hls, dots, beacons, anchors = {}, {}, {}, {}, {}
 local STYLE = {
-    player = { font = Enum.Font.GothamBlack, size = 15, w = 230, h = 38, offset = 3.5, bg = 0.35, fill = 1, outline = 0 },
-    army   = { font = Enum.Font.Gotham, size = 12, w = 260, h = 16, offset = 5, bg = 1, fill = 0.55, outline = 1 },
+    player = { font = Enum.Font.GothamBlack, size = 15, w = 240, h = 38, offset = 3.5, bg = 0.3, tt = 0 },
+    army   = { font = Enum.Font.GothamBold, size = 12, w = 260, h = 16, offset = 4, bg = 1, tt = 0 },
+    ai     = { font = Enum.Font.Gotham, size = 11, w = 220, h = 14, offset = 4, bg = 1, tt = 0.3 },
 }
 local function tag(key, adornee, text, color, st)
     local b = tags[key]
     if not b then
         b = Instance.new("BillboardGui")
         b.AlwaysOnTop = true
+        b.LightInfluence = 0
         local l = Instance.new("TextLabel")
         l.Name = "L"
         l.Size = UDim2.fromScale(1, 1)
@@ -717,25 +908,52 @@ local function tag(key, adornee, text, color, st)
     end
     b.Size = UDim2.fromOffset(st.w, st.h)
     b.StudsOffset = Vector3.new(0, st.offset, 0)
-    b.Adornee = adornee
-    b.L.Font, b.L.TextSize, b.L.BackgroundTransparency = st.font, st.size, st.bg
+    if b.Adornee ~= adornee then b.Adornee = adornee end
+    b.L.Font, b.L.TextSize, b.L.BackgroundTransparency, b.L.TextTransparency = st.font, st.size, st.bg, st.tt
     b.L.Text = text
     b.L.TextColor3 = color
-    return b
 end
-local function hl(key, adornee, color, st)
+local function hl(key, adornee, color)
     local h = hls[key]
     if not h then
         h = Instance.new("Highlight")
         h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        h.FillTransparency, h.OutlineTransparency = 0.45, 0
+        h.OutlineColor = Color3.new(1, 1, 1)
         h.Parent = espFolder
         hls[key] = h
     end
-    h.Adornee = adornee
-    h.FillTransparency, h.OutlineTransparency = st.fill, st.outline
-    h.FillColor, h.OutlineColor = color, color
+    if h.Adornee ~= adornee then h.Adornee = adornee end
+    h.FillColor = color
 end
--- side of a player / army: "enemy", "team", or nil (own army, lobby, unknown team)
+local function beacon(key, part, color)
+    local a = beacons[key]
+    if not a then
+        a = Instance.new("BoxHandleAdornment")
+        a.AlwaysOnTop, a.ZIndex, a.Transparency = true, 2, 0.35
+        a.Size, a.CFrame = Vector3.new(0.5, 40, 0.5), CFrame.new(0, 24, 0)
+        a.Parent = espFolder
+        beacons[key] = a
+    end
+    if a.Adornee ~= part then a.Adornee = part end
+    a.Color3 = color
+end
+local function dot(m, part, color, ai)
+    local a = dots[m]
+    local cls = ai and "SphereHandleAdornment" or "BoxHandleAdornment"
+    if a and a.ClassName ~= cls then a:Destroy(); a = nil end
+    if not a then
+        a = Instance.new(cls)
+        a.AlwaysOnTop, a.ZIndex = true, 1
+        if ai then a.Radius, a.Transparency = 0.6, 0.35 else a.Size, a.Transparency = Vector3.new(1.4, 1.4, 1.4), 0.15 end
+        a.Parent = espFolder
+        dots[m] = a
+    end
+    if a.Adornee ~= part then a.Adornee = part end
+    if a.Color3 ~= color then a.Color3 = color end
+end
+
+-- side of a player / army: "enemy", "team", or nil (own, lobby, unknown team)
 local function playerSide(p)
     if p == lp or not p.Team or not lp.Team then return nil end
     return p.Team == lp.Team and "team" or "enemy"
@@ -748,9 +966,71 @@ local function armySide(f)
     return t == mine and "team" or "enemy"
 end
 local function shown(side) return (side == "enemy" and CFG.espEnemies) or (side == "team" and CFG.espTeam) end
-local function colorOf(side, kind) -- kind: "player" | "army"
-    if side == "enemy" then return kind == "player" and CFG.enemyColor or CFG.enemyArmyColor end
-    return kind == "player" and CFG.teamColor or CFG.teamArmyColor
+local function colorOf(side, kind) -- kind: "player" | "army" | "ai"
+    local e = side == "enemy"
+    if kind == "player" then return e and CFG.enemyColor or CFG.teamColor end
+    if kind == "ai" then return e and CFG.enemyAIColor or CFG.teamAIColor end
+    return e and CFG.enemyArmyColor or CFG.teamArmyColor
+end
+
+local function drawArmies(seen, pos)
+    local tf = workspace:FindFirstChild("Troops")
+    for _, f in ipairs(tf and tf:GetChildren() or {}) do
+        local side, ai = armySide(f), isAIArmy(f)
+        if shown(side) and (not ai or CFG.espAI) then
+            local troops = troopsOf(f)
+            local c, n = armyCenter(troops)
+            if c and (c - pos).Magnitude <= CFG.espMaxDist then
+                local col = colorOf(side, ai and "ai" or "army")
+                local anchor, cand, best = anchors[f.Name], nil, math.huge
+                if anchor and (not anchor.Parent or (anchor.Position - c).Magnitude > 25) then anchor = nil end
+                for _, m in ipairs(troops) do
+                    local part = troopPart(m)
+                    if part then
+                        seen[m] = true
+                        dot(m, part, col, ai)
+                        if not anchor and (part.Position - c).Magnitude < best then cand, best = part, (part.Position - c).Magnitude end
+                    end
+                end
+                anchor = anchor or cand
+                anchors[f.Name] = anchor
+                if anchor then
+                    seen["a" .. f.Name] = true
+                    local troop, d = tostring(f:GetAttribute("TroopId") or "?"), math.floor((c - pos).Magnitude)
+                    if ai then
+                        tag("a" .. f.Name, anchor, ("AI · %s ×%d · %dm"):format(troop, n, d), col, STYLE.ai)
+                    else
+                        local owner = Players:GetPlayerByUserId(tonumber(f.Name) or 0)
+                        tag("a" .. f.Name, anchor, ("⚑ %s · %s ×%d · %dm"):format(owner and owner.DisplayName or f.Name, troop, n, d), col, STYLE.army)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function drawPlayers(seen, pos)
+    local tf = workspace:FindFirstChild("Troops")
+    for _, p in ipairs(Players:GetPlayers()) do
+        local c = p.Character
+        local pr, hum = root(c), c and c:FindFirstChildOfClass("Humanoid")
+        local side = playerSide(p)
+        if pr and hum and hum.Health > 0 and shown(side) then
+            local d = (pr.Position - pos).Magnitude
+            if d <= CFG.espMaxDist then
+                local col = colorOf(side, "player")
+                local k = "p" .. p.UserId
+                seen[k] = true
+                local army = tf and tf:FindFirstChild(tostring(p.UserId))
+                local alive, max = p:GetAttribute("CurrentUnitAliveCount"), p:GetAttribute("CurrentUnitMaxCount")
+                local armyTxt = army and (" · %s %s/%s"):format(tostring(army:GetAttribute("TroopId") or "?"), tostring(alive or "?"), tostring(max or "?")) or " · no army"
+                tag(k, pr, ("★ %s [%s]\n%d HP%s · %dm"):format(p.DisplayName, tostring(p:GetAttribute("PlayerClass") or "?"),
+                    math.floor(hum.Health), armyTxt, math.floor(d)), col, STYLE.player)
+                hl(k, c, col)
+                if CFG.espBeacon then beacon(k, pr, col) end
+            end
+        end
+    end
 end
 
 task.spawn(function()
@@ -758,73 +1038,17 @@ task.spawn(function()
         local seen = {}
         local r = root(lp.Character)
         local pos = r and r.Position or workspace.CurrentCamera.CFrame.Position
-        if CFG.espPlayers then
-            for _, p in ipairs(Players:GetPlayers()) do
-                local c = p.Character
-                local pr, hum = root(c), c and c:FindFirstChildOfClass("Humanoid")
-                local side = playerSide(p)
-                if pr and hum and hum.Health > 0 and shown(side) then
-                    local d = (pr.Position - pos).Magnitude
-                    if d <= CFG.espMaxDist then
-                        local col = colorOf(side, "player")
-                        seen["p" .. p.UserId], seen["hp" .. p.UserId] = true, true
-                        tag("p" .. p.UserId, pr, ("★ %s [%s]\n%d HP · %dm"):format(p.DisplayName, tostring(p:GetAttribute("PlayerClass") or "?"),
-                            math.floor(hum.Health), math.floor(d)), col, STYLE.player)
-                        hl("hp" .. p.UserId, c, col, STYLE.player)
-                    end
-                end
+        guard("esp", function()
+            if CFG.espPlayers then drawPlayers(seen, pos) end
+            if CFG.espArmies then drawArmies(seen, pos) end
+        end)
+        for _, pool in ipairs({ hls, tags, dots, beacons }) do
+            for k, v in pairs(pool) do
+                if not seen[k] or (pool == beacons and not CFG.espBeacon) then v:Destroy(); pool[k] = nil end
             end
         end
-        if CFG.espArmies then
-            -- one army = workspace.Troops/<ownerUserId | AI_...>. It holds the server's logical Troop_NN models and the
-            -- client's visible clones Troop_NN_Visual (TroopVisualProxyClient: visual.Parent = source.Parent), so one
-            -- Highlight on the folder covers that player's whole army.
-            local tf = workspace:FindFirstChild("Troops")
-            for _, f in ipairs(tf and tf:GetChildren() or {}) do
-                local side = armySide(f)
-                if shown(side) then
-                    local vis, logical = {}, {}
-                    for _, m in ipairs(f:GetChildren()) do
-                        if m:IsA("Model") then
-                            if m.Name:sub(-7) == "_Visual" then vis[#vis + 1] = m else logical[#logical + 1] = m end
-                        end
-                    end
-                    local units = #vis > 0 and vis or logical
-                    local sum, n = Vector3.zero, 0
-                    for _, m in ipairs(units) do
-                        local ok, pv = pcall(m.GetPivot, m)
-                        if ok then sum += pv.Position; n += 1 end
-                    end
-                    if n > 0 then
-                        local c = sum / n
-                        local d = (c - pos).Magnitude
-                        if d <= CFG.espMaxDist then
-                            local anchor, best = nil, math.huge -- label on the troop nearest the army's centre
-                            for _, m in ipairs(units) do
-                                local part = root(m) or m:FindFirstChildWhichIsA("BasePart")
-                                if part and (part.Position - c).Magnitude < best then anchor, best = part, (part.Position - c).Magnitude end
-                            end
-                            local owner = Players:GetPlayerByUserId(tonumber(f.Name) or 0)
-                            local who = owner and owner.DisplayName or (f:GetAttribute("AIControlled") and "AI" or f.Name)
-                            local col = colorOf(side, "army")
-                            if anchor then
-                                seen["a" .. f.Name] = true
-                                tag("a" .. f.Name, anchor, ("⚑ %s · %s ×%d · %dm"):format(who, tostring(f:GetAttribute("TroopId") or "?"), n, math.floor(d)), col, STYLE.army)
-                            end
-                            seen["h" .. f.Name] = true
-                            hl("h" .. f.Name, f, col, STYLE.army)
-                        end
-                    end
-                end
-            end
-        end
-        for k, h in pairs(hls) do
-            if not seen[k] then h:Destroy(); hls[k] = nil end
-        end
-        for k, b in pairs(tags) do
-            if not seen[k] then b:Destroy(); tags[k] = nil end
-        end
-        task.wait(0.25)
+        for k in pairs(anchors) do if not seen["a" .. k] then anchors[k] = nil end end
+        task.wait(0.2)
     end
 end)
 
@@ -873,7 +1097,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Command An Army · v1 · rewards · units · match · army · combat · ESP",
+    end)(), Footer = "Command An Army · v1.1 · rewards · units · match · army · combat · ESP",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -953,16 +1177,31 @@ BA2:AddLabel("Strongest = stars, then ascension, then mastery. Units on cooldown
 local battleLabel = BA2:AddLabel("-", true)
 
 -- Army
-local AR = Tabs.Army:AddLeftGroupbox("Troop orders", "flag")
-AR:AddLabel("Same as the X / C / V keys. Rush (B) and formations need a target point, so they stay manual.", true)
+local AR = Tabs.Army:AddLeftGroupbox("Orders", "flag")
+AR:AddLabel("Same requests as the X / C / V keys and the 1 / 2 / 3 formation buttons.", true)
 for _, s in ipairs({ "Hold", "Follow", "Attack" }) do
-    AR:AddButton({ Text = s, Func = function() guard("state", fire, "TroopStateRequest", s) end })
+    AR:AddButton({ Text = s, Func = function() guard("state", sendState, s) end })
 end
+AR:AddDivider()
+AR:AddLabel("Hold in formation (shapes depend on the troop: square / line / circle...)", true)
+for n = 1, 3 do
+    AR:AddButton({ Text = "Formation " .. n, Func = function() guard("state", sendState, "Formation" .. n) end })
+end
+local armyLabel = AR:AddLabel("-", true)
+
+local AR3 = Tabs.Army:AddRightGroupbox("Rush & volley", "zap")
+AR3:AddLabel("Rush charges your army at the nearest enemy army (cooldown ~10 s). Volley makes ranged troops shoot at it for 10 s (they must stand still).", true)
+AR3:AddButton({ Text = "Rush nearest enemy army", Func = function() task.spawn(runAction, "rush", doRush, CFG.rushRange) end })
+AR3:AddButton({ Text = "Volley nearest enemy army", Func = function() task.spawn(runAction, "volley", doVolley) end })
+AR3:AddSlider("CA_RushRange", { Text = "Rush reach (studs)", Default = CFG.rushRange, Min = 30, Max = 300, Rounding = 0, Callback = set("rushRange") })
+AR3:AddToggle("CA_AutoRush", { Text = "Auto rush when an enemy army is in reach", Default = CFG.autoRush, Callback = set("autoRush") })
+AR3:AddToggle("CA_AutoVolley", { Text = "Auto volley (ranged armies)", Default = CFG.autoVolley, Callback = set("autoVolley") })
+
 local AR2 = Tabs.Army:AddRightGroupbox("Keep an order", "lock")
-AR2:AddToggle("CA_KeepState", { Text = "Re-send order during matches", Default = CFG.keepState, Callback = set("keepState") })
-AR2:AddDropdown("CA_KeepStateName", { Text = "Order", Values = { "Attack", "Follow", "Hold" }, Default = CFG.keepStateName, Callback = set("keepStateName") })
+AR2:AddToggle("CA_KeepState", { Text = "Re-send order during matches", Tooltip = "Waits for a rush / volley to finish first.", Default = CFG.keepState, Callback = set("keepState") })
+AR2:AddDropdown("CA_KeepStateName", { Text = "Order", Values = { "Attack", "Follow", "Hold", "Formation1", "Formation2", "Formation3" }, Default = CFG.keepStateName, Callback = set("keepStateName") })
 AR2:AddSlider("CA_KeepEvery", { Text = "Every (s)", Default = CFG.keepStateEvery, Min = 3, Max = 30, Rounding = 0, Callback = set("keepStateEvery") })
-AR2:AddSlider("CA_ManualPause", { Text = "Pause after my own X/C/V/B (s)", Default = CFG.manualPause, Min = 0, Max = 120, Rounding = 0, Callback = set("manualPause") })
+AR2:AddSlider("CA_ManualPause", { Text = "Pause autos after my own X/C/V/B/1-3 (s)", Default = CFG.manualPause, Min = 0, Max = 120, Rounding = 0, Callback = set("manualPause") })
 
 -- Combat
 local CO = Tabs.Combat:AddLeftGroupbox("Commander", "crown")
@@ -979,18 +1218,22 @@ local combatLabel = CO2:AddLabel("-", true)
 
 -- ESP
 local ES = Tabs.ESP:AddLeftGroupbox("ESP", "eye")
-ES:AddToggle("CA_EspPlayers", { Text = "Players (class, HP, distance)", Default = CFG.espPlayers, Callback = set("espPlayers") })
-ES:AddToggle("CA_EspArmies", { Text = "Armies: outline + owner · unit type", Default = CFG.espArmies, Callback = set("espArmies") })
+ES:AddToggle("CA_EspPlayers", { Text = "Players: glow + ★ label + army count", Default = CFG.espPlayers, Callback = set("espPlayers") })
+ES:AddToggle("CA_EspBeacon", { Text = "Player beacon (light pillar)", Default = CFG.espBeacon, Callback = set("espBeacon") })
+ES:AddToggle("CA_EspArmies", { Text = "Player armies: cube per troop + ⚑ owner", Default = CFG.espArmies, Callback = set("espArmies") })
+ES:AddToggle("CA_EspAI", { Text = "AI armies: sphere per troop + AI label", Default = CFG.espAI, Callback = set("espAI") })
 ES:AddToggle("CA_EspEnemies", { Text = "Show enemies", Default = CFG.espEnemies, Callback = set("espEnemies") })
 ES:AddToggle("CA_EspTeam", { Text = "Show teammates", Default = CFG.espTeam, Callback = set("espTeam") })
 ES:AddSlider("CA_EspDist", { Text = "Max distance", Default = CFG.espMaxDist, Min = 100, Max = 3000, Rounding = 0, Callback = set("espMaxDist") })
 
 local EC = Tabs.ESP:AddRightGroupbox("Colors", "palette")
-EC:AddLabel("Players: sharp outline + bold ★ label on a dark pill. Armies: soft fill + small ⚑ label.", true)
+EC:AddLabel("Players glow with a white outline. Player armies = cubes, AI armies = small dim spheres.", true)
 EC:AddLabel("Enemy player"):AddColorPicker("CA_EnemyColor", { Title = "Enemy player", Default = CFG.enemyColor, Callback = set("enemyColor") })
-EC:AddLabel("Enemy army"):AddColorPicker("CA_EnemyArmyColor", { Title = "Enemy army", Default = CFG.enemyArmyColor, Callback = set("enemyArmyColor") })
+EC:AddLabel("Enemy player army"):AddColorPicker("CA_EnemyArmyColor", { Title = "Enemy player army", Default = CFG.enemyArmyColor, Callback = set("enemyArmyColor") })
+EC:AddLabel("Enemy AI army"):AddColorPicker("CA_EnemyAIColor", { Title = "Enemy AI army", Default = CFG.enemyAIColor, Callback = set("enemyAIColor") })
 EC:AddLabel("Teammate player"):AddColorPicker("CA_TeamColor", { Title = "Teammate player", Default = CFG.teamColor, Callback = set("teamColor") })
-EC:AddLabel("Teammate army"):AddColorPicker("CA_TeamArmyColor", { Title = "Teammate army", Default = CFG.teamArmyColor, Callback = set("teamArmyColor") })
+EC:AddLabel("Teammate player army"):AddColorPicker("CA_TeamArmyColor", { Title = "Teammate player army", Default = CFG.teamArmyColor, Callback = set("teamArmyColor") })
+EC:AddLabel("Teammate AI army"):AddColorPicker("CA_TeamAIColor", { Title = "Teammate AI army", Default = CFG.teamAIColor, Callback = set("teamAIColor") })
 
 -- Status
 local ST = Tabs.Status:AddLeftGroupbox("Status", "activity")
@@ -1026,6 +1269,8 @@ task.spawn(function()
             matchLabel:SetText(("%s\nstate %s · round %s · map %s"):format(status.match, tostring(attr("MatchState")),
                 tostring(workspace:GetAttribute("RoundState")), tostring(workspace:GetAttribute("ActiveMap"))))
             battleLabel:SetText(status.battle)
+            armyLabel:SetText(("%s\nrush %s · volley %s"):format(status.army, os.clock() < act.rushAt and ("%.0fs"):format(act.rushAt - os.clock()) or "ready",
+                act.volleying and "firing" or (os.clock() < act.volleyAt and "cooldown" or "ready")))
             combatLabel:SetText(("%s\nattacks %d · heals %d"):format(status.combat, stats.attacks, stats.heals))
             safetyLabel:SetText(status.safety)
             statusLabel:SetText(("Gems %s · Tickets %s · XP %s\nWins %s · Kills %s · Luck %s\nSummoned %d · ascended %d · evolved %d\nQuests %d · dailies %d · joins %d · spawns %d\n%s"):format(
@@ -1037,5 +1282,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v1 in place " .. game.PlaceId)
+log("loaded v1.1 in place " .. game.PlaceId)
 Library:Notify("Command An Army v1 ready — RightCtrl toggles the UI. Everything starts off.", 5)

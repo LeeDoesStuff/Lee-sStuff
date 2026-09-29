@@ -33,4 +33,11 @@ Measured live 2026-09-27:
 - `fireproximityprompt` on the Summon prompt didn't open the UI. `InteractableUIOpen` stayed false even after `Open()`.
 - The spy flooded to 11 MB, mostly PlayerMovementState at ~3 Hz. It had been queued 3×. Next time throttle every S2C channel, not a hand-picked list.
 
+**v1.1 (2026-09-29)**: army actions + ESP rewrite, loaded clean live (root place, in match).
+- Army actions copied from TroopHudClient: `TroopStateRequest("Formation1..3")` (client fallback), `RushRequest(flatDir.Unit, groundEndPos)` (max 300 studs, cooldown = troop `RushCooldown`, needs `RushState ~= false`), archer volley = `AimVolleyState(true, pos, 9)` + per still troop `AimArrowFire(troop, AimAttackTick, origin, apex, landing, dist/150)` every AttackInterval for 10 s, then `AimVolleyState(false)`. Only for troops with `AimState == true`. Rush/volley fired live not yet verified — user tests the buttons.
+- `TroopControllerInputActive` is client-only and measured **stuck true while idle** (desktop + mobile HUD copies share it). Don't gate on it.
+- Troop layout: `workspace.Troops/<UserId>` (player army, no Team attr on folder) or `AI_<Team>_<n>_<id>` (`AIControlled=true`, `Team`, `TroopId`). Logical `Troop_NN` has `VisualProxy` ObjectValue → `Troop_NN_Visual`; alive = `MotionHealth > 0`. Player attrs `CurrentUnitAliveCount/MaxCount` replicate for everyone.
+- ESP flicker causes: 31-Highlight engine cap shared with the game's per-hit `HitHighlight`s, and TroopVisualProxyClient strips far troops to their root part. Fix: Highlights only for players; armies = HandleAdornments on the visual root (no cap). Labels pinned to a sticky anchor troop. Measured: 5 highlights, 109 cubes, 146 AI spheres, 0 label anchor switches in 3 s.
+- Auto heal spammed 291× in 2 s (IsHealing replicates late); now 3 s local lockout.
+
 See [game-recon-full-progression](../notes/game-recon-checklist.md), [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md).
