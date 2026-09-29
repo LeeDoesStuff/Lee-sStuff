@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v1  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v1.7  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
