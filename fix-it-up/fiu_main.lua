@@ -1743,22 +1743,22 @@ end
 notify = function(msg) Library:Notify(msg, 5) end
 
 local Window = Library:CreateWindow({
-    Title = "CruelHub", Footer = "Fix It Up · junkyard tiers · auto flip · repair · distance farm",
+    Title = "CruelHub", Icon = "skull", Footer = "Fix It Up · junkyard tiers · auto flip · repair · distance farm",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 -- unloaded by a newer copy while we were still setting up: don't leave a dead menu behind
 if not running or getgenv().FIU_TOKEN ~= HOOK.token then running = false; pcall(Library.Unload, Library); return end
 local Tabs = {
-    Junk     = Window:AddTab("Junkyard"),
-    Auto     = Window:AddTab("Auto"),
-    Car      = Window:AddTab("Garage"),
-    Shop     = Window:AddTab("Parts"),
-    Teleport = Window:AddTab("Teleport"),
-    Players  = Window:AddTab("Players"),
-    Gold     = Window:AddTab("Gold"),
-    Drive    = Window:AddTab("Drive"),
-    Hop      = Window:AddTab("Server hop"),
-    Settings = Window:AddTab("Settings"),
+    Junk     = Window:AddTab("Junkyard", "car"),
+    Auto     = Window:AddTab("Auto", "repeat"),
+    Car      = Window:AddTab("Garage", "warehouse"),
+    Shop     = Window:AddTab("Parts", "wrench"),
+    Teleport = Window:AddTab("Teleport", "map-pin"),
+    Players  = Window:AddTab("Players", "users"),
+    Gold     = Window:AddTab("Gold", "coins"),
+    Drive    = Window:AddTab("Drive", "gauge"),
+    Hop      = Window:AddTab("Server hop", "server"),
+    Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(key) return function(v) CFG[key] = v end end
 -- buttons that exist to move you somewhere: never sent home after
@@ -1785,13 +1785,13 @@ end
 
 -- Junkyard
 do
-local Tier = Tabs.Junk:AddLeftGroupbox("Tiers")
+local Tier = Tabs.Junk:AddLeftGroupbox("Tiers", "layers")
 Tier:AddLabel("Tier = spawn chance. Toggle shows/hides a tier's labels and outlines; the swatch recolors it.", true)
 for _, t in ipairs(TIERS) do
     Tier:AddToggle("FIU_Show_" .. t, { Text = TIER_TEXT[t], Default = CFG.show[t], Callback = function(v) CFG.show[t] = v end })
         :AddColorPicker("FIU_Col_" .. t, { Default = CFG.color[t], Title = TIER_TEXT[t], Callback = function(c) CFG.color[t] = c end })
 end
-local Disp = Tabs.Junk:AddLeftGroupbox("Display")
+local Disp = Tabs.Junk:AddLeftGroupbox("Display", "eye")
 Disp:AddToggle("FIU_Esp", { Text = "Car labels", Default = CFG.esp, Callback = set("esp") })
 Disp:AddToggle("FIU_Outline", { Text = "Outline cars", Default = CFG.outline, Callback = set("outline") })
 Disp:AddToggle("FIU_EspDetail", { Text = "Profit + distance line", Default = CFG.espDetail, Callback = set("espDetail") })
@@ -1799,7 +1799,7 @@ Disp:AddSlider("FIU_MaxDist", { Text = "Max distance", Default = CFG.maxDist, Mi
 Disp:AddSlider("FIU_TextSize", { Text = "Text size", Default = CFG.textSize, Min = 10, Max = 24, Rounding = 0, Suffix = "px", Callback = set("textSize") })
 Disp:AddToggle("FIU_Alerts", { Text = "Spawn alerts", Default = CFG.alerts, Tooltip = "Uses the server's 'rare car has appeared' broadcast", Callback = set("alerts") })
 Disp:AddDropdown("FIU_AlertMin", { Text = "Alert from tier", Values = TIERS, Default = CFG.alertMin, Callback = set("alertMin") })
-local Cont = Tabs.Junk:AddLeftGroupbox("Contested cars")
+local Cont = Tabs.Junk:AddLeftGroupbox("Contested cars", "swords")
 Cont:AddLabel("Auto buy leaves a car to another player standing within the radius (they're about to buy it). At the snipe tier or rarer it grabs the car first instead.", true)
 Cont:AddToggle("FIU_ContestOn", { Text = "Skip cars players are at", Default = CFG.contestOn, Callback = set("contestOn") })
 Cont:AddSlider("FIU_ContestRadius", { Text = "Radius", Default = CFG.contestRadius, Min = 10, Max = 150, Rounding = 0, Suffix = " studs",
@@ -1808,7 +1808,7 @@ Cont:AddDropdown("FIU_SnipeTier", { Text = "Snipe anyway if tier at least", Valu
     Default = CFG.snipeTier, Callback = set("snipeTier") })
 
 end
-local List = Tabs.Junk:AddRightGroupbox("Junk cars now")
+local List = Tabs.Junk:AddRightGroupbox("Junk cars now", "list")
 local junkDrop = List:AddDropdown("FIU_JunkPick", { Text = "Car", Values = {}, AllowNull = true })
 local junkByLabel = {}
 List:AddButton({ Text = "Teleport to car", Func = run("tp junk", function()
@@ -1888,7 +1888,7 @@ do
 end
 
 -- Auto
-local AutoBox = Tabs.Auto:AddLeftGroupbox("Flip loop")
+local AutoBox = Tabs.Auto:AddLeftGroupbox("Flip loop", "refresh-cw")
 AutoBox:AddLabel("Buys junk cars that pass the filters, repairs them at the repair shop, sells them at Used Cars once the sell timer allows. Only cars bought by this script are ever sold.", true)
 AutoBox:AddToggle("FIU_AutoBuy", { Text = "Auto buy", Default = CFG.autoBuy, Callback = set("autoBuy") })
 AutoBox:AddToggle("FIU_AutoRepair", { Text = "Auto repair after buy", Default = CFG.autoRepair, Callback = set("autoRepair") })
@@ -1899,7 +1899,7 @@ AutoBox:AddToggle("FIU_PaintAfter", { Text = "Paint after auto repair", Tooltip 
 local autoLabel = AutoBox:AddLabel("-", true)
 
 do
-local HomeBox = Tabs.Auto:AddLeftGroupbox("Home")
+local HomeBox = Tabs.Auto:AddLeftGroupbox("Home", "house")
 HomeBox:AddLabel("A quiet spot of your choosing. With Return after tp on, anything that teleports you (auto or buttons) ends back here instead of at the junkyard or the sell NPC.", true)
 local homeLabel = HomeBox:AddLabel("-", true)
 local function showHome()
@@ -1925,7 +1925,7 @@ showHome()
 end
 
 do
-local Filt = Tabs.Auto:AddRightGroupbox("Buy filters")
+local Filt = Tabs.Auto:AddRightGroupbox("Buy filters", "filter")
 local buyTier, buyPct
 local function showBuyBy()
     if buyTier then buyTier:SetVisible(CFG.buyBy ~= "Spawn chance") end
@@ -1944,14 +1944,14 @@ Filt:AddSlider("FIU_BuyMax", { Text = "Max price", Default = CFG.buyMaxPrice, Mi
 Filt:AddSlider("FIU_BuyProfit", { Text = "Min profit", Default = CFG.buyMinProfit, Min = 0, Max = 100000, Rounding = 0, Suffix = "€",
     Tooltip = "Profit = price x profit multiplier (sale at 100% condition)", Callback = set("buyMinProfit") })
 
-local Timer = Tabs.Auto:AddRightGroupbox("Sell timer")
+local Timer = Tabs.Auto:AddRightGroupbox("Sell timer", "timer")
 Timer:AddLabel("The server refuses to sell a car for a while after you buy it. 0 = learn it from the first refusal (saved).", true)
 Timer:AddSlider("FIU_SellCd", { Text = "Sell timer", Default = math.ceil(CFG.sellCooldown / 60), Min = 0, Max = 60, Rounding = 0, Suffix = " min",
     Callback = function(v) CFG.sellCooldown = v * 60; saveState() end })
 
 end
 -- Car
-local CarBox = Tabs.Car:AddLeftGroupbox("Your cars")
+local CarBox = Tabs.Car:AddLeftGroupbox("Your cars", "car-front")
 local carDrop = CarBox:AddDropdown("FIU_CarPick", { Text = "Car", Values = {}, AllowNull = true })
 local carByLabel = {}
 local keepingCar = false -- set while the list refreshes, so the rebuild can't clear your pick
@@ -1984,7 +1984,7 @@ CarBox:AddButton({ Text = "Open / close hood", Func = run("hood", function()
 end) })
 local carInfo = CarBox:AddLabel("-", true)
 
-local FavBox = Tabs.Car:AddRightGroupbox("Favorites / collection")
+local FavBox = Tabs.Car:AddRightGroupbox("Favorites / collection", "star")
 FavBox:AddLabel("Locked cars are never sold, and the auto loop never touches them. Pick a car above, then lock it.", true)
 FavBox:AddButton({ Text = "★ Lock selected car", Func = function()
     if selectedCar then FAV[selectedCar.Name] = entryModel(selectedCar); saveFav(); log("locked " .. entryModel(selectedCar)) end
@@ -2015,7 +2015,7 @@ FavBox:AddInput("FIU_AutoLockPct", { Text = "Lock at or under (%)", Default = to
 local favLabel = FavBox:AddLabel("-", true)
 
 do
-local RepBox = Tabs.Car:AddRightGroupbox("Repair settings")
+local RepBox = Tabs.Car:AddRightGroupbox("Repair settings", "wrench")
 RepBox:AddDropdown("FIU_Station", { Text = "Repair shop", Values = { "Quietest", "Dealership", "Pitstop (large)", "Pitstop (small) south", "Pitstop (small) west" },
     Default = CFG.station == "Pitstop" and "Pitstop (large)" or CFG.station,
     Tooltip = "Quietest = whichever shop has the fewest other players around when a repair starts. Pitstop (large) is the busy one.",
@@ -2025,7 +2025,7 @@ RepBox:AddToggle("FIU_Replace", { Text = "Replace parts with no machine", Defaul
     Tooltip = "Sparkplugs, injectors, timing belts...: buys a new one at the parts store", Callback = set("replaceWorn") })
 RepBox:AddToggle("FIU_PartEsp", { Text = "Show my loose parts", Default = false, Tooltip = "Wear + the game's 90 s delete countdown", Callback = set("partEsp") })
 
-local ActBox = Tabs.Car:AddRightGroupbox("Car actions")
+local ActBox = Tabs.Car:AddRightGroupbox("Car actions", "sparkles")
 -- the pump's own remote works from anywhere (measured: +1 L for €2 far from any station); pays the cheapest station's price
 ActBox:AddButton({ Text = "Refuel", Tooltip = "Fills the tank of the car picked above from anywhere, at the cheapest station's price", Func = run("refuel", function()
     local e = selectedCar
@@ -2163,7 +2163,7 @@ do
     for _, c in ipairs(RS.Cache.CarList:GetChildren()) do names[#names + 1] = c.Name end
     table.sort(names)
 
-    local Look = Tabs.Junk:AddLeftGroupbox("Car lookup")
+    local Look = Tabs.Junk:AddLeftGroupbox("Car lookup", "search")
     local lookDrop = Look:AddDropdown("FIU_Lookup", { Text = "Search any car", Values = names, Searchable = true, AllowNull = true })
     local lookLabel = Look:AddLabel("Pick a car to see its rarity, price, profit and engines.", true)
     -- filter the search by engine / engine size (needs each car's tune: "Load all car data" fetches and saves them)
@@ -2673,7 +2673,7 @@ do
         return ok, ok and res or ("error: " .. tostring(res))
     end
 
-    local SwapBox = Tabs.Shop:AddRightGroupbox("Spec swap")
+    local SwapBox = Tabs.Shop:AddRightGroupbox("Spec swap", "arrow-left-right")
     SwapBox:AddLabel("Works on the car picked in the Garage tab. The car goes to the repair shop; new parts are bought first, then the old ones come out and the new ones go in.", true)
     local engDrop = SwapBox:AddDropdown("FIU_SwapEngine", { Text = "Engine", Values = ENGINES, AllowNull = true, Searchable = true })
     local intakeDrop = SwapBox:AddDropdown("FIU_SwapIntake", { Text = "Intake", Values = { "Stock", "Sport", "Turbo" }, Default = "Stock",
@@ -2714,7 +2714,7 @@ do
         Callback = set("swapOld") })
 
     getgenv().FIU_MAIN.transfer = X.transfer -- for scripted tests
-    X.box = Tabs.Shop:AddRightGroupbox("Car to car")
+    X.box = Tabs.Shop:AddRightGroupbox("Car to car", "repeat-2")
     X.box:AddLabel("Takes parts out of one of your cars and puts them in another. Swap = the two cars trade; Move = the first car's parts replace the second's (its old parts go to your inventory or the bin, per Old parts above).", true)
     X.from = X.box:AddDropdown("FIU_XFrom", { Text = "From car", Values = {}, AllowNull = true })
     X.to = X.box:AddDropdown("FIU_XTo", { Text = "To car", Values = {}, AllowNull = true })
@@ -2781,7 +2781,7 @@ do
 end
 
 -- Shop
-local ShopBox = Tabs.Shop:AddLeftGroupbox("Spare parts")
+local ShopBox = Tabs.Shop:AddLeftGroupbox("Spare parts", "package")
 local cats = {}
 for _, c in ipairs(SPARE.Parts:GetChildren()) do cats[#cats + 1] = c.Name end
 table.sort(cats)
@@ -2814,7 +2814,7 @@ ShopBox:AddButton({ Text = "Buy + install on selected car", Func = run("shop ins
     if new then fireParts(selectedCar, "ReapplyPart", new); log("installed " .. p.Name) else log("buy failed: " .. tostring(why)) end
 end) })
 
-local ToolBox = Tabs.Shop:AddLeftGroupbox("Tools")
+local ToolBox = Tabs.Shop:AddLeftGroupbox("Tools", "hammer")
 local tools, toolByLabel = {}, {}
 for _, folder in ipairs({ SPARE:FindFirstChild("Tools"), workspace.PartsStore:FindFirstChild("GasStation") and workspace.PartsStore.GasStation:FindFirstChild("Tools") }) do
     for _, t in ipairs(folder and folder:GetChildren() or {}) do
@@ -2834,16 +2834,16 @@ local shopNames, garageNames = {}, {}
 for _, n in ipairs(PLACE_NAMES) do
     if n:find("^My garage") or n:find("^Garage ") or n:find("^Auction") then garageNames[#garageNames + 1] = n else shopNames[#shopNames + 1] = n end
 end
-local TpBox = Tabs.Teleport:AddLeftGroupbox("Shops & places")
+local TpBox = Tabs.Teleport:AddLeftGroupbox("Shops & places", "store")
 local placeDrop = TpBox:AddDropdown("FIU_Place", { Text = "Place", Values = shopNames, AllowNull = true })
 TpBox:AddButton({ Text = "Go", Func = run("tp", function() if placeDrop.Value then goPlace(placeDrop.Value) end end) })
-local GarBox = Tabs.Teleport:AddLeftGroupbox("Garages")
+local GarBox = Tabs.Teleport:AddLeftGroupbox("Garages", "warehouse")
 GarBox:AddLabel("Teleports to the front door of each garage.", true)
 local garDrop = GarBox:AddDropdown("FIU_GaragePlace", { Text = "Garage", Values = garageNames, AllowNull = true })
 GarBox:AddButton({ Text = "Go", Func = run("tp garage", function() if garDrop.Value then goPlace(garDrop.Value) end end) })
 TpBox:AddToggle("FIU_BringCar", { Text = "Bring selected car", Default = CFG.bringCar,
     Tooltip = "Spawns the car picked in the Garage tab next to you when you teleport", Callback = set("bringCar") })
-local PlBox = Tabs.Teleport:AddRightGroupbox("Players")
+local PlBox = Tabs.Teleport:AddRightGroupbox("Players", "users")
 local plDrop = PlBox:AddDropdown("FIU_Player", { Text = "Player", SpecialType = "Player", ExcludeLocalPlayer = true })
 PlBox:AddButton({ Text = "Go to player", Func = run("tp player", function()
     local p = plDrop.Value
@@ -2855,19 +2855,19 @@ end) })
 end
 do
 -- Settings
-local Spend = Tabs.Settings:AddRightGroupbox("Spending")
+local Spend = Tabs.Settings:AddRightGroupbox("Spending", "wallet")
 Spend:AddSlider("FIU_Reserve", { Text = "Always keep", Default = CFG.reserve, Min = 0, Max = 1000000, Rounding = 0, Suffix = "€",
     Tooltip = "Buying never takes your money below this", Callback = set("reserve") })
-local PlayerBox = Tabs.Settings:AddRightGroupbox("Player")
+local PlayerBox = Tabs.Settings:AddRightGroupbox("Player", "user")
 PlayerBox:AddToggle("FIU_SpeedOn", { Text = "Walk speed", Default = CFG.speedOn, Callback = function(v)
     CFG.speedOn = v
     if not v then local h = hum(); if h then h.WalkSpeed = 16 end end
 end })
 PlayerBox:AddSlider("FIU_Speed", { Text = "Speed", Default = CFG.walkSpeed, Min = 16, Max = 120, Rounding = 0, Callback = set("walkSpeed") })
 PlayerBox:AddToggle("FIU_AntiAfk", { Text = "Anti-AFK", Default = CFG.antiAfk, Callback = set("antiAfk") })
-local LogBox = Tabs.Settings:AddLeftGroupbox("Log")
+local LogBox = Tabs.Settings:AddLeftGroupbox("Log", "scroll-text")
 logLabel = LogBox:AddLabel("-", true)
-local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
+local Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 end
 Library:OnUnload(unload)
@@ -2877,8 +2877,10 @@ SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_StaffBoard", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
+-- CruelHub look: near-black with a crimson accent (still switchable under Settings > Themes)
+ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" })
 SaveManager:BuildConfigSection(Tabs.Settings)
-ThemeManager:ApplyToTab(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings, "palette")
 SaveManager:LoadAutoloadConfig()
 -- autosave: settings changes go into your autoload config within ~5 s, so nothing needs a manual "Save config"
 -- (no autoload set = an "autosave" config is made and set as autoload). Polls the encoded config instead of hooking
@@ -3023,7 +3025,7 @@ end)
 
 do
 -- Players tab: ESP + garage viewer (every player's PlayerData.Garage replicates, wear values included)
-local PEsp = Tabs.Players:AddLeftGroupbox("Player ESP")
+local PEsp = Tabs.Players:AddLeftGroupbox("Player ESP", "scan-eye")
 PEsp:AddToggle("FIU_PlEsp", { Text = "Player ESP", Default = CFG.playerEsp,
     Tooltip = "Name, cars sold, distance and the cars they have out", Callback = set("playerEsp") })
     :AddColorPicker("FIU_PlCol", { Default = CFG.playerColor, Title = "Player label color", Callback = function(c) CFG.playerColor = c end })
@@ -3032,7 +3034,7 @@ PEsp:AddToggle("FIU_PlCars", { Text = "Titles over their cars", Default = CFG.pl
 PEsp:AddToggle("FIU_PlOutline", { Text = "Outline players", Default = CFG.playerOutline, Callback = set("playerOutline") })
 PEsp:AddSlider("FIU_PlDist", { Text = "Max distance", Default = CFG.playerMaxDist, Min = 100, Max = 6000, Rounding = 0, Suffix = " studs", Callback = set("playerMaxDist") })
 
-local GView = Tabs.Players:AddRightGroupbox("Garage viewer")
+local GView = Tabs.Players:AddRightGroupbox("Garage viewer", "binoculars")
 local gvDrop = GView:AddDropdown("FIU_GvPlayer", { Text = "Player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true })
 local gvLabel = GView:AddLabel("Pick a player", true)
 local function valuesCondition(values)
@@ -3188,9 +3190,9 @@ do
         end
     end)
 
-    local GoldBox = Tabs.Gold:AddLeftGroupbox("Gold price")
+    local GoldBox = Tabs.Gold:AddLeftGroupbox("Gold price", "trending-up")
     local priceLabel = GoldBox:AddLabel("-", true)
-    local ConBox = Tabs.Gold:AddRightGroupbox("Buy contract")
+    local ConBox = Tabs.Gold:AddRightGroupbox("Buy contract", "file-signature")
     ConBox:AddLabel("Buys gold only when the price is at or under your max. Most gold per euro = the lowest max you can wait for. Selling gold back costs 20% tax.", true)
     ConBox:AddDropdown("FIU_GoldMode", { Text = "Contract", Values = { "Amount", "Budget" }, Default = G.c.mode,
         Tooltip = "Amount: buy this many gold. Budget: spend up to this many euros.",
@@ -3408,12 +3410,12 @@ do
         if not farm.yielded then farm.on = false end
     end
 
-    local DistBox = Tabs.Drive:AddLeftGroupbox("Distance owed")
+    local DistBox = Tabs.Drive:AddLeftGroupbox("Distance owed", "route")
     local distLabel = DistBox:AddLabel("-", true)
     DistBox:AddSlider("FIU_KmPerCar", { Text = "Km needed per car sold", Default = D.kmPerCar, Min = 0.1, Max = 10, Rounding = 1, Suffix = " km",
         Tooltip = "Learned from the server's message when it refuses a sale for distance; set it by hand if you know it",
         Callback = function(v) D.kmPerCar = v; saveD() end })
-    local FarmBox = Tabs.Drive:AddRightGroupbox("Distance farm")
+    local FarmBox = Tabs.Drive:AddRightGroupbox("Distance farm", "gauge")
     FarmBox:AddLabel("Spawns the car picked in the Garage tab on the route, seats you and drives until your distance debt is paid plus the extra below. Get out of the car to stop.", true)
     local farmToggle = FarmBox:AddToggle("FIU_DriveFarm", { Text = "Farm distance", Default = false, Callback = function(v)
         if v and not farm.on then
@@ -3521,7 +3523,7 @@ end
 
 do
 -- Server hop tab (settings live in fiu_hop.json, not SaveManager, so they survive the teleport before autoload)
-local HopBox = Tabs.Hop:AddLeftGroupbox("Auto hop")
+local HopBox = Tabs.Hop:AddLeftGroupbox("Auto hop", "shuffle")
 HopBox:AddLabel("Hops to servers where the other players have sold few cars (less competition at the junkyard). Reloads this script after every hop.", true)
 hopToggle = HopBox:AddToggle("FIU_HopAuto", { Text = "Auto hop until match", Default = HOP.auto,
     Tooltip = "Checks this server, hops if it fails, repeats after every teleport",
@@ -3544,7 +3546,7 @@ HopBox:AddInput("FIU_HopHardMax", { Text = "Hard block at Cars Sold", Default = 
 HopBox:AddSlider("FIU_HopMaxP", { Text = "Max other players", Default = HOP.maxp, Min = 1, Max = 21, Rounding = 0,
     Tooltip = "Only hop into servers with at most this many players", Callback = function(v) HOP.maxp = v; saveHop() end })
 local hopLabel = HopBox:AddLabel("-", true)
-local HopInfo = Tabs.Hop:AddRightGroupbox("This server")
+local HopInfo = Tabs.Hop:AddRightGroupbox("This server", "server")
 local hopServerLabel = HopInfo:AddLabel("-", true)
 HopInfo:AddButton({ Text = "Rescan this server", Func = function() task.spawn(checkServer) end })
 HopInfo:AddButton({ Text = "Hop once now", Func = function()
@@ -3561,7 +3563,7 @@ HopInfo:AddButton({ Text = "Forget visited servers", Func = function()
     HOP.visited = { [game.JobId] = os.time() }; saveHop(); notify("Visited list cleared.")
 end })
 
-local ModBox = Tabs.Hop:AddRightGroupbox("Anti-mod")
+local ModBox = Tabs.Hop:AddRightGroupbox("Anti-mod", "shield-alert")
 ModBox:AddLabel("Leaves as soon as anyone ranked above Member in the game's group (.workspace) is in the server, including when you join.", true)
 ModBox:AddToggle("FIU_AntiMod", { Text = "Leave when staff join", Default = HOP.antiMod,
     Callback = function(v) HOP.antiMod = v; saveHop(); if v then task.spawn(STAFF.scan) end end })

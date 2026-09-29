@@ -41,6 +41,7 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 
 **Published under CruelHub (2026-09-29):**
 - The window title is "CruelHub" and the footer says "Fix It Up · …".
+- Branded look: a skull icon on the title, lucide icons on every tab and groupbox (unknown names just show nothing), and a default theme via ThemeManager:SetDefaultTheme (bg 0c0a0b, main 161214, accent crimson e0233c, outline 2a1d20). The call must come before ApplyToTab.
 - The LuaLoader already maps GameId 7673659635 to fix-it-up/fiu_main.lua, so pushing Lee-sStuff is the release.
 - cleanCar disables the Humanoid Seated state for the whole wash; the user saw the character sit in the car mid-wash.
 
