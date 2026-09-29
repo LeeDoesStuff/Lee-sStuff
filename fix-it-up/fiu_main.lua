@@ -702,7 +702,11 @@ local function cleanCar(e)
     if not wash then return false, "no free car wash (all taken or not loaded)" end
     local backMe, oldCar = hrp() and hrp().CFrame, carOf(e)
     local backCar = oldCar and oldCar:GetPivot()
+    -- standing next to the car (prompt, washing) touched its seats and sat you down mid-wash: no sitting until done
+    local sitHum = hum()
+    if sitHum then sitHum.Sit = false; sitHum:SetStateEnabled(Enum.HumanoidStateType.Seated, false) end
     local function restore()
+        if sitHum then sitHum:SetStateEnabled(Enum.HumanoidStateType.Seated, true) end
         if backCar then spawnCar(e, backCar + Vector3.new(0, 2, 0)) end
         if backMe then tpTo(backMe) end
     end
@@ -1739,7 +1743,7 @@ end
 notify = function(msg) Library:Notify(msg, 5) end
 
 local Window = Library:CreateWindow({
-    Title = "Fix It Up", Footer = "junkyard tiers · auto flip · repair · teleports",
+    Title = "CruelHub", Footer = "Fix It Up · junkyard tiers · auto flip · repair · distance farm",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 -- unloaded by a newer copy while we were still setting up: don't leave a dead menu behind

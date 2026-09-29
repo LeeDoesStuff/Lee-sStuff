@@ -39,6 +39,11 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 - Buttons now set `manualPending`: the farm steps out and resumes afterwards. Teleport buttons stay refused while it drives.
 - Clean and refuel were both verified live; the protocols are in the spec.
 
+**Published under CruelHub (2026-09-29):**
+- The window title is "CruelHub" and the footer says "Fix It Up · …".
+- The LuaLoader already maps GameId 7673659635 to fix-it-up/fiu_main.lua, so pushing Lee-sStuff is the release.
+- cleanCar disables the Humanoid Seated state for the whole wash; the user saw the character sit in the car mid-wash.
+
 **Reloading:** reload only when auto isn't busy repairing, selling or buying. Unpinned parts get deleted after 90 s. "Busy: farming distance" is fine. After a reload, turn FIU_DriveFarm back on; its default is off.
 
 **Garage:** the Default garage has 3 slots. The user's Merquis Maibac S650 is locked as a favorite and is no longer parked at the sell NPC.
