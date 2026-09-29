@@ -85,7 +85,7 @@ local CFG = {
     evolve = false, equipBest = false,
     autoJoin = false, team = "Smaller team", joinDelay = 8,
     antiIdle = true,
-    autoRespawn = false, autoResupply = false, walkToCamp = false, spawnPriority = "Strongest ready", spawnPreferred = 0, spawnDelay = 0,
+    campLoop = false, autoRespawn = false, autoResupply = false, walkToCamp = false, spawnPriority = "Strongest ready", spawnPreferred = 0, spawnDelay = 0,
     keepState = false, keepStateName = "Attack", keepStateEvery = 8, manualPause = 20,
     autoRush = false, rushRange = 120, autoVolley = false,
     autoAttack = false, attackRange = 8, attackPlayers = true, attackTroops = true, faceTarget = false,
@@ -535,27 +535,74 @@ local function friendlyCamps()
     return out
 end
 
+-- walks the commander to walker.target with PathfindingService waypoints (normal walking, no teleport: the server
+-- validates movement). Falls back to a straight MoveTo when no path is found. Path is recomputed every 3 s or when stuck.
+local PFS = game:GetService("PathfindingService")
+local walker = { target = nil, points = nil, i = 0, builtAt = 0, builtFor = nil, lastPos = nil, stuckSince = nil }
+local function buildPath(from, to)
+    local path = PFS:CreatePath({ AgentRadius = 2.5, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = 6 })
+    local ok = pcall(path.ComputeAsync, path, from, to)
+    if ok and path.Status == Enum.PathStatus.Success then return path:GetWaypoints() end
+    return nil
+end
+task.spawn(function()
+    while running do
+        local char = lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local r = root(char)
+        local target = walker.target
+        if target and hum and r and hum.Health > 0 and not blocked() and inGame() then
+            local stuck = false
+            if walker.lastPos and (r.Position - walker.lastPos).Magnitude < 0.4 then
+                walker.stuckSince = walker.stuckSince or os.clock()
+                stuck = os.clock() - walker.stuckSince > 1.5
+            else
+                walker.stuckSince = nil
+            end
+            walker.lastPos = r.Position
+            if not walker.points or walker.builtFor ~= target or os.clock() - walker.builtAt > 3 or stuck then
+                walker.points, walker.i, walker.builtAt, walker.builtFor, walker.stuckSince = buildPath(r.Position, target), 2, os.clock(), target, nil
+                if stuck then hum.Jump = true end
+            end
+            local pts = walker.points
+            if pts and pts[walker.i] then
+                local wp = pts[walker.i]
+                if Vector3.new(wp.Position.X - r.Position.X, 0, wp.Position.Z - r.Position.Z).Magnitude < 3.5 then
+                    walker.i += 1
+                    wp = pts[walker.i] or wp
+                end
+                if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
+                hum:MoveTo(wp.Position)
+            else
+                hum:MoveTo(target)
+            end
+        elseif walker.points then
+            walker.points, walker.builtFor, walker.lastPos, walker.stuckSince = nil, nil, nil, nil
+        end
+        task.wait(0.15)
+    end
+end)
+
 local function doResupply()
-    if attr("CurrentUnitWiped") ~= true or attr("IsDead") == true or attr("AwaitingRespawnUnit") == true then return end
+    if attr("CurrentUnitWiped") ~= true or attr("IsDead") == true or attr("AwaitingRespawnUnit") == true then walker.target = nil; return end
     if os.clock() - spawnState.lastTry < 4 then return end
     local r = root(lp.Character)
     if not r then return end
-    local cd = (tonumber(attr("SupplyPointCooldownEndsAt")) or 0) - now()
-    if cd > 0 then status.battle = ("army wiped · supply cooldown %ds"):format(math.ceil(cd)); return end
     local best, bd = nil, math.huge
     for _, c in ipairs(friendlyCamps()) do
         local d = (c.pos - r.Position).Magnitude
         if not c.enemy and d < bd then best, bd = c, d end
     end
-    if not best then status.battle = "army wiped · no friendly camp free of enemies"; return end
-    if bd > best.prompt.MaxActivationDistance then
-        status.battle = ("army wiped · nearest camp %dm away%s"):format(math.floor(bd), CFG.walkToCamp and " (walking)" or "")
-        if CFG.walkToCamp then
-            local hum = lp.Character:FindFirstChildOfClass("Humanoid")
-            if hum then hum:MoveTo(best.pos) end -- normal walking, no teleport (server validates movement)
-        end
+    if not best then walker.target = nil; status.battle = "army wiped · no friendly camp free of enemies"; return end
+    if bd > best.prompt.MaxActivationDistance - 1 then
+        local walking = CFG.walkToCamp or CFG.campLoop
+        status.battle = ("army wiped · nearest camp %dm away%s"):format(math.floor(bd), walking and " (walking)" or "")
+        if walking then walker.target = best.pos end
         return
     end
+    walker.target = nil
+    local cd = (tonumber(attr("SupplyPointCooldownEndsAt")) or 0) - now()
+    if cd > 0 then status.battle = ("army wiped · at camp · supply cooldown %ds"):format(math.ceil(cd)); return end
     local slot, u = pickSlot()
     if not slot then status.battle = "army wiped · every unit on cooldown"; return end
     spawnState.lastTry, spawnState.supply = os.clock(), nil
@@ -578,10 +625,11 @@ task.spawn(function()
         if not blocked() then
             if CFG.autoJoin and inLobby() then guard("join", doJoin) end
             if inGame() then
-                if CFG.autoRespawn then guard("respawn", doDeathRespawn) end
-                if CFG.autoResupply then guard("resupply", doResupply) end
+                if CFG.autoRespawn or CFG.campLoop then guard("respawn", doDeathRespawn) end
+                if CFG.autoResupply or CFG.campLoop then guard("resupply", doResupply) else walker.target = nil end
             end
         end
+        if blocked() or not inGame() then walker.target = nil end
         if inGame() then
             status.match = ("in match · %s · army %s/%s · round %s"):format(lp.Team and lp.Team.Name or "?", tostring(attr("CurrentUnitAliveCount") or "?"),
                 tostring(attr("CurrentUnitMaxCount") or "?"), tostring(workspace:GetAttribute("RoundState")))
@@ -1097,7 +1145,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Command An Army · v1.1 · rewards · units · match · army · combat · ESP",
+    end)(), Footer = "Command An Army · v1.2 · rewards · units · match · army · combat · ESP",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -1161,13 +1209,18 @@ local matchLabel = MA:AddLabel("-", true)
 
 -- Battle
 local BA = Tabs.Battle:AddLeftGroupbox("Auto respawn units", "refresh-cw")
+BA:AddToggle("CA_CampLoop", { Text = "AUTO RESPAWN AT CAMP (all-in-one)",
+    Tooltip = "Turns on everything below: instant respawn after your commander dies, and when your army is wiped, walks (pathfinding) to the nearest safe friendly camp and spawns your next unit there.",
+    Default = CFG.campLoop, Callback = set("campLoop") })
+BA:AddDivider()
+BA:AddLabel("Or pick pieces:", true)
 BA:AddLabel("Commander died: skips the 15 s death timer and picks your unit right away.", true)
 BA:AddToggle("CA_Respawn", { Text = "Auto respawn after death", Default = CFG.autoRespawn, Callback = set("autoRespawn") })
 BA:AddSlider("CA_SpawnDelay", { Text = "Wait before picking (s)", Default = CFG.spawnDelay, Min = 0, Max = 10, Rounding = 1, Callback = set("spawnDelay") })
 BA:AddDivider()
 BA:AddLabel("Army wiped but you're alive: at a friendly supply camp, opens it and starts your next unit.", true)
 BA:AddToggle("CA_Resupply", { Text = "Auto resupply at camp", Default = CFG.autoResupply, Callback = set("autoResupply") })
-BA:AddToggle("CA_WalkCamp", { Text = "Walk to nearest friendly camp", Tooltip = "Normal walking (Humanoid:MoveTo), no teleport. Straight line, so walls can block it.",
+BA:AddToggle("CA_WalkCamp", { Text = "Walk to nearest friendly camp", Tooltip = "Normal walking along a pathfinding route (goes around walls), no teleport.",
     Default = CFG.walkToCamp, Callback = set("walkToCamp") })
 local BA2 = Tabs.Battle:AddRightGroupbox("Which unit", "user-check")
 BA2:AddDropdown("CA_SpawnPriority", { Text = "Pick", Values = { "Strongest ready", "Slot order" }, Default = CFG.spawnPriority, Callback = set("spawnPriority") })
@@ -1282,5 +1335,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v1.1 in place " .. game.PlaceId)
+log("loaded v1.2 in place " .. game.PlaceId)
 Library:Notify("Command An Army v1 ready — RightCtrl toggles the UI. Everything starts off.", 5)

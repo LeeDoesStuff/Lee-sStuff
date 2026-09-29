@@ -41,3 +41,5 @@ Measured live 2026-09-27:
 - Auto heal spammed 291× in 2 s (IsHealing replicates late); now 3 s local lockout.
 
 See [game-recon-full-progression](../notes/game-recon-checklist.md), [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md).
+
+**v1.2 (2026-09-29)**: Battle tab "AUTO RESPAWN AT CAMP (all-in-one)" toggle (`CFG.campLoop`) turns on death respawn + resupply + walk-to-camp together. Walk-to-camp now follows PathfindingService waypoints (recomputed every 3 s / when stuck, jumps on Jump waypoints, straight MoveTo fallback) instead of a straight line, and keeps walking while the camp is on cooldown. Not tested live yet.
