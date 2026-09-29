@@ -37,15 +37,24 @@ Daily rewards, quests, codes, banner summons, ascension and evolution, equip bes
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/command-an-army/caa_farm.lua"))()
 ```
 
-### [Fix It Up!](fix-it-up/) · parked
-Junkyard car tiers with ESP, auto buy → repair → sell, garage tools, the shop and teleports. Favorited cars are never sold.
+### [Fix It Up!](fix-it-up/)
+A flip farm with one menu tab for each part of the game:
+- **Junkyard:** tier and spawn-% ESP on every junk car, a clickable list with one-click Buy, rare-spawn alerts, and a lookup for any car's rarity, engines, cost and profit.
+- **Auto:** a buy → repair → sell loop that buys by tier or by spawn %, with a price cap, a minimum profit and a money reserve. It can clean and paint after each repair and tracks real profit (buy price and parts taken off). A Home spot of your choosing is where you're sent back after anything that teleports you.
+- **Garage:** repair at the quietest of 4 shops, plus sell, refuel, clean and paint from anywhere, with a sell-timer tag over the picked car. Favorites are locked and never sold, and rare buys can lock themselves by tier or by spawn %.
+- **Parts:** the parts shop and tools, engine and gearbox swaps, and car-to-car part moves, tires included.
+- **Drive:** shows the distance you owe for the cars you've sold, plus a highway farm that pays it off (or runs with no limit) and pauses for auto flips.
+- **Players, Gold, Teleport:** player ESP with titles over their cars, a garage viewer, a gold price readout with buy contracts, and teleports to every shop, garage and player.
+- **Server hop:** hops until the other players have sold few cars, with a hard block for big sellers. Anti-mod leaves (or hops) the moment anyone ranked above Member in the game's group joins, and a live list shows where every staff member is.
+
+Settings save automatically, and only cars the script bought are ever sold.
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/fix-it-up/fiu_main.lua"))()
 ```
 *After a server hop it reloads from your executor's workspace folder, so to keep it across hops save it there as `fiu_main.lua` and start it with `loadstring(readfile("fiu_main.lua"))()`.*
 
 ### [Fix It Up! server hopper](fix-it-up/) · parked
-Hops public servers until every other player has fewer than N Cars Sold.
+Hops public servers until every other player has fewer than N Cars Sold. This is the standalone version of the main script's Server hop tab; the main script closes it if both are running.
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/fix-it-up/fiu_hop.lua"))()
 ```
