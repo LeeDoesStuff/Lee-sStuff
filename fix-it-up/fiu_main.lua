@@ -245,13 +245,18 @@ local function ground(pos) -- floor under pos, cast from just above so roofs don
     return hit and hit.Position + Vector3.new(0, 3, 0) or pos + Vector3.new(0, 3, 0)
 end
 
--- RequestStreamAroundAsync can yield forever despite its timeout arg (froze auto as "busy: selling" at the sell NPC
--- for 15+ min, 2026-09-29): run it on its own thread and never wait longer than the timeout
+-- RequestStreamAroundAsync can stop answering for the rest of a session, timeout arg or not (2026-09-29 from 11:27:
+-- every call hung for good; it froze auto at the sell NPC, then waiting out a timeout per call doubled repair times).
+-- After one timeout, skip it until a stuck call finally returns: a jam costs one timeout, not one per teleport.
+-- Callers wait for the parts they need themselves.
+local STREAM = { jammed = false }
 local function streamAt(pos, timeout)
+    if STREAM.jammed then return end
     local done = false
-    task.spawn(function() pcall(function() LP:RequestStreamAroundAsync(pos, timeout) end); done = true end)
+    task.spawn(function() pcall(function() LP:RequestStreamAroundAsync(pos, timeout) end); done = true; STREAM.jammed = false end)
     local t = os.clock()
-    repeat task.wait(0.1) until done or os.clock() - t > timeout
+    repeat task.wait() until done or os.clock() - t > timeout
+    if not done then STREAM.jammed = true end
 end
 
 local function tpTo(target) -- CFrame or Vector3
@@ -268,7 +273,9 @@ local function tpTo(target) -- CFrame or Vector3
     local r = hrp()
     if not r then return false end
     local cf = typeof(target) == "Vector3" and CFrame.new(target) or target
-    streamAt(cf.Position, 3)
+    -- ponytail: 64 = Roblox's default StreamingMinRadius (the game's value isn't readable from the client); hops
+    -- inside it (machine to machine, hood re-stands) are already loaded
+    if (cf.Position - r.Position).Magnitude > 64 then streamAt(cf.Position, 3) end
     r.AssemblyLinearVelocity, r.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
     char():PivotTo(cf)
     CFG.lastTp = os.clock() -- "Return after tp" goes home only after actions that moved you
@@ -1727,7 +1734,6 @@ List:AddButton({ Text = "Teleport to car", Func = run("tp junk", function()
     local j = junkByLabel[junkDrop.Value]
     if j and j.model.Parent then tpTo(j.model:GetPivot() * CFrame.new(0, 3, 8)) end
 end) })
-local quoteLabel
 local function queued(what, f) -- one job at a time: wait for a running repair/sell instead of refusing
     if manualBuy then notify("Already busy with a buy") return end
     manualBuy = true -- the auto loop starts nothing new while this is pending
@@ -1753,10 +1759,9 @@ List:AddButton({ Text = "Buy car", Tooltip = "Teleports to the car and buys it a
     if not j then notify("Pick a car in the list first") return end
     queued("buying " .. j.name, function()
         local _, msg = buyJunk(j, { max = math.huge }) -- you picked it: accept whatever it costs
-        quoteLabel:SetText(msg); log(msg); notify(msg)
+        log(msg); notify(msg)
     end)
 end })
-quoteLabel = List:AddLabel("", true)
 local junkLabelBox = List:AddLabel("-", true)
 -- the junk list as clickable rows: clicking one picks that car in the dropdown above (for Buy / Teleport)
 do
@@ -3335,20 +3340,23 @@ do
             if farm.worker then return end
             farm.worker = true
             task.spawn(function()
-                while farm.on and running do
-                    if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on or not running end
-                    if not (farm.on and running) then break end
-                    busy, busyWhat = true, "farming distance"
-                    farm.yielded = false
-                    local ok, err = pcall(farmRun)
-                    busy = false
-                    if not ok then farm.status = "error: " .. tostring(err); log("drive farm: " .. tostring(err)); break end
-                    if not (farm.yielded and farm.on) then break end
-                    -- the auto loop buys / repairs / sells now (it runs every 2 s once busy is free); drive again after
-                    local t = os.clock()
-                    repeat task.wait(1) until (not busy and not (CFG.farmYield and farm.pending())) or not farm.on or os.clock() - t > 600
-                    task.wait(1)
-                end
+                local okLoop, errLoop = pcall(function() -- any error still reaches the cleanup below (else worker stays set)
+                    while farm.on and running do
+                        if busy then farm.status = "waiting for " .. tostring(busyWhat) repeat task.wait(0.5) until not busy or not farm.on or not running end
+                        if not (farm.on and running) then break end
+                        busy, busyWhat = true, "farming distance"
+                        farm.yielded = false
+                        local ok, err = pcall(farmRun)
+                        busy = false
+                        if not ok then farm.status = "error: " .. tostring(err); log("drive farm: " .. tostring(err)); break end
+                        if not (farm.yielded and farm.on) then break end
+                        -- the auto loop buys / repairs / sells now (it runs every 2 s once busy is free); drive again after
+                        local t = os.clock()
+                        repeat task.wait(1) until (not busy and not (CFG.farmYield and farm.pending())) or not farm.on or os.clock() - t > 600
+                        task.wait(1)
+                    end
+                end)
+                if not okLoop then farm.status = "error: " .. tostring(errLoop); log("drive farm: " .. tostring(errLoop)) end
                 farm.on = false
                 farm.worker = nil
                 CFG.farmCarGuid = nil

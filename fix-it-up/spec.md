@@ -62,6 +62,8 @@ The sale pays `BuyPrice × (1 + ProfitMultiplier)` at 100 % condition. For examp
    - Hold the part inside it with a Heartbeat `PivotTo`; we get network ownership of our own parts, even ~900 studs away.
    - Then click the machine's ClickDetector: GrindingMachine `Button` (14.3 studs), PartsWasher `Faucet` (12), BatteryCharger `Button` (10).
    - Wear goes to 0 after about: washer 10 s, charger 13 s, grinder 16 s. Machines run in parallel.
+   - Re-measured 2026-09-29 after the clicks: washer 8 s, charger 11 s, grinder 14–16 s. The `Wear` attribute jumps straight to 0 at the end with no countdown, so you can't tell early whether a click took. All 7 first clicks landed with a 0.25 s wait after each teleport.
+   - The buttons only reach 10–14 studs and the server checks that distance, so you have to teleport to each machine. The teleport itself is instant.
    - Clicking an empty machine gives "There is no part to grind".
 4. **Install:** `car.PartsEvent:FireServer("ReapplyPart", partModel)`. It works from 546 studs.
 5. **Replace** parts with no RepairMachine (Sparkplugs, Injectors, TimingBelt, …):
@@ -70,6 +72,20 @@ The sale pays `BuyPrice × (1 + ProfitMultiplier)` at 100 % condition. For examp
    - Install it, then `Events.PartsEvent:FireServer("DeletePart", oldPart)`.
 
 **Repair spot:** the user wants the car on the open floor of the Dealership shop at about (-533.6, 1.8, -799), not up on a lift. The script spawns it there with RemoteLoad. A full repair (3 parts + 1 replacement) took 30 s.
+
+**Repair timeline (2026-09-29, Ontel Astron, 7 machine parts + 1 replacement): 34 s in total.**
+
+| Seconds | Step |
+| --- | --- |
+| 0–7 | Teleport, spawn, hood (the hood ignores clicks for about 4.5 s after a spawn) |
+| 7–11 | Buy the replacement, place the parts |
+| 11–14 | Clicks |
+| 14–30 | Machines |
+| 30–34 | Install |
+
+During the streaming jam, the same flow took 70–75 s.
+
+**Never reload fiu_main mid-repair.** Unloading drops the Heartbeat pins, and the game's client deletes loose parts 90 s after `DroppedAt`. Wait until the status isn't "busy: repairing/selling/buying"; "farming distance" is safe.
 
 **Repair shops:**
 - `Buildings.Dealership.Folder.Station1/2`: 6 grinders, 3 washers, 3 chargers, and lifts at about (-563, 7, -800). The user calls this the "secondary garage" and prefers it because it's quiet.
@@ -91,6 +107,10 @@ The sale pays `BuyPrice × (1 + ProfitMultiplier)` at 100 % condition. For examp
 ## Streaming
 
 StreamingEnabled is on. Machines, the sell NPC and far junk cars exist as empty models until streamed in. Use `LocalPlayer:RequestStreamAroundAsync(pos)` before touching them.
+
+**RequestStreamAroundAsync can jam for the whole session (2026-09-29).** From about 11:27 every call hung forever, timeout argument or not, even calls aimed at the player's own spot. The first hang froze auto on "busy: selling". A per-call timeout then made every teleport cost 3 s and every spawn or machine scan 5 s, and a repair took 70 s instead of 35 s. Flows still worked during the jam with no streaming, because the sell NPC, the Dealership stations and the home interior were there anyway. fiu_main's `streamAt` now:
+- skips streaming after one timeout, until a stuck call returns;
+- skips it for hops under 64 studs.
 
 ## Other remotes seen
 
