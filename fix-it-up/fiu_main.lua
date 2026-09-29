@@ -245,6 +245,15 @@ local function ground(pos) -- floor under pos, cast from just above so roofs don
     return hit and hit.Position + Vector3.new(0, 3, 0) or pos + Vector3.new(0, 3, 0)
 end
 
+-- RequestStreamAroundAsync can yield forever despite its timeout arg (froze auto as "busy: selling" at the sell NPC
+-- for 15+ min, 2026-09-29): run it on its own thread and never wait longer than the timeout
+local function streamAt(pos, timeout)
+    local done = false
+    task.spawn(function() pcall(function() LP:RequestStreamAroundAsync(pos, timeout) end); done = true end)
+    local t = os.clock()
+    repeat task.wait(0.1) until done or os.clock() - t > timeout
+end
+
 local function tpTo(target) -- CFrame or Vector3
     local h = hum()
     if h and h.SeatPart then -- a seated character drags the car along or snaps back: get out first
@@ -259,7 +268,7 @@ local function tpTo(target) -- CFrame or Vector3
     local r = hrp()
     if not r then return false end
     local cf = typeof(target) == "Vector3" and CFrame.new(target) or target
-    pcall(function() LP:RequestStreamAroundAsync(cf.Position, 3) end)
+    streamAt(cf.Position, 3)
     r.AssemblyLinearVelocity, r.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
     char():PivotTo(cf)
     CFG.lastTp = os.clock() -- "Return after tp" goes home only after actions that moved you
@@ -342,7 +351,7 @@ local function spawnCar(e, cf)
     local function ready(c)
         return c and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") and c.Values:FindFirstChild("Engine")
     end
-    pcall(function() LP:RequestStreamAroundAsync(cf.Position, 5) end) -- a car spawned out of streaming range arrives empty
+    streamAt(cf.Position, 5) -- a car spawned out of streaming range arrives empty
     for try = 1, 3 do
         local ok, err = pcall(function() Events.Vehicles.RemoteLoad:InvokeServer(e, cf) end)
         if not ok then log("spawn failed: " .. tostring(err)) end
@@ -387,7 +396,7 @@ function ST.root(name)
         end
     end
     local r = find()
-    if not r then pcall(function() LP:RequestStreamAroundAsync(at, 5) end); r = find() end
+    if not r then streamAt(at, 5); r = find() end
     return r
 end
 -- "Quietest": the shop with the fewest other players within 80 studs, re-picked at most every 90 s so a repair stays put
@@ -444,7 +453,7 @@ end
 
 local function machines()
     local root = stationRoot()
-    pcall(function() LP:RequestStreamAroundAsync(liftCF().Position, 5) end)
+    streamAt(liftCF().Position, 5)
     local list = {}
     for _, st in ipairs(root:GetChildren()) do
         if st.Name:match("^Station") then
@@ -669,7 +678,7 @@ end
 local function cleanCar(e)
     local wash = nearest(workspace.Map.CarWashes:GetChildren())
     if not wash then return false, "no car wash" end
-    pcall(function() LP:RequestStreamAroundAsync(wash:GetPivot().Position, 5) end)
+    streamAt(wash:GetPivot().Position, 5)
     local det = wash:FindFirstChild("Detector") or wash:WaitForChild("Detector", 3)
     if not det then return false, "car wash not loaded" end
     local backMe, oldCar = hrp() and hrp().CFrame, carOf(e)
@@ -709,7 +718,7 @@ local function paintCar(e, color, material)
     if myMoney() - price < CFG.reserve then return false, "reserve" end
     local booth = workspace.Map.FirstCity.Buildings["Pitstop(Large)"].Model:FindFirstChild("CarPaint")
     if not booth then return false, "paint booth not found" end
-    pcall(function() LP:RequestStreamAroundAsync(booth:GetPivot().Position, 5) end)
+    streamAt(booth:GetPivot().Position, 5)
     local det = booth:FindFirstChild("Detector") or booth:WaitForChild("Detector", 3)
     if not det then return false, "paint booth not loaded" end
     -- afterwards the car goes back where it was (if it was out) and so do you
@@ -744,7 +753,7 @@ local function sellCar(e, manual)
     local left = sellCooldownLeft(e)
     if left > 0 then return false, ("sell timer: %dm %02ds"):format(left // 60, left % 60) end
     local npc = workspace.Utils.SellCar
-    pcall(function() LP:RequestStreamAroundAsync(npc:GetPivot().Position, 5) end)
+    streamAt(npc:GetPivot().Position, 5)
     local pr = npc:FindFirstChild("Prompt") or npc:WaitForChild("Prompt", 5)
     if not pr then return false, "sell NPC not loaded" end
     -- the prompt sells whatever car is in the zone: never with another of your cars there
@@ -1154,7 +1163,7 @@ local function goHome(force)
     local pos = Vector3.new(h[1], h[2], h[3])
     local r = hrp()
     if r and (r.Position - pos).Magnitude < 10 then return end
-    pcall(function() LP:RequestStreamAroundAsync(pos, 5) end)
+    streamAt(pos, 5)
     tpTo(CFrame.lookAt(pos, pos + Vector3.new(h[4], 0, h[5])))
 end
 
@@ -1259,7 +1268,7 @@ local PLACES = {
 local function streamed(model, name)
     local p = model:FindFirstChild(name, true)
     if not p then
-        pcall(function() LP:RequestStreamAroundAsync(model:GetPivot().Position, 5) end)
+        streamAt(model:GetPivot().Position, 5)
         p = model:FindFirstChild(name, true)
     end
     if not p then return model:GetPivot().Position end
@@ -2431,7 +2440,7 @@ do
         local lift
         for _, l in ipairs(folder:GetChildren()) do if l.Name == "Lift" and l:FindFirstChild("Up") then lift = l break end end
         if not lift then return nil, "no lift found" end
-        pcall(function() LP:RequestStreamAroundAsync(lift:GetPivot().Position, 5) end)
+        streamAt(lift:GetPivot().Position, 5)
         local up = lift.Up:FindFirstChildWhichIsA("ClickDetector")
         local down = lift:FindFirstChild("Down") and lift.Down:FindFirstChildWhichIsA("ClickDetector")
         local button = CFrame.new(lift.Up:GetPivot().Position + Vector3.new(0, 2, 3))
@@ -3202,7 +3211,7 @@ do
     local HWY_AT = Vector3.new(-984.75, 0.52, 2100.19)
     local function highwayRoute()
         local best
-        pcall(function() LP:RequestStreamAroundAsync(HWY_AT, 5) end)
+        streamAt(HWY_AT, 5)
         for _, d in ipairs(workspace.Map.Map:GetDescendants()) do
             if d:IsA("BasePart") and d.Size.Y < 3 and math.max(d.Size.X, d.Size.Z) > 800 and math.min(d.Size.X, d.Size.Z) > 60 then
                 local dist = (d.Position - HWY_AT).Magnitude
@@ -3252,7 +3261,7 @@ do
             pts, top = roadRoute()
         end
         if not pts then farm.status = "no route found"; return end
-        pcall(function() LP:RequestStreamAroundAsync(pts[1], 5) end)
+        streamAt(pts[1], 5)
         local car = spawnCar(e, CFrame.lookAt(pts[1] + Vector3.new(0, 4, 0), pts[2] + Vector3.new(0, 4, 0)))
         if not car then farm.status = "car didn't spawn"; return end
         local h, seat = hum(), car:FindFirstChild("DriveSeat")
