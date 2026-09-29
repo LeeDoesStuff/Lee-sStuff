@@ -793,20 +793,32 @@ local ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
 local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
 
 local Window = Library:CreateWindow({
-    Title = "Hit The Thrift", Footer = "rack ESP · matcha · laundry · MRKET",
+    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(), Footer = "Hit The Thrift · rack ESP · matcha · laundry · MRKET",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
-    ESP      = Window:AddTab("ESP"),
-    Finds    = Window:AddTab("Finds"),
-    Matcha   = Window:AddTab("Matcha"),
-    Laundry  = Window:AddTab("Laundry"),
-    MRKET    = Window:AddTab("MRKET"),
-    Settings = Window:AddTab("Settings"),
+    ESP      = Window:AddTab("ESP", "eye"),
+    Finds    = Window:AddTab("Finds", "search"),
+    Matcha   = Window:AddTab("Matcha", "coffee"),
+    Laundry  = Window:AddTab("Laundry", "washing-machine"),
+    MRKET    = Window:AddTab("MRKET", "store"),
+    Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(key) return function(v) CFG[key] = v; dirty = true end end
 
-local Rar = Tabs.ESP:AddLeftGroupbox("Rarities")
+local Rar = Tabs.ESP:AddLeftGroupbox("Rarities", "gem")
 Rar:AddLabel("Each toggle shows or hides that rarity everywhere (dots, summaries, outlines). Click the swatch to recolor.", true)
 for i = #RARITIES, 1, -1 do
     local r = RARITIES[i]
@@ -816,7 +828,7 @@ for i = #RARITIES, 1, -1 do
             Callback = function(c) CFG.color[r] = c; dirty = true end })
 end
 
-local Disp = Tabs.ESP:AddRightGroupbox("Display")
+local Disp = Tabs.ESP:AddRightGroupbox("Display", "monitor")
 Disp:AddToggle("TE_Dots", { Text = "Dot on each item", Default = CFG.dots, Callback = set("dots") })
 Disp:AddToggle("TE_Labels", { Text = "Item name + price", Tooltip = "Rack price, as the rack menu shows it",
     Default = CFG.labels, Callback = set("labels") })
@@ -833,12 +845,12 @@ Disp:AddSlider("TE_DotSize", { Text = "Dot size", Default = CFG.dotSize, Min = 4
 Disp:AddSlider("TE_TextSize", { Text = "Text size", Default = CFG.textSize, Min = 9, Max = 22, Rounding = 0,
     Suffix = "px", Callback = set("textSize") })
 
-local FindBox = Tabs.Finds:AddLeftGroupbox("Finds")
+local FindBox = Tabs.Finds:AddLeftGroupbox("Finds", "search")
 FindBox:AddDropdown("TE_ListMin", { Text = "List from", Values = RARITIES, Default = CFG.listMin, Callback = set("listMin") })
 statusLabel = FindBox:AddLabel("-", true)
 findsLabel = FindBox:AddLabel("-", true)
 
-local MatchaBox = Tabs.Matcha:AddLeftGroupbox("Auto buy + collect")
+local MatchaBox = Tabs.Matcha:AddLeftGroupbox("Auto buy + collect", "shopping-cart")
 MatchaBox:AddLabel("Teleports you in front of Kat, orders, clicks your drink on the counter (about 10 s each) and takes you back. Walking away cancels the run for 2 min. The game caps you at 15 matcha drinks.", true)
 MatchaBox:AddToggle("MA_Auto", { Text = "Auto buy matcha", Default = CFG.matchaAuto,
     Callback = function(v) CFG.matchaAuto = v; matcha.pausedUntil = 0 end })
@@ -852,7 +864,7 @@ MatchaBox:AddToggle("MA_Return", { Text = "Go back after buying", Default = CFG.
     Callback = function(v) CFG.matchaReturn = v end })
 matchaLabel = MatchaBox:AddLabel("-", true)
 
-local PodBox = Tabs.Laundry:AddLeftGroupbox("Detergent pods")
+local PodBox = Tabs.Laundry:AddLeftGroupbox("Detergent pods", "droplets")
 PodBox:AddLabel("Buys the picked pods right after each restock (same timer as the racks), from anywhere. Trying a pod with no stock costs nothing.", true)
 PodBox:AddToggle("LA_PodAuto", { Text = "Auto buy pods on restock", Default = CFG.podAuto,
     Callback = function(v) CFG.podAuto = v; pod.pending = true end })
@@ -864,12 +876,12 @@ PodBox:AddSlider("LA_PodMax", { Text = "Max of each pod", Default = CFG.podMax, 
     Callback = function(v) CFG.podMax = v; pod.pending = true end })
 podLabel = PodBox:AddLabel("-", true)
 
-local BubbleBox = Tabs.Laundry:AddRightGroupbox("Bubbles")
+local BubbleBox = Tabs.Laundry:AddRightGroupbox("Bubbles", "sparkles")
 BubbleBox:AddLabel("Pops every bubble while you wash; each pop takes 1 s off the wash timer. Bubbles only spawn while you stay within 20 studs of your machine.", true)
 BubbleBox:AddToggle("LA_Bubbles", { Text = "Auto pop bubbles", Default = CFG.bubbles, Callback = function(v) CFG.bubbles = v end })
 bubbleLabel = BubbleBox:AddLabel("-", true)
 
-local MkBox = Tabs.MRKET:AddLeftGroupbox("Orders")
+local MkBox = Tabs.MRKET:AddLeftGroupbox("Orders", "clipboard-list")
 MkBox:AddLabel("You still list items and accept offers on your phone. Auto pack goes to your apartment's pack station and packs every accepted order. Auto deliver takes each box to its buyer's meeting spot and hands it over. Then it takes you back.", true)
 MkBox:AddToggle("MK_Pack", { Text = "Auto pack orders", Default = CFG.mkPack,
     Callback = function(v) CFG.mkPack = v; mk.pausedUntil = 0 end })
@@ -882,11 +894,11 @@ MkBox:AddButton({ Text = "List held item", Tooltip = "Lists the item in your han
     :AddKeyPicker("MK_ListKey", { Default = "None", Mode = "Press", Text = "List held item" })
 mrketLabel = MkBox:AddLabel("-", true)
 
-local Spend = Tabs.Settings:AddRightGroupbox("Spending")
+local Spend = Tabs.Settings:AddRightGroupbox("Spending", "wallet")
 Spend:AddSlider("SP_Reserve", { Text = "Always keep", Default = CFG.reserve, Min = 0, Max = 100, Rounding = 1, Suffix = "M",
     Tooltip = "Matcha and pod buying never take your Thrift Bucks below this", Callback = function(v) CFG.reserve = v end })
 
-local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
+local Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
@@ -895,6 +907,7 @@ SaveManager:IgnoreThemeSettings()
 SaveManager:SetFolder("ThriftESP")
 ThemeManager:SetFolder("ThriftESP")
 SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) -- CruelHub look
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 notify = function(msg) Library:Notify(msg, 3) end

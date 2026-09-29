@@ -1194,19 +1194,31 @@ local ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
 local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
 
 local Window = Library:CreateWindow({
-    Title = "Battle Bot Farm",
-    Footer = "bot · crates · upgrades · rewards · scrap",
+    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(),
+    Footer = "Build A Battle Bot · bot · crates · upgrades · rewards · scrap",
     Center = true, AutoShow = true,
     ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
-    Bot      = Window:AddTab("Bot"),
-    Crates   = Window:AddTab("Crates & Parts"),
-    Upgrades = Window:AddTab("Upgrades"),
-    Rewards  = Window:AddTab("Rewards"),
-    Scrap    = Window:AddTab("Scrap"),
-    Status   = Window:AddTab("Status"),
-    Settings = Window:AddTab("Settings"),
+    Bot      = Window:AddTab("Bot", "bot"),
+    Crates   = Window:AddTab("Crates & Parts", "package"),
+    Upgrades = Window:AddTab("Upgrades", "circle-arrow-up"),
+    Rewards  = Window:AddTab("Rewards", "gift"),
+    Scrap    = Window:AddTab("Scrap", "recycle"),
+    Status   = Window:AddTab("Status", "activity"),
+    Settings = Window:AddTab("Settings", "settings"),
 }
 
 local function toggle(box, idx, key, text, tip, extra)
@@ -1238,7 +1250,7 @@ local function multi(box, idx, key, text, values, tip)
 end
 
 -- ---------- Bot ----------
-local Depths = Tabs.Bot:AddLeftGroupbox("Depths — money")
+local Depths = Tabs.Bot:AddLeftGroupbox("Depths — money", "coins")
 toggle(Depths, "BBB_Depths", "depths", "Auto Depths", "Runs the Depths for money; between runs the bot drains your stations at the plot (that's where XP comes from)")
 slider(Depths, "BBB_MaxRun", "maxRun", "Max run length", 0, 300, "s", "Go home after this long even if the bot is still winning. 0 = until defeat")
 slider(Depths, "BBB_DrainTo", "drainTo", "Leave plot at station fill", 0, 100, "%", "Start the next run once the fullest station buffer is at or below this")
@@ -1248,7 +1260,7 @@ slider(Depths, "BBB_SkipPct", "skipPct", "Skip only if cost ≤", 1, 100, "% of 
 toggle(Depths, "BBB_AdminBias", "adminBias", "No plot stays during admin COINS events",
     "COINS ×N only pays in the Depths, so the bot restarts runs right away while it lasts. Every other time (ENERGY events included) the normal loop runs")
 
-local Pit = Tabs.Bot:AddRightGroupbox("Pit Events — crates, coins, boosts")
+local Pit = Tabs.Bot:AddRightGroupbox("Pit Events — crates, coins, boosts", "party-popper")
 toggle(Pit, "BBB_Events", "events", "Auto Pit Events", "Tiers are server-wide: the bot only needs to land one hit to get the full rewards")
 multi(Pit, "BBB_EventKinds", "eventKinds", "Events to join", EVENT_KINDS)
 Pit:AddDropdown("BBB_PitMode", {
@@ -1263,7 +1275,7 @@ slider(Pit, "BBB_ManualPause", "manualPause", "Pause after manual command", 0, 3
 local RARITY_KEEP = { ["Rare+"] = 3, ["Epic+"] = 4, ["Legendary+"] = 5, ["Mythic+"] = 6, ["Godly only"] = 7, ["Sell any rarity"] = 99 }
 local RARITY_KEEP_ORDER = { "Rare+", "Epic+", "Legendary+", "Mythic+", "Godly only", "Sell any rarity" }
 
-local Fab = Tabs.Crates:AddLeftGroupbox("Fabricator & Crates")
+local Fab = Tabs.Crates:AddLeftGroupbox("Fabricator & Crates", "factory")
 toggle(Fab, "BBB_Claim", "claim", "Auto Claim Crates", "Fabricator pile -> inventory, from anywhere (what the AUTO CLAIM pass does). A full pile stops deliveries")
 toggle(Fab, "BBB_Fabricator", "fabricator", "Auto Fabricator", "Each level: -9 s delivery, +3 storage, better crate odds, more bulk copies. Levels unlock with rebirths")
 toggle(Fab, "BBB_Open", "open", "Auto Open Crates", "Opening is the only use for crates; parts from Lava+ can be Mythic/Godly", applyReveal)
@@ -1276,7 +1288,7 @@ Fab:AddDropdown("BBB_HoldTier", {
 })
 local fabLabel = Fab:AddLabel("…", true)
 
-local Parts = Tabs.Crates:AddRightGroupbox("Parts")
+local Parts = Tabs.Crates:AddRightGroupbox("Parts", "cog")
 toggle(Parts, "BBB_Equip", "equip", "Auto Equip Best", "Highest stat per slot (attack/health/crit/speed); satellites by rarity, then crate tier. Only while the bot is home")
 multi(Parts, "BBB_EquipSlots", "equipSlots", "Slots to manage", BotParts.SLOT_ORDER, "Leave a slot out to keep your own pick (e.g. a favourite satellite special)")
 toggle(Parts, "BBB_SellJunk", "sellJunk", "Auto Sell Junk", "Sells everything except the best N per slot, locked parts, parts on any build, and the rarities you protect. Irreversible")
@@ -1298,7 +1310,7 @@ local partsLabel = Parts:AddLabel("…", true)
 -- writes back what you change (never on load/autoload).
 local RARITY_NAMES = {}
 for i, r in ipairs(require(Shared:WaitForChild("BotEffects")).RARITIES) do RARITY_NAMES[i] = r.name end
-local GameSell = Tabs.Crates:AddRightGroupbox("Game's AUTO SELL")
+local GameSell = Tabs.Crates:AddRightGroupbox("Game's AUTO SELL", "badge-dollar-sign")
 GameSell:AddLabel("Built into the game (same toggles as its inventory): chosen rarities are sold the moment a crate opens, before they take a slot. Common/Uncommon never beat a Rare+ part.", true)
 local gameSell = GameSell:AddDropdown("BBB_GameAutoSell", {
     Text = "Auto-sell rarities", Values = RARITY_NAMES, Multi = true, Default = {},
@@ -1317,7 +1329,7 @@ local gameSell = GameSell:AddDropdown("BBB_GameAutoSell", {
 })
 
 -- ---------- Upgrades ----------
-local Plot = Tabs.Upgrades:AddLeftGroupbox("Plot")
+local Plot = Tabs.Upgrades:AddLeftGroupbox("Plot", "map")
 toggle(Plot, "BBB_Upgrades", "upgrades", "Auto Stations & Workshop", "Buys empty pads, workshop levels (more pads) and station levels — whichever gives the most fuel/s per coin")
 toggle(Plot, "BBB_WorkshopFirst", "workshopFirst", "Workshop first", "Buy the next workshop level as soon as it's affordable (each opens a pad with cheap early levels)")
 toggle(Plot, "BBB_Bulk", "bulk", "Bulk ×10 station upgrades",
@@ -1325,7 +1337,7 @@ toggle(Plot, "BBB_Bulk", "bulk", "Bulk ×10 station upgrades",
 slider(Plot, "BBB_StationCap", "stationCap", "Station level cap", 0, 100, "", "Stop upgrading stations at this level. 0 = no cap")
 slider(Plot, "BBB_Reserve", "reserve", "Keep in reserve", 0, 90, "% of money", "Plot and fabricator upgrades only spend what's above this")
 
-local Skills = Tabs.Upgrades:AddRightGroupbox("Skill Tree")
+local Skills = Tabs.Upgrades:AddRightGroupbox("Skill Tree", "git-branch")
 toggle(Skills, "BBB_Skills", "skills", "Auto Skill Tree", "Spends the skill points every rebirth pays")
 Skills:AddDropdown("BBB_SkillFocus", {
     Text = "Focus", Values = { "Economy", "Combat", "Crates", "Cheapest" }, Default = CFG.skillFocus,
@@ -1334,7 +1346,7 @@ Skills:AddDropdown("BBB_SkillFocus", {
 })
 toggle(Skills, "BBB_SaveForTop", "saveForTop", "Save points for top pick", "Wait for the best node of your focus instead of spending on cheap off-focus ones")
 
-local Reb = Tabs.Upgrades:AddRightGroupbox("Rebirth")
+local Reb = Tabs.Upgrades:AddRightGroupbox("Rebirth", "rotate-ccw")
 toggle(Reb, "BBB_Rebirth", "rebirth", "Auto Rebirth", "Resets money, bot levels, best wave, stations, workshop and scrapper (the farm rebuilds them). Pays +money/+energy % and skill points")
 slider(Reb, "BBB_RebirthExtra", "rebirthExtra", "Extra waves before rebirth", 0, 30, "", "Rebirth once the best wave is this far past the requirement")
 slider(Reb, "BBB_RebirthMax", "rebirthMax", "Stop at rebirth", 0, 100, "", "0 = no limit")
@@ -1351,12 +1363,12 @@ else
 end
 
 -- ---------- Rewards ----------
-local Claims = Tabs.Rewards:AddLeftGroupbox("Claims")
+local Claims = Tabs.Rewards:AddLeftGroupbox("Claims", "gift")
 toggle(Claims, "BBB_Playtime", "playtime", "Playtime rewards", "1 / 5 / 10 / … / 120 min tiers (per session)")
 toggle(Claims, "BBB_Daily", "daily", "Daily login")
 toggle(Claims, "BBB_Quests", "quests", "Daily & weekly quests")
 toggle(Claims, "BBB_Guild", "guild", "Guild chests", "Day and week ladders")
-local Codes = Tabs.Rewards:AddRightGroupbox("Codes")
+local Codes = Tabs.Rewards:AddRightGroupbox("Codes", "ticket")
 do
     local known = {}
     for code in pairs(RewardConfig.CODES or {}) do known[#known + 1] = code end
@@ -1368,7 +1380,7 @@ toggle(Codes, "BBB_AutoCodes", "autoCodes", "Redeem codes on load",
     "Fires every code in the game's config once per load, so codes added by updates get used; used ones just answer 'already redeemed'")
 
 -- ---------- Scrap ----------
-local Scrap = Tabs.Scrap:AddLeftGroupbox("Scrap — character farm")
+local Scrap = Tabs.Scrap:AddLeftGroupbox("Scrap — character farm", "recycle")
 Scrap:AddLabel("Your character sweeps scrap in the Pit (4.5-stud pickup, carry 20) and teleports it to your Scrapper, alongside whatever the bot is doing.", true)
 toggle(Scrap, "BBB_Scrap", "scrap", "Auto Collect Scrap", "It's PvP in the Pit — a bot smash can KO your character mid-sweep")
 toggle(Scrap, "BBB_FrenzyOnly", "frenzyOnly", "Only during Scrap Frenzy", "Frenzy drops 2 scrap per kill")
@@ -1377,15 +1389,15 @@ toggle(Scrap, "BBB_ScrapReturn", "scrapReturn", "Return to start after each trip
 toggle(Scrap, "BBB_Scrapper", "scrapper", "Auto Upgrade Scrapper", "×1.24 scrap value per level; levels need Depths waves")
 local scrapLabel = Scrap:AddLabel("…", true)
 
-local Raid = Tabs.Scrap:AddRightGroupbox("Alien Raid")
+local Raid = Tabs.Scrap:AddRightGroupbox("Alien Raid", "rocket")
 Raid:AddLabel("A 4-minute raid (every ~40 min on the servers watched) drops Alien crates into the Pit one at a time. Hold one in the Pit until its 60 s timer ends, or until the raid ends, which pays whatever you're holding: up to 4 per raid. The catcher dodges lasers and bots and pauses scrap/upgrade teleports meanwhile.", true)
 toggle(Raid, "BBB_Raid", "raid", "Catch Alien Crates", "Alien crates: 42% Rare, 29% Epic, 7.5% Legendary+, incl. 2.25% Mythic / 0.75% Godly")
 local raidLabel = Raid:AddLabel("…", true)
 
 -- ---------- Status ----------
-local Stat = Tabs.Status:AddLeftGroupbox("Status")
+local Stat = Tabs.Status:AddLeftGroupbox("Status", "activity")
 local statusLabel = Stat:AddLabel("…", true)
-local Log = Tabs.Status:AddRightGroupbox("Log")
+local Log = Tabs.Status:AddRightGroupbox("Log", "scroll-text")
 local logLabel = Log:AddLabel("", true)
 
 task.spawn(function()
@@ -1460,11 +1472,11 @@ end)
 S.unload = function() pcall(function() Library:Unload() end) end
 
 -- ---------- Settings ----------
-local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
+local Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
 toggle(Menu, "BBB_AntiAfk", "antiAfk", "Anti-AFK", "Stops the 20-minute idle kick")
 toggle(Menu, "BBB_Rejoin", "rejoin", "Restart farm after a rejoin / server hop",
     "Queues this farm for the next server when a teleport starts (IY autorejoin, hops). A full game relaunch still needs a manual load")
-local IyBox = Tabs.Settings:AddRightGroupbox("Infinite Yield (runs its own commands)")
+local IyBox = Tabs.Settings:AddRightGroupbox("Infinite Yield (runs its own commands)", "terminal")
 IyBox:AddLabel("Drives IY's command bar, so these need IY loaded (your autoexec does it).", true)
 CFG.iySafety, CFG.iyNoRender = false, false
 toggle(IyBox, "BBB_IySafety", "iySafety", "AFK safety bundle",
@@ -1480,6 +1492,7 @@ SaveManager:SetIgnoreIndexes({ "BBB_GameAutoSell", "BBB_GameAutoRebirth" }) -- s
 SaveManager:SetFolder("BattleBotFarm")
 ThemeManager:SetFolder("BattleBotFarm")
 SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) -- CruelHub look
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 if CFG.autoCodes then redeemCodes() end

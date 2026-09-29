@@ -861,23 +861,35 @@ local ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
 local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
 
 local Window = Library:CreateWindow({
-    Title = "Command An Army", Footer = "v1 · rewards · units · match · army · combat · ESP",
+    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(), Footer = "Command An Army · v1 · rewards · units · match · army · combat · ESP",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
-    Rewards = Window:AddTab("Rewards"), Units = Window:AddTab("Units"), Match = Window:AddTab("Match"),
-    Battle = Window:AddTab("Battle"), Army = Window:AddTab("Army"), Combat = Window:AddTab("Combat"), ESP = Window:AddTab("ESP"),
-    Status = Window:AddTab("Status"), Settings = Window:AddTab("Settings"),
+    Rewards = Window:AddTab("Rewards", "gift"), Units = Window:AddTab("Units", "users"), Match = Window:AddTab("Match", "swords"),
+    Battle = Window:AddTab("Battle", "flame"), Army = Window:AddTab("Army", "shield"), Combat = Window:AddTab("Combat", "crosshair"), ESP = Window:AddTab("ESP", "eye"),
+    Status = Window:AddTab("Status", "activity"), Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(k) return function(v) CFG[k] = v end end
 
 -- Rewards
-local RW = Tabs.Rewards:AddLeftGroupbox("Auto claim")
+local RW = Tabs.Rewards:AddLeftGroupbox("Auto claim", "gift")
 RW:AddLabel("Checks every 2 min while you're in the lobby. Same requests the reward menus send.", true)
 RW:AddToggle("CA_Daily", { Text = "Daily reward", Default = CFG.daily, Callback = set("daily") })
 RW:AddToggle("CA_Quests", { Text = "Daily + weekly quests", Default = CFG.quests, Callback = set("quests") })
 RW:AddButton({ Text = "Check now", Func = function() task.spawn(function() guard("daily", doDaily); guard("quests", doQuests) end) end })
-local RW2 = Tabs.Rewards:AddRightGroupbox("Codes & social")
+local RW2 = Tabs.Rewards:AddRightGroupbox("Codes & social", "ticket")
 RW2:AddInput("CA_Code", { Text = "Code", Default = "", Placeholder = "code", Finished = false })
 RW2:AddButton({ Text = "Redeem", Func = function()
     local code = Library.Options.CA_Code.Value
@@ -897,13 +909,13 @@ RW2:AddButton({ Text = "Claim like reward (after liking)", Func = function()
 end })
 
 -- Units
-local SU = Tabs.Units:AddLeftGroupbox("Summon (Standard banner)")
+local SU = Tabs.Units:AddLeftGroupbox("Summon (Standard banner)", "sparkles")
 SU:AddLabel("Lobby only, works from anywhere in the lobby. Stops by itself on InsufficientGems / InventoryFull.", true)
 SU:AddToggle("CA_Summon", { Text = "Auto summon", Default = CFG.summon, Callback = set("summon") })
 SU:AddDropdown("CA_SummonCount", { Text = "Per summon", Values = { "1", "10" }, Default = tostring(CFG.summonCount),
     Callback = function(v) CFG.summonCount = tonumber(v) end })
 SU:AddSlider("CA_GemReserve", { Text = "Keep gems", Default = CFG.gemReserve, Min = 0, Max = 5000, Rounding = 0, Callback = set("gemReserve") })
-local UP = Tabs.Units:AddRightGroupbox("Upgrades")
+local UP = Tabs.Units:AddRightGroupbox("Upgrades", "circle-arrow-up")
 UP:AddToggle("CA_Ascend", { Text = "Auto ascend duplicates", Tooltip = "Merges two copies of the same troop at the same ascension level. Keeps the loadout copy, else the most mastered.",
     Default = CFG.ascend, Callback = set("ascend") })
 UP:AddSlider("CA_AscMax", { Text = "Ascend up to level", Default = CFG.ascendMaxLevel, Min = 1, Max = 3, Rounding = 0, Callback = set("ascendMaxLevel") })
@@ -915,7 +927,7 @@ local unitsLabel = UP:AddLabel("-", true)
 local summonLabel = SU:AddLabel("-", true)
 
 -- Match
-local MA = Tabs.Match:AddLeftGroupbox("Queue")
+local MA = Tabs.Match:AddLeftGroupbox("Queue", "list-ordered")
 MA:AddToggle("CA_Join", { Text = "Auto join matches", Default = CFG.autoJoin, Callback = set("autoJoin") })
 MA:AddDropdown("CA_Team", { Text = "Team", Values = { "Smaller team", "Attackers", "Defenders" }, Default = CFG.team, Callback = set("team") })
 MA:AddSlider("CA_JoinDelay", { Text = "Seconds between tries", Default = CFG.joinDelay, Min = 3, Max = 30, Rounding = 0, Callback = set("joinDelay") })
@@ -924,7 +936,7 @@ MA:AddButton({ Text = "Toggle game AFK mode", Tooltip = "The game's own AFK butt
 local matchLabel = MA:AddLabel("-", true)
 
 -- Battle
-local BA = Tabs.Battle:AddLeftGroupbox("Auto respawn units")
+local BA = Tabs.Battle:AddLeftGroupbox("Auto respawn units", "refresh-cw")
 BA:AddLabel("Commander died: skips the 15 s death timer and picks your unit right away.", true)
 BA:AddToggle("CA_Respawn", { Text = "Auto respawn after death", Default = CFG.autoRespawn, Callback = set("autoRespawn") })
 BA:AddSlider("CA_SpawnDelay", { Text = "Wait before picking (s)", Default = CFG.spawnDelay, Min = 0, Max = 10, Rounding = 1, Callback = set("spawnDelay") })
@@ -933,7 +945,7 @@ BA:AddLabel("Army wiped but you're alive: at a friendly supply camp, opens it an
 BA:AddToggle("CA_Resupply", { Text = "Auto resupply at camp", Default = CFG.autoResupply, Callback = set("autoResupply") })
 BA:AddToggle("CA_WalkCamp", { Text = "Walk to nearest friendly camp", Tooltip = "Normal walking (Humanoid:MoveTo), no teleport. Straight line, so walls can block it.",
     Default = CFG.walkToCamp, Callback = set("walkToCamp") })
-local BA2 = Tabs.Battle:AddRightGroupbox("Which unit")
+local BA2 = Tabs.Battle:AddRightGroupbox("Which unit", "user-check")
 BA2:AddDropdown("CA_SpawnPriority", { Text = "Pick", Values = { "Strongest ready", "Slot order" }, Default = CFG.spawnPriority, Callback = set("spawnPriority") })
 BA2:AddDropdown("CA_SpawnPreferred", { Text = "Prefer slot (if ready)", Values = { "None", "1", "2", "3" }, Default = "None",
     Callback = function(v) CFG.spawnPreferred = tonumber(v) or 0 end })
@@ -941,39 +953,39 @@ BA2:AddLabel("Strongest = stars, then ascension, then mastery. Units on cooldown
 local battleLabel = BA2:AddLabel("-", true)
 
 -- Army
-local AR = Tabs.Army:AddLeftGroupbox("Troop orders")
+local AR = Tabs.Army:AddLeftGroupbox("Troop orders", "flag")
 AR:AddLabel("Same as the X / C / V keys. Rush (B) and formations need a target point, so they stay manual.", true)
 for _, s in ipairs({ "Hold", "Follow", "Attack" }) do
     AR:AddButton({ Text = s, Func = function() guard("state", fire, "TroopStateRequest", s) end })
 end
-local AR2 = Tabs.Army:AddRightGroupbox("Keep an order")
+local AR2 = Tabs.Army:AddRightGroupbox("Keep an order", "lock")
 AR2:AddToggle("CA_KeepState", { Text = "Re-send order during matches", Default = CFG.keepState, Callback = set("keepState") })
 AR2:AddDropdown("CA_KeepStateName", { Text = "Order", Values = { "Attack", "Follow", "Hold" }, Default = CFG.keepStateName, Callback = set("keepStateName") })
 AR2:AddSlider("CA_KeepEvery", { Text = "Every (s)", Default = CFG.keepStateEvery, Min = 3, Max = 30, Rounding = 0, Callback = set("keepStateEvery") })
 AR2:AddSlider("CA_ManualPause", { Text = "Pause after my own X/C/V/B (s)", Default = CFG.manualPause, Min = 0, Max = 120, Rounding = 0, Callback = set("manualPause") })
 
 -- Combat
-local CO = Tabs.Combat:AddLeftGroupbox("Commander")
+local CO = Tabs.Combat:AddLeftGroupbox("Commander", "crown")
 CO:AddLabel("Swings only when an enemy is in reach, at the class's own attack speed. The server decides what gets hit.", true)
 CO:AddToggle("CA_Attack", { Text = "Auto attack", Default = CFG.autoAttack, Callback = set("autoAttack") })
 CO:AddSlider("CA_Range", { Text = "Reach (studs)", Default = CFG.attackRange, Min = 4, Max = 14, Rounding = 1, Callback = set("attackRange") })
 CO:AddToggle("CA_AtkPlayers", { Text = "Target players", Default = CFG.attackPlayers, Callback = set("attackPlayers") })
 CO:AddToggle("CA_AtkTroops", { Text = "Target troops", Default = CFG.attackTroops, Callback = set("attackTroops") })
 CO:AddToggle("CA_Face", { Text = "Turn to face target", Default = CFG.faceTarget, Callback = set("faceTarget") })
-local CO2 = Tabs.Combat:AddRightGroupbox("Heal")
+local CO2 = Tabs.Combat:AddRightGroupbox("Heal", "heart-pulse")
 CO2:AddToggle("CA_Heal", { Text = "Auto heal", Default = CFG.autoHeal, Callback = set("autoHeal") })
 CO2:AddSlider("CA_HealBelow", { Text = "Heal below HP %", Default = CFG.healBelow, Min = 10, Max = 90, Rounding = 0, Callback = set("healBelow") })
 local combatLabel = CO2:AddLabel("-", true)
 
 -- ESP
-local ES = Tabs.ESP:AddLeftGroupbox("ESP")
+local ES = Tabs.ESP:AddLeftGroupbox("ESP", "eye")
 ES:AddToggle("CA_EspPlayers", { Text = "Players (class, HP, distance)", Default = CFG.espPlayers, Callback = set("espPlayers") })
 ES:AddToggle("CA_EspArmies", { Text = "Armies: outline + owner · unit type", Default = CFG.espArmies, Callback = set("espArmies") })
 ES:AddToggle("CA_EspEnemies", { Text = "Show enemies", Default = CFG.espEnemies, Callback = set("espEnemies") })
 ES:AddToggle("CA_EspTeam", { Text = "Show teammates", Default = CFG.espTeam, Callback = set("espTeam") })
 ES:AddSlider("CA_EspDist", { Text = "Max distance", Default = CFG.espMaxDist, Min = 100, Max = 3000, Rounding = 0, Callback = set("espMaxDist") })
 
-local EC = Tabs.ESP:AddRightGroupbox("Colors")
+local EC = Tabs.ESP:AddRightGroupbox("Colors", "palette")
 EC:AddLabel("Players: sharp outline + bold ★ label on a dark pill. Armies: soft fill + small ⚑ label.", true)
 EC:AddLabel("Enemy player"):AddColorPicker("CA_EnemyColor", { Title = "Enemy player", Default = CFG.enemyColor, Callback = set("enemyColor") })
 EC:AddLabel("Enemy army"):AddColorPicker("CA_EnemyArmyColor", { Title = "Enemy army", Default = CFG.enemyArmyColor, Callback = set("enemyArmyColor") })
@@ -981,18 +993,18 @@ EC:AddLabel("Teammate player"):AddColorPicker("CA_TeamColor", { Title = "Teammat
 EC:AddLabel("Teammate army"):AddColorPicker("CA_TeamArmyColor", { Title = "Teammate army", Default = CFG.teamArmyColor, Callback = set("teamArmyColor") })
 
 -- Status
-local ST = Tabs.Status:AddLeftGroupbox("Status")
+local ST = Tabs.Status:AddLeftGroupbox("Status", "activity")
 local statusLabel = ST:AddLabel("-", true)
-local ST2 = Tabs.Status:AddRightGroupbox("Log (also CommandArmy/log.txt)")
+local ST2 = Tabs.Status:AddRightGroupbox("Log (also CommandArmy/log.txt)", "scroll-text")
 local logLabel = ST2:AddLabel("-", true)
 
 -- Settings
-local SA = Tabs.Settings:AddLeftGroupbox("Safety")
+local SA = Tabs.Settings:AddLeftGroupbox("Safety", "shield-alert")
 SA:AddToggle("CA_PauseAC", { Text = "Pause if the game's anti-cheat gets enabled", Default = CFG.pauseOnAC, Callback = set("pauseOnAC") })
 SA:AddToggle("CA_PauseStaff", { Text = "Pause while a high group rank player is here", Default = CFG.pauseOnStaff, Callback = set("pauseOnStaff") })
 SA:AddSlider("CA_StaffRank", { Text = "Group rank counted as staff", Default = CFG.staffRank, Min = 1, Max = 255, Rounding = 0, Callback = set("staffRank") })
 local safetyLabel = SA:AddLabel("-", true)
-local Menu = Tabs.Settings:AddRightGroupbox("Menu")
+local Menu = Tabs.Settings:AddRightGroupbox("Menu", "menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
@@ -1001,6 +1013,7 @@ SaveManager:IgnoreThemeSettings()
 SaveManager:SetFolder("CommandArmy")
 ThemeManager:SetFolder("CommandArmy")
 SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) -- CruelHub look
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 notify = function(msg) Library:Notify(msg, 4) end

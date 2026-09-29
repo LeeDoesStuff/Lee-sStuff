@@ -184,17 +184,29 @@ end))
 
 -- ========= UI =========
 local Window = Library:CreateWindow({
-  Title = "MogAuto v2",
+  Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(),
   Footer = "Mog or Die",
   Center = true, AutoShow = true,
   ToggleKeybind = Enum.KeyCode.RightControl,
   Size = UDim2.fromOffset(540, 460),
 })
 
-local Tabs = { Main = Window:AddTab("Main"), Settings = Window:AddTab("Settings") }
-local L = Tabs.Main:AddLeftGroupbox("Collection")
-local R = Tabs.Main:AddRightGroupbox("Plot / Crates")
-local S = Tabs.Main:AddRightGroupbox("Status")
+local Tabs = { Main = Window:AddTab("Main", "house"), Settings = Window:AddTab("Settings", "settings") }
+local L = Tabs.Main:AddLeftGroupbox("Collection", "gem")
+local R = Tabs.Main:AddRightGroupbox("Plot / Crates", "package")
+local S = Tabs.Main:AddRightGroupbox("Status", "activity")
 
 L:AddToggle("Magnet", { Text = "Magnet (radius boost)", Default = state.magnet,
   Callback = function(v) state.magnet = v; setMagnet(v) end })
@@ -263,8 +275,9 @@ SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetFolder("MogAuto")
 ThemeManager:SetFolder("MogAuto")
-Tabs.Settings:AddLeftGroupbox("Menu"):AddButton({ Text = "Unload", Func = function() Library:Unload() end })
+Tabs.Settings:AddLeftGroupbox("Menu", "menu"):AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) -- CruelHub look
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 

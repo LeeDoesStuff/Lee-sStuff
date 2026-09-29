@@ -357,13 +357,31 @@ end)
 
 -- ================= Rayfield UI =================
 Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+local c = Color3.fromHex -- CruelHub look: near-black with a crimson accent
 local Window = Rayfield:CreateWindow({
-	Name = "JohnChina's Bizarre AutoFarm",
+	Name = "CruelHub",
+	Icon = "skull",
+	LoadingTitle = "CruelHub",
+	LoadingSubtitle = "JohnChina's Bizarre AutoFarm",
+	Theme = {
+		TextColor = c("f2eded"), Background = c("0c0a0b"), Topbar = c("161214"), Shadow = c("000000"),
+		NotificationBackground = c("161214"), NotificationActionsBackground = c("2a1d20"),
+		TabBackground = c("1c1618"), TabStroke = c("2a1d20"), TabBackgroundSelected = c("e0233c"),
+		TabTextColor = c("c9bfc1"), SelectedTabTextColor = c("ffffff"),
+		ElementBackground = c("161214"), ElementBackgroundHover = c("1f191b"), SecondaryElementBackground = c("121011"),
+		ElementStroke = c("2a1d20"), SecondaryElementStroke = c("221a1c"),
+		SliderBackground = c("5a1420"), SliderProgress = c("e0233c"), SliderStroke = c("ff3b55"),
+		ToggleBackground = c("121011"), ToggleEnabled = c("e0233c"), ToggleDisabled = c("3a3234"),
+		ToggleEnabledStroke = c("ff3b55"), ToggleDisabledStroke = c("4a4043"),
+		ToggleEnabledOuterStroke = c("5a1420"), ToggleDisabledOuterStroke = c("2a1d20"),
+		DropdownSelected = c("2a1d20"), DropdownUnselected = c("161214"),
+		InputBackground = c("121011"), InputStroke = c("2a1d20"), PlaceholderColor = c("8a7f81"),
+	},
 	ConfigurationSaving = { Enabled = true, FolderName = "JJBIHub", FileName = "config" },
 })
 
 -- ---- Combat tab ----
-local Combat = Window:CreateTab("Combat", 4483362458)
+local Combat = Window:CreateTab("Combat", "swords")
 local storyToggle, randomToggle
 local mutex = false -- guard against Set() re-entering the callbacks
 storyToggle = Combat:CreateToggle({
@@ -423,7 +441,7 @@ end
 
 -- ---- Stats tab ----
 -- stat keys = frame names in PlayerStatsCard/StandStatsCard (verified via scan)
-local Stats = Window:CreateTab("Stats", 4483362458)
+local Stats = Window:CreateTab("Stats", "chart-column")
 for _, stat in ipairs({
 	{ "Health", "Health" }, { "Strength", "Strength" }, { "Defense", "Defense" },
 	{ "Speed", "Speed" }, { "Stamina", "Stamina" }, { "Willpower", "Willpower" },
@@ -438,7 +456,7 @@ for _, stat in ipairs({
 end
 
 -- ---- SBR tab ----
-local SBR = Window:CreateTab("SBR", 4483362458)
+local SBR = Window:CreateTab("SBR", "flag")
 local speedToggle, enduranceToggle
 speedToggle = SBR:CreateToggle({
 	Name = "Auto Upgrade Horse Speed", CurrentValue = false, Flag = "HorseSpeed",
@@ -475,7 +493,7 @@ horseToggle = SBR:CreateToggle({
 })
 
 -- ---- Misc tab ----
-local Misc = Window:CreateTab("Misc", 4483362458)
+local Misc = Window:CreateTab("Misc", "settings")
 Misc:CreateToggle({
 	Name = "Auto Prestige", CurrentValue = false, Flag = "AutoPrestige",
 	Callback = function(v) T.prestige = v end,

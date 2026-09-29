@@ -182,15 +182,29 @@ end)
 -- ============================== Obsidian UI ==============================
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
 
+for k, v in pairs({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) do Library.Scheme[k] = Color3.fromHex(v) end -- CruelHub look
+
 local Window = Library:CreateWindow({
-    Title    = "Needle — Sell On Drop",
-    Footer   = "vent run · recreated pass",
+    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(),
+    Footer = "Needle in a Haystack · vent run · recreated pass",
     Center   = true,
     AutoShow = true,
 })
 
-local Tab  = Window:AddTab("Main")
-local Sell = Tab:AddLeftGroupbox("Sell On Drop")
+local Tab  = Window:AddTab("Main", "house")
+local Sell = Tab:AddLeftGroupbox("Sell On Drop", "badge-dollar-sign")
 
 Sell:AddButton({
     Text = "Sell Now  [V]",
@@ -225,7 +239,7 @@ Sell:AddToggle("NIH_Return", {
 
 local statusLabel = Sell:AddLabel("carrying 0 · balance 0", true)
 
-local Spot = Tab:AddLeftGroupbox("Sell Spot")
+local Spot = Tab:AddLeftGroupbox("Sell Spot", "map-pin")
 Spot:AddLabel("Stored relative to the vent. If selling stops working, stand where it does work and capture it.", true)
 Spot:AddButton({
     Text = "Capture spot = my position",
@@ -253,7 +267,7 @@ Spot:AddButton({
     end,
 })
 
-local Tune = Tab:AddRightGroupbox("Tuning")
+local Tune = Tab:AddRightGroupbox("Tuning", "sliders-horizontal")
 Tune:AddLabel("Bigger steps = faster, but too big and the server force-drops your load. 8 is measured-safe.", true)
 Tune:AddSlider("NIH_Step", {
     Text = "Step size", Default = 8, Min = 2, Max = 20, Rounding = 0, Suffix = " studs",
@@ -264,7 +278,7 @@ Tune:AddSlider("NIH_Delay", {
     Callback = function(v) STATE.stepDelay = v end,
 })
 
-local Menu = Tab:AddRightGroupbox("Menu")
+local Menu = Tab:AddRightGroupbox("Menu", "menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 
 -- Live status

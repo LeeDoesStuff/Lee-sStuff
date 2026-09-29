@@ -2737,7 +2737,19 @@ local SaveManager  = loadstring(game:HttpGet("https://raw.githubusercontent.com/
 Panel.Library = Library
 
 local Window = Library:CreateWindow({
-    Title = "Sneaker Panel v2",
+    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(),
     Footer = "Sneaker Resell Simulator - F4 kill, F5 perf",
     Center = true,
     AutoShow = true,
@@ -3694,6 +3706,7 @@ SaveManager:SetIgnoreIndexes({ "MenuKeybind", "AutoUpgrade", "SlotsManualOnly",
 ThemeManager:SetFolder("SneakerPanelV2")
 SaveManager:SetFolder("SneakerPanelV2/configs")
 SaveManager:BuildConfigSection(Tabs.Config)
+ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) -- CruelHub look
 ThemeManager:ApplyToTab(Tabs.Config)
 -- SAFEBOOT means nothing starts - including loops a saved config would switch back on.
 if getgenv().SNEAKER_PANEL_SAFEBOOT then

@@ -1743,7 +1743,19 @@ end
 notify = function(msg) Library:Notify(msg, 5) end
 
 local Window = Library:CreateWindow({
-    Title = "CruelHub", Icon = "skull", Footer = "Fix It Up · junkyard tiers · auto flip · repair · distance farm",
+    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(), Footer = "Fix It Up · junkyard tiers · auto flip · repair · distance farm",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 -- unloaded by a newer copy while we were still setting up: don't leave a dead menu behind

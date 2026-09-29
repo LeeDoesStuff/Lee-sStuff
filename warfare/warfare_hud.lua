@@ -1103,15 +1103,27 @@ local ThemeManager = obsidian("ThemeManager.lua", "addons/ThemeManager.lua")
 local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
 
 local Window = Library:CreateWindow({
-    Title = "Warfare Drone HUD", Footer = "predict · blast · cones · body · drones",
+    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+        local ok, id = pcall(function()
+            local f = "CruelHub/logo.jpg"
+            if not isfolder("CruelHub") then makefolder("CruelHub") end
+            if not isfile(f) then
+                local img = game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg")
+                assert(img:sub(1, 2) == "\255\216", "not a jpeg")
+                writefile(f, img)
+            end
+            return getcustomasset(f)
+        end)
+        return ok and id or "skull"
+    end)(), Footer = "Warfare · predict · blast · cones · body · drones",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
-    Drone    = Window:AddTab("Drone"),
-    Threats  = Window:AddTab("Threats"),
-    Aim      = Window:AddTab("Aim"),
-    Colors   = Window:AddTab("Colors"),
-    Settings = Window:AddTab("Settings"),
+    Drone    = Window:AddTab("Drone", "plane"),
+    Threats  = Window:AddTab("Threats", "triangle-alert"),
+    Aim      = Window:AddTab("Aim", "crosshair"),
+    Colors   = Window:AddTab("Colors", "palette"),
+    Settings = Window:AddTab("Settings", "settings"),
 }
 
 local function toggle(box, idx, key, text, tip)
@@ -1122,15 +1134,15 @@ local function slider(box, idx, key, text, min, max, suffix, tip)
         Suffix = suffix, Callback = function(v) CFG[key] = v end })
 end
 
-local Pred = Tabs.Drone:AddLeftGroupbox("Impact predictor")
+local Pred = Tabs.Drone:AddLeftGroupbox("Impact predictor", "target")
 Pred:AddLabel("MAVIC: grenade drop arc (gravity, inherits drone velocity, like the game's own ring but longer). FPV: straight line along your velocity. First impact only: an M67 can still roll.", true)
 toggle(Pred, "WF_Predict", "predict", "Show predictor")
 slider(Pred, "WF_Horizon", "horizon", "Look-ahead", 2, 15, "s")
-local Blast = Tabs.Drone:AddRightGroupbox("Blast rings")
+local Blast = Tabs.Drone:AddRightGroupbox("Blast rings", "radiation")
 Blast:AddLabel("Orange = blast edge (r). Red = one-shot (>= 100 dmg). Dark = full damage (r/4). Shrapnel and walls not modelled.", true)
 toggle(Blast, "WF_Rings", "rings", "Show blast rings")
 
-local Cones = Tabs.Threats:AddLeftGroupbox("Enemy aim cones")
+local Cones = Tabs.Threats:AddLeftGroupbox("Enemy aim cones", "radar")
 toggle(Cones, "WF_Cones", "cones", "Draw aim cones")
 slider(Cones, "WF_ConeLen", "coneLen", "Cone length", 10, 300, "m")
 slider(Cones, "WF_ConeAngle", "coneAngle", "Cone half-angle", 2, 25, "°", "Also the WATCHED threshold")
@@ -1143,12 +1155,12 @@ toggle(Cones, "WF_ConeGrad", "coneGradient", "Color by aim",
     "Blend from 'looking away' to 'on you' as their aim swings toward your body or drone. Colors and opacity: Colors tab")
 slider(Cones, "WF_GradAngle", "gradAngle", "Fully 'away' at", 15, 180, "°", "Angle off you where the cone is fully the away color")
 
-local EspBox = Tabs.Threats:AddLeftGroupbox("ESP")
+local EspBox = Tabs.Threats:AddLeftGroupbox("ESP", "eye")
 toggle(EspBox, "WF_Esp", "esp", "Enemy ESP", "Name + distance over each enemy's head, through walls")
 toggle(EspBox, "WF_EspNames", "espNames", "Show names")
 slider(EspBox, "WF_EspRange", "espRange", "Max distance", 25, 1500, "m", "From your camera (your drone while flying)")
 
-local ChamBox = Tabs.Threats:AddLeftGroupbox("Chams")
+local ChamBox = Tabs.Threats:AddLeftGroupbox("Chams", "scan-eye")
 toggle(ChamBox, "WF_Chams", "chams", "Enemy chams", "Colored body highlight. Colors and opacity: Colors tab")
 toggle(ChamBox, "WF_ChamsWalls", "chamsWalls", "Show through walls")
 ChamBox:AddDropdown("WF_ChamsStyle", {
@@ -1159,12 +1171,12 @@ ChamBox:AddDropdown("WF_ChamsStyle", {
 toggle(ChamBox, "WF_ChamsVis", "chamsVisColor", "Different color when in sight", "Line of sight from your camera to each part (or the head, in Highlight style)")
 slider(ChamBox, "WF_ChamsRange", "chamsRange", "Max distance", 25, 1500, "m")
 
-local Body = Tabs.Threats:AddRightGroupbox("Body guard")
+local Body = Tabs.Threats:AddRightGroupbox("Body guard", "shield")
 toggle(Body, "WF_Body", "bodyGuard", "Warn: enemy near body")
 slider(Body, "WF_BodyR", "bodyRadius", "Radius", 5, 60, "m")
 toggle(Body, "WF_BodyFly", "bodyOnlyFlying", "Only while flying a drone")
 
-local Zoom = Tabs.Aim:AddLeftGroupbox("Aim zoom")
+local Zoom = Tabs.Aim:AddLeftGroupbox("Aim zoom", "zoom-in")
 Zoom:AddLabel("Hold right mouse with a gun out to zoom (CapsLock turns Aim zoom on/off; click the key box to change it). Roblox has one camera, so the whole view zooms (optional dim outside a center circle: Colors tab).", true)
 toggle(Zoom, "WF_AimZoom", "aimZoom", "Aim zoom")
 -- keybind flips the Aim zoom toggle (SyncToggleState); change the key or clear it in the picker, saved with the config
@@ -1177,7 +1189,7 @@ slider(Zoom, "WF_ZoomSize", "zoomSize", "Dim circle size", 10, 90, "% of screen 
 slider(Zoom, "WF_ZoomSpeed", "zoomSpeed", "Zoom speed", 4, 40, "")
 toggle(Zoom, "WF_ZoomSens", "zoomSens", "Lower mouse sensitivity while zoomed", "Divides sensitivity by the zoom so aiming feels the same")
 
-local MapBox = Tabs.Threats:AddRightGroupbox("Map ESP")
+local MapBox = Tabs.Threats:AddRightGroupbox("Map ESP", "map")
 MapBox:AddLabel("Enemy dots on the in-match map and the minimap, placed with the map's own math.", true)
 toggle(MapBox, "WF_MapEsp", "mapEsp", "Enemies on map")
 toggle(MapBox, "WF_MapNames", "mapNames", "Names when zoomed in", "Same zoom level where the game shows teammate names")
@@ -1185,13 +1197,13 @@ toggle(MapBox, "WF_MapDrones", "mapDrones", "Enemy drones on map")
 toggle(MapBox, "WF_MapSpawn", "mapSpawn", "Also on the spawn map", "Deploy screen overhead map")
 slider(MapBox, "WF_MapDot", "mapDotSize", "Dot size", 3, 16, "px")
 
-local MyDrone = Tabs.Drone:AddLeftGroupbox("Your drone cooldown")
+local MyDrone = Tabs.Drone:AddLeftGroupbox("Your drone cooldown", "timer")
 MyDrone:AddLabel("Reads the game's own cooldown (server-set). Top of the screen.", true)
 toggle(MyDrone, "WF_DroneCd", "droneCd", "Cooldown timer")
 toggle(MyDrone, "WF_DroneReady", "droneReadyAlert", "\"DRONE READY\" alert")
 toggle(MyDrone, "WF_DroneReadySnd", "droneReadySound", "Ping sound on ready")
 
-local Drones = Tabs.Threats:AddRightGroupbox("Enemy drones")
+local Drones = Tabs.Threats:AddRightGroupbox("Enemy drones", "plane")
 toggle(Drones, "WF_DroneAlert", "droneAlert", "Enemy drone alert", "Distance, closing speed and ETA to your body or drone")
 slider(Drones, "WF_DroneRange", "droneRange", "Alert range", 20, 300, "m")
 toggle(Drones, "WF_DroneHL", "droneHighlight", "Highlight + velocity line")
@@ -1236,13 +1248,13 @@ colorBoxes["HUD text"]:AddButton({ Text = "Reset all colors", Func = function()
     end
 end })
 
-local Compat = Tabs.Settings:AddRightGroupbox("Executor compatibility")
+local Compat = Tabs.Settings:AddRightGroupbox("Executor compatibility", "cpu")
 Compat:AddLabel(HAS_GC and "Memory scans available (getgc / debug.getupvalue)." or
     "This executor has no getgc / debug.getupvalue: muzzle aim and in-match map dots are off (spawn map dots still work).", true)
 toggle(Compat, "WF_MemScans", "memScans", "Memory scans (muzzle aim, in-match map ESP)",
     "Reads game memory with getgc. Turn off if your executor freezes or acts up; cones fall back to body facing")
 
-local Menu = Tabs.Settings:AddLeftGroupbox("Menu")
+local Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
@@ -1251,6 +1263,7 @@ SaveManager:IgnoreThemeSettings()
 SaveManager:SetFolder("WarfareHUD")
 ThemeManager:SetFolder("WarfareHUD")
 SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) -- CruelHub look
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 Library:Notify("Warfare Drone HUD ready — RightCtrl toggles the UI.", 4)
