@@ -41,8 +41,3 @@ Measured live 2026-09-27:
 - Auto heal spammed 291× in 2 s (IsHealing replicates late); now 3 s local lockout.
 
 See [game-recon-full-progression](../notes/game-recon-checklist.md), [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md).
-
-**v1.2 (2026-09-29)**: Battle tab "AUTO RESPAWN AT CAMP (all-in-one)" toggle (`CFG.campLoop`) turns on death respawn + resupply + walk-to-camp together. Walk-to-camp now follows PathfindingService waypoints (recomputed every 3 s / when stuck, jumps on Jump waypoints, straight MoveTo fallback) instead of a straight line, and keeps walking while the camp is on cooldown. Not tested live yet.
-
-**v1.3 (2026-09-29)**: Battle → "Which unit" now reads the unlocked loadout slots and lists each one's unit (`Slot N · TroopId ★S A2`). "Prefer this unit" + multi-select "Units it may spawn" (none ticked = all) are built from it and rebuilt when the loadout changes. The unlocked-slot count field isn't known yet: the script tries `UnlockedSlots/LoadoutSlots/MaxLoadout/LoadoutSize/MaxEquipped/UnlockedLoadoutSlots/SlotCount` on UnitsInventory and the player, else counts the `Loadout[]` entries. Check live and pin the real field name.
-New Spectate tab: camera-only (CameraSubject) on a player's Humanoid or the troop nearest an army's centre; filter All/Enemies/Teammates, optional AI armies, next/previous cycling; holds through deaths/respawns; the dropdowns are excluded from SaveManager. Not tested live yet.
