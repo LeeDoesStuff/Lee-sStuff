@@ -203,6 +203,9 @@ function HOOK.install()
 end
 HOOK.install()
 
+-- declared up here: buyJunk (auto-lock message) calls it long before the UI section sets it to Library:Notify.
+-- It used to be declared below buyJunk, so a rare auto-locked buy crashed on a nil global (errors.txt ":931").
+local notify = function() end
 local lastNotify = { t = 0, text = "" }
 on(Events.HUD.Notifiy.OnClientEvent, function(text) lastNotify = { t = os.clock(), text = tostring(text) } end)
 
@@ -1199,7 +1202,6 @@ local function scanParts()
 end
 
 -- ============================== spawn alerts ==============================
-local notify = function() end
 on(Events.DisplayMessage.OnClientEvent, function(_, text)
     text = tostring(text)
     if not CFG.alerts then return end
@@ -1790,7 +1792,11 @@ end)
 task.spawn(function()
     while running do
         if STAFF.gated() then autoStatus = "blocked: " .. STAFF.gateMsg
-        elseif CFG.autoBuy or CFG.autoRepair or CFG.autoSell then guard("auto", autoStep) else autoStatus = "off" end
+        elseif CFG.autoBuy or CFG.autoRepair or CFG.autoSell then
+            -- autoStep only runs when nothing is busy and it's the only thing that set busy: if it errors mid-job,
+            -- clear it, or one crash leaves auto frozen on "busy" for the rest of the session
+            if not guard("auto", autoStep) then busy, confirmFn = false, nil end
+        else autoStatus = "off" end
         task.wait(2)
     end
 end)
