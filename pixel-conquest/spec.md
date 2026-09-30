@@ -331,3 +331,11 @@ Verified with the spy.
     - P shows % sliders as clean integers, which fixes the "55.00000000001" display.
     - Short labels; the explanations moved to tooltips.
   - ALL option ids unchanged (diffed the old vs new id sets: 0 missing), so saved configs keep loading.
+- **v3.0 (2026-09-30): review fixes + leech + no asking**
+  - Review of match ab7d9fd9: strong opening (320→9.5K tiles in ~1 min, biggest army 21K at 00:28:55), then a collapse from 72K troops/10.3K tiles to 5K/5.7K in 30 s. Rating 4/10.
+    - Siege salvos that couldn't win: "ready" = fill ≥ 90% OR salvo ≥ 1.3× army, and early-game troops sit near cap. 4 sieges in 100 s (NekrosHD 11.9K vs 14.8K, abandoned in 4 s). **Fix:** the salvo must beat 1.3× their army, and no new siege while open land or a cheap bot is reachable.
+    - A 126-tile siege on ChevyShipley provoked them (now 79K, 23.5%).
+    - The v2.8 side-war rule forbade invading Ytrdssx (home 3.8K, 11.9K tiles), who attacked 9× in 33 s. **Fix:** side wars invade when their home ≤ half my spare.
+    - Contradictory diplomacy spam. **Fix:** askAlly=false; `send()` drops any "ally" intent whose id isn't in diplo.inreq (accepting still works).
+  - `armies` State packet (Net.unpackArmies, 17 B each: a u32, attacker u8 @4, target u8 @5, troops u32 @6, ...) = every running attack on the map, parsed into S.armies.
+  - LEECH: sum ally troops attacking each enemy I border. If that is ≥ leechMin 30% of their army, strike them too with edge leechEdge 0.5, within the spare budget, every ≥4 s. leechAny = pile onto anyone's victims.

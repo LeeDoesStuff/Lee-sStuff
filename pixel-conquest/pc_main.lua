@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.9  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v3.0  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -40,7 +40,7 @@ local CFG = {
     -- expand
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
-    lootWeight = 0.05, lootRadius = 50, cheapFrac = 0.08,
+    lootWeight = 0.05, lootRadius = 50, cheapFrac = 0.08, askAlly = false, leech = true, leechAny = false, leechMin = 0.3, leechEdge = 0.5,
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20, riverDist = 15, riverEdge = 0.6, riverEvery = 4,
     brain = true, brainSurvive = 0.25, brainNbrShare = 0.3, pushEdge = 0.5, surviveIn = 1.2, surviveOut = 0.8, postureDwell = 20,
     denyMargin = 0.15, denyReserve = true, holdable = 1.5, record = true,
@@ -99,7 +99,7 @@ end
 
 -- ============================== state / log ==============================
 local S = { myId = nil, phase = nil, players = {}, byId = {}, names = {}, me = nil, fronts = nil, gold = 0, diplo = nil,
-    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, siegeSkip = {}, hist = {}, udPeak = {}, udEmbargo = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
+    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, siegeSkip = {}, hist = {}, askN = {}, udPeak = {}, udEmbargo = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
     board = nil, lobbyMoney = nil, rewardClaimed = nil, scan = nil, readyAt = {}, leaveAt = nil }
 local reqAt, counterAt = {}, {}
 local stats = { sent = 0, attacks = 0, builds = 0, nukes = 0, strikes = 0, allies = 0, joins = 0, denied = 0 }
@@ -182,6 +182,11 @@ end
 local blockedAt = {}
 local function send(msg, key)
     if FORBID[msg.t] then return false end
+    if msg.t == "ally" and not CFG.askAlly then
+        local incoming = false
+        for _, v in (S.diplo and S.diplo.inreq or {}) do if tonumber(v) == msg.id then incoming = true end end
+        if not incoming then return false end -- only accepting, never requesting
+    end
     if HOSTILE[msg.t] and S.map and type(msg.tile) == "number" and msg.tile >= 0 and msg.tile < N then
         local o = readu8(S.map.owner, msg.tile)
         if isFriend(o) then -- last line: never hit an ally / teammate, whatever picked the target
@@ -366,7 +371,7 @@ local function onState(k, p, full)
     if k == "init" and type(p) == "table" then
         S.myId = tonumber(p.yourId) or S.myId
         S.phase = p.phase; S.ended = false; S.leaveAt = nil
-        table.clear(S.structs); table.clear(S.badTile); S.spawnSent = 0; S.spawnOk = false; table.clear(S.grudge); table.clear(S.nukeGrudge); S.nukedAt = -1e9; S.nukeSeenAt = -1e9; table.clear(S.holes); S.islandOff = nil; S.playStart = nil; S.siege = nil; table.clear(S.udPeak); table.clear(S.udEmbargo); table.clear(S.hist); S.brain = nil
+        table.clear(S.structs); table.clear(S.badTile); S.spawnSent = 0; S.spawnOk = false; table.clear(S.grudge); table.clear(S.nukeGrudge); S.nukedAt = -1e9; S.nukeSeenAt = -1e9; table.clear(S.holes); S.islandOff = nil; S.playStart = nil; S.siege = nil; table.clear(S.udPeak); table.clear(S.udEmbargo); table.clear(S.hist); table.clear(S.askN); S.brain = nil
         log("match init: id " .. tostring(S.myId) .. " phase " .. tostring(p.phase))
     elseif k == "roster" and type(p) == "table" then
         for _, v in p do
@@ -401,6 +406,13 @@ local function onState(k, p, full)
                 S.structs[v.tile] = (v.ownerId and v.ownerId ~= 0) and v or nil
             end
         end
+    elseif k == "armies" and typeof(p) == "buffer" then
+        local list = {}
+        for n = 0, buffer.len(p) // 17 - 1 do
+            local o = n * 17
+            list[#list + 1] = { atk = readu8(p, o + 4), tgt = readu8(p, o + 5), troops = buffer.readu32(p, o + 6) }
+        end
+        S.armies, S.armiesAt = list, os.clock()
     elseif k == "missiles" and type(p) == "table" and S.map and S.myId then
         -- launches: l = nuke {owner,src,dst,kind}, pl = airstrike plane, rf = railgun shot; count only those landing on my land
         local now = os.clock()
@@ -744,7 +756,11 @@ local function doFronts(r)
     -- and my attacks on the same player MERGE when they land (Sim launchAttack), so: charge troops, (nuke), then send
     -- a salvo of 3 boats at ONE landing tile (1 - 0.8^3 = 49% of my army) and keep reinforcing that beachhead.
     local sg = S.siege
-    if CFG.siege and S.map and #r.shore > 0 and not surviving() then
+    local cheaperGrowth = r.sample[0] ~= nil
+    if not cheaperGrowth then
+        for o in r.ecoast do local v = S.byId[o]; if v and v.alive and v.isBot and v.troops * CFG.boatEdge <= me.troops * CFG.cheapFrac then cheaperGrowth = true break end end
+    end
+    if CFG.siege and S.map and #r.shore > 0 and not surviving() and (S.siege or not cheaperGrowth) then
         local al3 = allies()
         if not sg then
             local best, bestT, bestD
@@ -800,7 +816,7 @@ local function doFronts(r)
                     if l and #l > 0 then sg.tile = l[math.random(#l)] end
                 end
                 local salvo = me.troops * (1 - 0.8 ^ 3)
-                local ready = (fill >= CFG.siegeFill or salvo >= v.troops * CFG.siegeEdge) and now0 - (sg.lastSalvo or -99) >= CFG.siegeGap
+                local ready = salvo >= v.troops * CFG.siegeEdge and now0 - (sg.lastSalvo or -99) >= CFG.siegeGap -- the 3 boats must beat them (fill alone launched losing salvos)
                 if sg.stage == "charge" then
                     status.combat = ("SEA SIEGE vs %s: charging %d%% / %d%% (salvo %s vs their %s)"):format(S.names[sg.id] or "?",
                         math.floor(fill * 100), math.floor(CFG.siegeFill * 100), fmtT(salvo), fmtT(v.troops))
@@ -958,7 +974,7 @@ local function doFronts(r)
             local spare = me.troops - keep
             local send, why
             local sideWar = CFG.brain and S.brain and S.brain.main and S.brain.main ~= v.id -- someone else is the real threat
-            if CFG.counterPunish and not sideWar and spare >= punish then send, why = punish, "counter: cancel + invade"
+            if CFG.counterPunish and (not sideWar or a.troops <= spare * 0.5) and spare >= punish then send, why = punish, "counter: cancel + invade" -- side war: only if their home is nearly empty
             elseif CFG.counterCancel and spare >= cancel then send, why = cancel, "counter: cancel their attack"
             end
             if send and send >= (Config.MIN_ATTACK_TROOPS or 250) then
@@ -989,6 +1005,35 @@ local function doFronts(r)
     end
 
     if S.siege and S.siege.stage == "charge" and CFG.siegeHold then return end -- saving troops for the salvo
+    -- LEECH: allies are pouring troops into someone I border -> they fight on two fronts; join in with a thinner edge
+    if CFG.leech and S.armies and now - (S.armiesAt or 0) < 10 and #out < 4 and not surviving() then
+        local hit, by = {}, {}
+        for _, a in S.armies do
+            if a.tgt ~= 0 and a.tgt ~= S.myId and a.atk ~= S.myId and (friendly(a.atk, al) or CFG.leechAny) and not friendly(a.tgt, al) then
+                hit[a.tgt] = (hit[a.tgt] or 0) + a.troops
+                by[a.tgt] = a.atk
+            end
+        end
+        local best, bestP
+        for id, t in hit do
+            local v = S.byId[id]
+            if v and v.alive and r.sample[id] and not fronted[id] and ((v.isBot and CFG.hitBots) or (not v.isBot and CFG.hitPlayers)) then
+                local p = t / math.max(v.troops, 1) -- how hard they're being hit vs their home army
+                if p >= CFG.leechMin and (not bestP or p > bestP) then best, bestP = id, p end
+            end
+        end
+        if best and now - (S.leechAt or -99) >= 4 then
+            local v = S.byId[best]
+            local sendT = math.min(me.troops * ratio(CFG.attackRatio), spare())
+            if sendT >= (Config.MIN_ATTACK_TROOPS or 250) and sendT >= v.troops * CFG.leechEdge then
+                S.leechAt = now
+                if strike(best, ("leech (%s is hitting them %.1fx)"):format(S.names[by[best]] or "ally", bestP), math.clamp(sendT / me.troops, Config.MIN_ATTACK_RATIO or 0.05, 1)) then
+                    out = table.clone(out); out[#out + 1] = { id = best }
+                end
+            end
+        end
+    end
+
     if not CFG.attack then if not status.combat:find("^revenge") then status.combat = "auto attack off" end return end
     if CFG.holdWhenHit then
         for _, v in f.inc or {} do
@@ -1523,7 +1568,8 @@ local function doUnderdog(r)
         local outreq = setOf(S.diplo and S.diplo.outreq)
         for _, v in S.players do
             if v.alive and not v.isBot and v.id ~= S.myId and v.id ~= lead.id and not al[v.id] and not outreq[v.id]
-                and not blacklisted(v.id) and now - (reqAt[v.id] or -99) > 35 then
+                and not blacklisted(v.id) and now - (reqAt[v.id] or -99) > 35 and (S.askN[v.id] or 0) < 2 then
+                S.askN[v.id] = (S.askN[v.id] or 0) + 1
                 reqAt[v.id] = now
                 if send({ t = "ally", id = v.id }) then log(("underdog: asked %s to ally against %s"):format(S.names[v.id] or "?", name)) end
             end
@@ -1732,7 +1778,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.9 · brain · expand · attack · defend · build · weapons",
+    end)(), Footer = "Pixel Conquest · v3.0 · brain · expand · attack · defend · build · weapons",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1852,6 +1898,11 @@ P(AT, "PC_AttackMin", "Attack above % of cap", "attackMin", 0, 100)
 P(AT, "PC_AttackRatio", "Troops per attack %", "attackRatio", 5, 100, "Ignored while 'Use game ATTACK SIZE' is on")
 Nm(AT, "PC_MaxFronts", "Max fronts", "maxFronts", 1, 4)
 local combatLabel = AT:AddLabel("-", true)
+local LC = Tabs.Attack:AddLeftGroupbox("Leech momentum", "git-merge")
+T(LC, "PC_Leech", "Join allies' attacks", "leech", "Enemy fighting an ally on another front: hit them too")
+T(LC, "PC_LeechAny", "Also anyone's attacks", "leechAny", "Pile onto whoever is being hit, not just by allies")
+P(LC, "PC_LeechMin", "When hit with % of their army", "leechMin", 5, 200)
+Nm(LC, "PC_LeechEdge", "Edge needed (x their army)", "leechEdge", 0.1, 2, 1)
 local BT = Tabs.Attack:AddRightGroupbox("Across water", "ship")
 T(BT, "PC_BoatAttack", "Boat invasions", "boatAttack", "A boat carries 1/5 of your troops and fights their whole army")
 P(BT, "PC_CheapFrac", "Cheap grab: army < % mine", "cheapFrac", 1, 30, "Skips the fill gate; bots allowed even in SURVIVE")
@@ -1947,6 +1998,7 @@ P(WP2, "PC_ReinBelow", "Reinforce below % of cap", "reinforceBelow", 5, 100)
 -- ============ DIPLOMACY ============
 local DP = Tabs.Diplo:AddLeftGroupbox("Alliances", "handshake")
 T(DP, "PC_Renew", "Renew expiring", "renew")
+T(DP, "PC_AskAlly", "Send alliance requests", "askAlly", "Off: the script never asks anyone (it still accepts requests)")
 T(DP, "PC_Request", "Ask stronger neighbours", "request")
 Nm(DP, "PC_ReqRatio", "When they have x my troops", "requestRatio", 0.5, 5, 1)
 T(DP, "PC_BlockUnally", "Block breaking alliances", "blockUnally", "Traitors get x0.5 defense")
@@ -2047,5 +2099,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.9 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.9 ready — RightCtrl toggles the UI.", 5)
+log("loaded v3.0 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v3.0 ready — RightCtrl toggles the UI.", 5)
