@@ -185,3 +185,20 @@ Verified with the spy.
     - The build pause only happens under a real threat (nukes seen or me nuked).
   - Revenge nukes need ≥ revengeMinLv city levels in the blast. Seen live: an Atom was fired at a spot with 0 city levels (ports only). After the fix it hit another player for 5 city levels.
 - **v1.7:** `useHudRatio` (default on) reads the game's ATTACK SIZE slider from `PlayerGui.Conquest.Bar.CapCommit.Text` ("ATTACK SIZE  33%"). Expand, attack, revenge, islands and spread use it. Counter attacks size themselves; reclaim keeps its own small %. Attack log lines show `@N%`. Islands confirmed live: the server boats to open coast (4+ boats launched, no `notadjacent`).
+- **v1.8 (2026-09-29): placement strategy, islands, camera**
+  - Placement:
+    - Cities: lowest-level city upgraded first, up to cityMaxLv 5, then a new city ≥ citySpread 31 from others (outside one Atom blast), scored by depth from the border. One Lv 10 city = 2.5M cap in one blast.
+    - Ports: far from my other ports (trade pays 50/tile of route, routes <300 debuffed), and off the front.
+    - Defense posts: 6 tiles behind the attacked border (range 30), maximising the border tiles covered.
+    - Artillery: 12 behind the longest enemy border (range 45).
+    - Airfield: 25 behind the busiest front (range 156).
+    - Railgun: deepest interior.
+  - Expand test (landlocked match):
+    - 0 open contacts.
+    - Island boats never fired: islandMin 45% while troops sat at 20% → 0%.
+    - Now: islandMinLocked 15% when no open land touches me.
+    - The coast list was the first 200 tiles in scan order (north-biased); it's now reservoir-sampled.
+    - Open-coast targets are collected in the scan (every 5th tile).
+    - Boats skip spots within 30 tiles of a target from the last 60 s.
+  - The counter war vs Andtesd108 drained troops 700K → 16K while land went +50%. keepHome was a % of current troops (shrinks to 0); added a keepCap 10% floor.
+  - Camera: patched the `Camera2D.clamp`/`settle` module table (the client calls it through the table). Margin is camMargin × viewport on every side, with no spring-back. `Config.MIN/MAX_ZOOM` ×/÷ camZoom (0.35–12 → 0.175–24). Restored on unload.

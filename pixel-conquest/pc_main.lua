@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v1.7  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v1.8  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -40,10 +40,10 @@ local CFG = {
     -- expand
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
-    islands = true, islandMin = 0.45, islandEvery = 15, islandMaxDist = 250, islandOnlyLocked = false,
+    islands = true, islandMin = 0.45, islandMinLocked = 0.15, islandEvery = 15, islandMaxDist = 250, islandOnlyLocked = false,
     -- combat
     attack = false, attackRatio = 0.33, attackMin = 0.55, edge = 1.2, maxFronts = 3, hitBots = true, hitPlayers = true,
-    counterCancel = true, counterPunish = true, keepHome = 0.35,
+    counterCancel = true, counterPunish = true, keepHome = 0.35, keepCap = 0.1,
     lastStand = true, lastStandNuke = "Atom", lastStandAlly = true,
     revenge = true, revengeRatio = 0.3, revengeMin = 0.5, revengeEdge = 0.6, revengeStronger = 1.3, grudgeSecs = 120,
     hitTraitors = true, finish = true, holdWhenHit = true, nukeCooldown = 45, nukeStronger = false,
@@ -53,7 +53,7 @@ local CFG = {
     build = true, reserve = 0, saveForTop = false,
     b_city = true, b_port = true, b_defense = true, b_sam = false, b_artillery = true, b_airfield = true, b_railgun = false,
     max_city = 10, max_port = 3, max_defense = 4, max_sam = 2, max_artillery = 3, max_airfield = 1, max_railgun = 1,
-    upgradeCities = true,
+    upgradeCities = true, cityMaxLv = 5, citySpread = 31,
     -- weapons
     nuke = false, nukeKind = "Atom", nukeMinGold = 0, nukeSkipBots = true, avoidSam = true,
     airstrike = true, railgun = true, reinforce = true, reinforceBelow = 0.5,
@@ -64,11 +64,34 @@ local CFG = {
     buyPasses = false, passReserve = 0, reinject = true,
     -- safety
     blockPrompts = true, gap = 0.12, scanEvery = 2, useHudRatio = true,
+    camUnlock = true, camMargin = 0.6, camZoom = 2,
 }
+
+-- ============================== camera (game's Camera2D module; the client calls it through the table) ==============================
+local Cam = require(Conquest:WaitForChild("Camera2D"))
+local camOrig = { clamp = Cam.clamp, settle = Cam.settle, min = Config.MIN_ZOOM, max = Config.MAX_ZOOM }
+local function applyCamera()
+    if CFG.camUnlock then
+        -- the game's clamp keeps the map edge on screen (extra room only while "soft"); allow camMargin x the viewport on every side
+        Cam.clamp = function(c)
+            local mx, my = (c.viewW or 0) * CFG.camMargin, (c.viewH or 0) * CFG.camMargin
+            local ex = c.viewW - W * c.zoom
+            c.x = math.clamp(c.x, math.min(0, ex) - mx, math.max(0, ex) + mx)
+            local top = c.padTop or 0
+            local ey = c.viewH - (c.padBottom or 0) - H * c.zoom
+            c.y = math.clamp(c.y, math.min(top, ey) - my, math.max(top, ey) + my)
+        end
+        Cam.settle = function(c) c.settling = false end -- no spring back to the tight bounds
+        Config.MIN_ZOOM = camOrig.min / CFG.camZoom
+        Config.MAX_ZOOM = camOrig.max * CFG.camZoom
+    else
+        Cam.clamp, Cam.settle, Config.MIN_ZOOM, Config.MAX_ZOOM = camOrig.clamp, camOrig.settle, camOrig.min, camOrig.max
+    end
+end
 
 -- ============================== state / log ==============================
 local S = { myId = nil, phase = nil, players = {}, byId = {}, names = {}, me = nil, fronts = nil, gold = 0, diplo = nil,
-    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
+    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
     board = nil, lobbyMoney = nil, rewardClaimed = nil, scan = nil, readyAt = {}, leaveAt = nil }
 local reqAt, counterAt = {}, {}
 local stats = { sent = 0, attacks = 0, builds = 0, nukes = 0, strikes = 0, allies = 0, joins = 0, denied = 0 }
@@ -190,7 +213,7 @@ local function scanMap()
     if not m or not S.myId then return nil end
     local own, ter, me = m.owner, m.terrain, S.myId
     S.map = m -- missile listener checks whether a launch lands on my land
-    local r = { hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
+    local r = { shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
     for i = 0, N - 1 do
         local o = readu8(own, i)
         if o == me then
@@ -225,7 +248,13 @@ local function scanMap()
                 end
             end
             if inner and #r.interior < 400 and math.random() < 0.05 then r.interior[#r.interior + 1] = i end
-            if btest(readu8(ter, i), 64) and #r.shore < 200 then r.shore[#r.shore + 1] = i end
+            if btest(readu8(ter, i), 64) then -- my coast: reservoir sample so the whole coastline is represented
+                r.shoreN += 1
+                if #r.shore < 300 then r.shore[#r.shore + 1] = i elseif math.random(r.shoreN) <= 300 then r.shore[math.random(300)] = i end
+            end
+        elseif o == 0 and i % 5 == 0 and btest(readu8(ter, i), 64) and passable(ter, i) then -- open coast anywhere (island targets)
+            r.coastN += 1
+            if #r.coast < 400 then r.coast[#r.coast + 1] = i elseif math.random(r.coastN) <= 400 then r.coast[math.random(400)] = i end
         elseif o ~= 0 and i % 61 == 0 then
             local c = (r.anyN[o] or 0) + 1
             r.anyN[o] = c
@@ -467,15 +496,17 @@ local function doFronts(r)
     end
     -- ISLANDS: an attack on land I don't border becomes a transport boat server-side (troops/5, max 3 boats,
     -- Sim.launchTransportBoat). Pick the nearest open coast tile across water from my coast.
-    if CFG.islands and not S.islandOff and S.map and #r.shore > 0 and fill >= CFG.islandMin and now0 >= (S.islandAt or 0)
-        and not (CFG.islandOnlyLocked and r.sample[0]) then
-        local own, ter = S.map.owner, S.map.terrain
+    local locked = not r.sample[0] -- no open land touches me: boats are the only way to grow
+    if CFG.islands and not S.islandOff and S.map and #r.shore > 0 and #r.coast > 0 and now0 >= (S.islandAt or 0)
+        and fill >= (locked and CFG.islandMinLocked or CFG.islandMin) and me.troops / 5 >= (Config.TRANSPORT_BOAT_MIN_TROOPS or 250)
+        and not (CFG.islandOnlyLocked and not locked) then
+        -- nearest open coast across water, skipping spots a recent boat already went for (spread over islands)
         local best, bd
-        for n = 1, 2500 do
-            local i = math.random(0, N - 1)
-            local b = readu8(ter, i)
-            if btest(b, 64) and btest(b, 128) and bit32.band(b, 63) < 63 and readu8(own, i) == 0 then
-                for k = 1, 12 do
+        for _, i in r.coast do
+            local fresh = true
+            for t, at in S.islandTargets do if now0 - at < 60 and dist(t, i) < 30 then fresh = false break end end
+            if fresh then
+                for k = 1, 16 do
                     local d = dist(r.shore[math.random(#r.shore)], i)
                     if d > 3 and d <= CFG.islandMaxDist and (not bd or d < bd) then best, bd = i, d end
                 end
@@ -483,7 +514,8 @@ local function doFronts(r)
         end
         S.islandAt = now0 + CFG.islandEvery
         if best then
-            S.lastTile, S.islandSent, S.lastDenied = best, now0, "-" -- fresh so a stale denial can't switch islands off
+            S.lastTile, S.islandSent, S.lastDenied = best, now0, "-"
+            S.islandTargets[best] = now0 -- fresh so a stale denial can't switch islands off
             if send({ t = "attack", tile = best, ratio = ratio(CFG.expandRatio) }, "island") then
                 stats.attacks += 1
                 status.expand = ("boat to open coast %d (%.0f tiles away)"):format(best, bd); log(status.expand)
@@ -553,7 +585,7 @@ local function doFronts(r)
     -- COUNTER (Sim.launchAttack, OPPOSING_ATTACKS_CANCEL): my attack on someone attacking me first cancels their incoming
     -- attack 1:1, the rest invades their home. Their home troops (players.troops) already exclude what they sent at me.
     S.threat = nil
-    local keep = me.troops * CFG.keepHome
+    local keep = math.max(me.troops * CFG.keepHome, cap * CFG.keepCap) -- floor: never invade myself down to ~0% of cap
     for _, v in f.inc or {} do
         local a = S.byId[v.id]
         local incT = v.troops or 0
@@ -617,34 +649,107 @@ local function buildCost(kind)
     elseif kind == "railgun" then return f.railgunCost end
 end
 
+-- PLACEMENT STRATEGY (numbers from Config / Nukes / Economy):
+--  * a nuke removes every structure within its outer radius (Atom 30, Mega 60): spread city levels over several
+--    cities >= citySpread apart instead of one Lv10 city (= 2.5M army cap in one blast)
+--  * cities deep inside (far from any border) survive attacks longest
+--  * trade ships pay by route length (50/tile, short routes < 300 debuffed): spread ports far from each other
+--  * defense posts buff 30 tiles around them: sit ~6 tiles behind the attacked border, not on it (overrun first)
+--  * artillery shells 45 tiles: sit ~12 behind the border so the ring reaches ~33 tiles into enemy land
+local function borderSamples(r)
+    local all = {}
+    for _, list in r.borderMine do for _, t in list do all[#all + 1] = t end end
+    return all
+end
+local function depthOf(t, border)
+    local d = 1e9
+    for _, b in border do local x = dist(t, b); if x < d then d = x end end
+    return d
+end
+local function owned(t) return S.map and t >= 0 and t < N and readu8(S.map.owner, t) == S.myId and passable(S.map.terrain, t) end
+-- step k tiles from border tile b toward my territory's center
+local function inward(b, k, r)
+    if not r.center then return nil end
+    local bx, by, cx, cy = b % W, b // W, r.center % W, r.center // W
+    local dx, dy = cx - bx, cy - by
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 1 then return nil end
+    local x, y = math.floor(bx + dx / len * k + 0.5), math.floor(by + dy / len * k + 0.5)
+    if x < 0 or x >= W or y < 0 or y >= H then return nil end
+    return y * W + x
+end
+-- best of a candidate list by score(t) (higher = better), only owned + spaced tiles
+local function bestOf(cands, score)
+    local best, bs
+    for i = 1, math.min(#cands, 80) do
+        local t = cands[#cands > 80 and math.random(#cands) or i]
+        if owned(t) and spaced(t) then
+            local sc = score(t)
+            if sc and (not bs or sc > bs) then best, bs = t, sc end
+        end
+    end
+    return best, bs
+end
+
 local function placeFor(kind, r)
+    local border = borderSamples(r)
     if kind == "city" then
         local cities = myStructs(KIND.city)
-        if CFG.upgradeCities then
-            for _, t in cities do
-                local v = S.structs[t]
-                if (v.level or 1) < (Config.CITY_MAX_LEVEL or 10) and (S.badTile[t] or 0) <= os.clock() then return t end
-            end
+        -- upgrade the LOWEST city first, and only up to cityMaxLv while a new city still fits
+        local low, lowLv = nil, 99
+        for _, t in cities do
+            local lv = S.structs[t].level or 1
+            if lv < lowLv and (S.badTile[t] or 0) <= os.clock() then low, lowLv = t, lv end
         end
-        return #cities < CFG.max_city and pick(r.interior) or nil
-    elseif kind == "port" then return pick(r.shore)
-    elseif kind == "defense" then
-        local inc, top, topT = S.fronts and S.fronts.inc or {}, nil, -1
-        for _, v in inc do if v.troops and v.troops > topT and r.borderMine[v.id] then top, topT = v.id, v.troops end end
-        return top and pick(r.borderMine[top])
-    elseif kind == "artillery" then
+        local cap = #cities < CFG.max_city and CFG.cityMaxLv or (Config.CITY_MAX_LEVEL or 10)
+        if CFG.upgradeCities and low and lowLv < cap then return low end
+        if #cities >= CFG.max_city then return nil end
+        local function score(t)
+            local near = 1e9
+            for _, c in cities do local d = dist(t, c); if d < near then near = d end end
+            if near < CFG.citySpread then return nil end -- inside another city's blast
+            return math.min(depthOf(t, border), 60) * 2 + math.min(near, 120)
+        end
+        local t = bestOf(r.interior, score)
+        if t then return t end
+        -- no room for a spread-out city: upgrade past cityMaxLv instead
+        if CFG.upgradeCities and low and lowLv < (Config.CITY_MAX_LEVEL or 10) then return low end
+        return nil
+    elseif kind == "port" then
+        local ports = myStructs(KIND.port)
+        return (bestOf(r.shore, function(t)
+            local near = 1e9
+            for _, p in ports do local d = dist(t, p); if d < near then near = d end end
+            -- far from my other ports (longer trade routes), and not on a front line
+            return math.min(near, 400) + math.min(depthOf(t, border), 40)
+        end))
+    elseif kind == "defense" or kind == "artillery" then
+        local top, topV = nil, -1
+        if kind == "defense" then -- the biggest incoming attack
+            for _, v in (S.fronts and S.fronts.inc or {}) do if v.troops and v.troops > topV and r.borderMine[v.id] then top, topV = v.id, v.troops end end
+        else -- the enemy player I share the longest border with
+            for id, c in r.contacts do if id ~= 0 and c > topV and r.borderMine[id] then top, topV = id, c end end
+        end
+        if not top then return nil end
+        local back = kind == "defense" and 6 or 12
+        local reach = kind == "defense" and (Config.DEFENSE_POST_RANGE or 30) or 45
+        local front = r.borderMine[top]
+        local cands = {}
+        for _, b in front do local t = inward(b, back, r); if t then cands[#cands + 1] = t end end
+        return (bestOf(cands, function(t)
+            local c = 0
+            for _, b in front do if dist(t, b) <= reach then c += 1 end end -- border tiles it protects / shells
+            return c
+        end))
+    elseif kind == "airfield" then
+        -- strikes reach 156: behind the busiest enemy front, deep enough to survive
         local top, topC = nil, 0
         for id, c in r.contacts do if id ~= 0 and c > topC then top, topC = id, c end end
-        return top and pick(r.borderMine[top])
-    else -- sam / airfield / railgun: interior, SAM near my cities
-        if kind == "sam" then
-            local cities = myStructs(KIND.city)
-            if #cities > 0 then
-                local c = cities[math.random(#cities)]
-                return pick(r.interior, function(t) return dist(t, c) < 40 end) or pick(r.interior)
-            end
-        end
-        return pick(r.interior)
+        local cands = {}
+        if top then for _, b in r.borderMine[top] do local t = inward(b, 25, r); if t then cands[#cands + 1] = t end end end
+        return (bestOf(#cands > 0 and cands or r.interior, function(t) return math.min(depthOf(t, border), 40) end))
+    else -- railgun (no range limit) / sam fallback: deepest interior
+        return (bestOf(r.interior, function(t) return depthOf(t, border) end))
     end
 end
 
@@ -1045,6 +1150,8 @@ task.spawn(function()
     end
 end)
 
+pcall(applyCamera)
+
 -- reload after the lobby <-> match teleport
 if CFG.reinject and queue_on_teleport and not getgenv().PC_QUEUED then -- once per server: reloads here must not stack queue entries
     getgenv().PC_QUEUED = true
@@ -1057,6 +1164,7 @@ end
 -- ============================== unload ==============================
 local function unload()
     running = false
+    CFG.camUnlock = false; pcall(applyCamera) -- give the game its camera back
     for _, c in conns do pcall(function() c:Disconnect() end) end
     getgenv().PC_FARM = nil
 end
@@ -1086,7 +1194,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v1.7 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v1.8 · expand · combat · build · weapons · diplomacy · lobby",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -1112,6 +1220,7 @@ local EXI = Tabs.Expand:AddRightGroupbox("Islands (transport boats)", "ship")
 EXI:AddToggle("PC_Islands", { Text = "Boat to open land across water", Default = CFG.islands, Callback = set("islands") })
 EXI:AddToggle("PC_IslandLocked", { Text = "Only when no open land borders me", Default = CFG.islandOnlyLocked, Callback = set("islandOnlyLocked") })
 EXI:AddSlider("PC_IslandMin", { Text = "Only above % of cap", Default = CFG.islandMin * 100, Min = 10, Max = 95, Rounding = 0, Callback = pct("islandMin") })
+EXI:AddSlider("PC_IslandMinLocked", { Text = "...when boxed in (no open land next to me)", Default = CFG.islandMinLocked * 100, Min = 0, Max = 95, Rounding = 0, Callback = pct("islandMinLocked") })
 EXI:AddSlider("PC_IslandEvery", { Text = "Seconds between boats", Default = CFG.islandEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("islandEvery") })
 EXI:AddSlider("PC_IslandDist", { Text = "Max sea distance (tiles)", Default = CFG.islandMaxDist, Min = 20, Max = 600, Rounding = 0, Callback = set("islandMaxDist") })
 EXI:AddLabel("Each boat carries 1/5 of your troops (game rule, ratio ignored), max 3 at sea. Nearest open coast first.", true)
@@ -1137,6 +1246,7 @@ local CT = Tabs.Combat:AddLeftGroupbox("Counter attack (game cancels opposing at
 CT:AddToggle("PC_CounterCancel", { Text = "Cancel incoming attacks", Tooltip = "Sends exactly their attack size back: both armies cancel 1:1", Default = CFG.counterCancel, Callback = set("counterCancel") })
 CT:AddToggle("PC_CounterPunish", { Text = "Cancel + invade when I can afford it", Tooltip = "Extra troops push into their home, which is emptied by their own attack", Default = CFG.counterPunish, Callback = set("counterPunish") })
 CT:AddSlider("PC_KeepHome", { Text = "Always keep % of my troops home", Default = CFG.keepHome * 100, Min = 0, Max = 90, Rounding = 0, Callback = pct("keepHome") })
+CT:AddSlider("PC_KeepCap", { Text = "...and never below % of my cap", Default = CFG.keepCap * 100, Min = 0, Max = 60, Rounding = 0, Callback = pct("keepCap") })
 CT:AddToggle("PC_LastStand", { Text = "Last stand when I can't cancel it", Tooltip = "Nuke the attacker, defense post on that border, reinforce, ask to ally", Default = CFG.lastStand, Callback = set("lastStand") })
 CT:AddDropdown("PC_LastNuke", { Text = "Last stand nuke", Values = { "Atom", "Mega", "Scattershot" }, Default = CFG.lastStandNuke, Callback = set("lastStandNuke") })
 CT:AddToggle("PC_LastAlly", { Text = "Last stand: ask the attacker to ally", Default = CFG.lastStandAlly, Callback = set("lastStandAlly") })
@@ -1156,6 +1266,8 @@ local combatLabel = RV:AddLabel("-", true)
 local BD = Tabs.Build:AddLeftGroupbox("Auto build (priority top to bottom)", "hammer")
 BD:AddToggle("PC_Build", { Text = "Auto build", Default = CFG.build, Callback = set("build") })
 BD:AddToggle("PC_Upgrade", { Text = "Upgrade cities in place (to Lv 10)", Default = CFG.upgradeCities, Callback = set("upgradeCities") })
+BD:AddSlider("PC_CityMaxLv", { Text = "Upgrade each city to Lv (then build a new one)", Tooltip = "One nuke wipes every building in its blast: spread levels over several cities", Default = CFG.cityMaxLv, Min = 1, Max = 10, Rounding = 0, Callback = set("cityMaxLv") })
+BD:AddSlider("PC_CitySpread", { Text = "Min tiles between cities", Tooltip = "31 = outside one Atom blast, 61 = outside a Mega", Default = CFG.citySpread, Min = 16, Max = 90, Rounding = 0, Callback = set("citySpread") })
 BD:AddToggle("PC_SaveTop", { Text = "Save gold for the top missing building", Default = CFG.saveForTop, Callback = set("saveForTop") })
 BD:AddSlider("PC_Reserve", { Text = "Gold reserve (K)", Default = CFG.reserve / 1000, Min = 0, Max = 5000, Rounding = 0, Callback = function(v) CFG.reserve = v * 1000 end })
 local BD2 = Tabs.Build:AddRightGroupbox("Buildings", "building")
@@ -1244,6 +1356,10 @@ SA:AddToggle("PC_HudRatio", { Text = "Use the game's ATTACK SIZE slider", Toolti
 SA:AddToggle("PC_BlockPrompts", { Text = "Block the game's Robux purchase prompts", Tooltip = "Also blocks prompts you click yourself", Default = CFG.blockPrompts, Callback = set("blockPrompts") })
 SA:AddSlider("PC_Gap", { Text = "Min seconds between actions", Default = CFG.gap, Min = 0.05, Max = 1, Rounding = 2, Callback = set("gap") })
 SA:AddSlider("PC_ScanEvery", { Text = "Think every (s)", Default = CFG.scanEvery, Min = 1, Max = 10, Rounding = 0, Callback = set("scanEvery") })
+local CM = Tabs.Settings:AddRightGroupbox("Camera", "camera")
+CM:AddToggle("PC_CamUnlock", { Text = "Unlock camera bounds", Default = CFG.camUnlock, Callback = function(v) CFG.camUnlock = v; applyCamera() end })
+CM:AddSlider("PC_CamMargin", { Text = "Pan past the map edge (x screen)", Default = CFG.camMargin, Min = 0, Max = 2, Rounding = 1, Callback = function(v) CFG.camMargin = v; applyCamera() end })
+CM:AddSlider("PC_CamZoom", { Text = "Zoom range (x game's)", Default = CFG.camZoom, Min = 1, Max = 4, Rounding = 1, Callback = function(v) CFG.camZoom = v; applyCamera() end })
 local Menu = Tabs.Settings:AddRightGroupbox("Menu", "menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 Library:OnUnload(unload)
@@ -1289,5 +1405,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v1.7 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v1.7 ready — RightCtrl toggles the UI.", 5)
+log("loaded v1.8 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v1.8 ready — RightCtrl toggles the UI.", 5)
