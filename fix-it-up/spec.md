@@ -238,3 +238,10 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - The main chunk is at the 200-local limit, so new top-level state goes into tables (HOOK, STAFF, ST).
   - Trial: bought an Ontel Costa for 2728 and sold it after 195 s for 2.7K; both work.
 - 2026-09-30 action gate: "Block actions in failing servers" (HOP.gate). While the server fails the hop rules, STAFF.gated() refuses run()/queued() buttons, the auto loop, the distance farm and gold contracts. An empty server counts as passing. Server is rechecked every 15 s and 3 s after each PlayerAdded. "Hop away when the server breaks the rules" (HOP.leaveOnFail): STAFF.leave sets STAFF.leaving (gates everything), waits up to 10 min for busy/manualPending to clear so a repair never strands loose engine parts, rechecks, then turns on auto hop (unless the offender left).
+- 2026-09-30 auctions recon:
+  - workspace.Utils.Auctions.Garages has 12 garages (Garage1..12), each with a Gate, RootPos and a Cache folder. The attribute Open=true marks one already opened.
+  - Each garage has 2 ProximityPrompts on RootPos.Attachment: MoneyBuy ("75,000€", "Buy Garage") and RobuxBuy (99 R$, dev product AuctionsGarage 3394089342 in Modules.MarketplaceIds).
+  - Cache stays empty until opened: the server rolls on purchase, so nothing client-side predicts the prize.
+  - The prize table is on Utils.Auctions.Screen.Gui.Scroll (direct Template rows): junkyard car 40%, 65k 30.5%, 70k 15%, 75k 8%, 150k 4%, 200k 2%, Chule El Caminho SS 454 0.44%, Four JF / Missah Silva S15 / Four Mustank Hoonicorn 0.02% each. The Scroll.List rows are the junkyard spawn list, which the "junkyard car" prize presumably rolls from.
+  - Cash EV is about 46.3k per 75k open, plus the 40% junk car: roughly a 20k+ loss per open. The in-game sign says auctions are for rare cars, not profit.
+  - Events.Medal fires "RareAuction" for rare rolls; Events.Auctions is a BindableFunction; Status.AuctionsOpen counts the player's opens.
