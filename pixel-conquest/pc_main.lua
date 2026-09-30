@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.6  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.7  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -40,6 +40,7 @@ local CFG = {
     -- expand
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
+    lootWeight = 0.05, lootRadius = 50, cheapFrac = 0.08,
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20, riverDist = 15, riverEdge = 0.6, riverEvery = 4,
     brain = true, brainSurvive = 0.25, brainNbrShare = 0.3, pushEdge = 0.5,
     underdog = true, udRatio = 1.5, udDanger = 0.08, udDiplo = true, udStrike = true, udOpening = 0.6, udStrikeRatio = 0.5, udEdge = 1.0,
@@ -555,6 +556,20 @@ local function doSpawn(r)
 end
 
 -- ============================== expand + combat (one front scheduler) ==============================
+-- LOOT: humans keep captured buildings (Config.TIER human RAZES_CAPTURED = false; Economy hands ownerId over),
+-- so a weak neighbour's city near where I hit is a free city with its levels
+local LOOT = { [KIND.sam] = 20, [KIND.port] = 6 }
+local function lootNear(o, at, radius)
+    if not at then return 0 end
+    local v = 0
+    for t, st in S.structs do
+        if st.ownerId == o and dist(t, at) <= radius then
+            v += (st.kind or 1) == KIND.city and 10 * (st.level or 1) or (LOOT[st.kind] or 5)
+        end
+    end
+    return v
+end
+
 -- ============================== brain: one read of the position that every feature obeys ==============================
 -- posture SURVIVE / CONTEND / DOMINATE + a troop budget. Home defense need = incoming attacks + a share of the
 -- strongest non-allied land neighbour's army (their home troops can come at me any moment).
@@ -771,7 +786,7 @@ local function doFronts(r)
 
     -- BOAT INVASIONS: attack a neighbour across water. A boat carries troops/5 (ratio ignored) and fights the defender's
     -- WHOLE army (Sim attack loss), so only take on someone that boat can beat. Shares the 3-boat cap with islands.
-    if CFG.boatAttack and not surviving() and S.map and #r.shore > 0 and fill >= CFG.boatMin and now0 >= (S.boatAt or 0) and not (S.siege and S.siege.stage == "charge") then
+    if CFG.boatAttack and S.map and #r.shore > 0 and now0 >= (S.boatAt or 0) and not (S.siege and S.siege.stage == "charge") then
         local boat = me.troops / 5
         local al2 = allies()
         local best, bestScore, bestTile, bestD
@@ -781,13 +796,18 @@ local function doFronts(r)
             if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al2) and now0 >= (S.boatBad[o] or 0)
                 and not (S.siege and S.siege.id == o) -- the siege is handling them
                 and ((v.isBot and CFG.hitBots) or (not v.isBot and CFG.hitPlayers)) and not blacklisted(o) then
-                local t, d = crossing(r, list, CFG.islandMaxDist)
+                -- cheap grab: their whole army is a rounding error of mine -> ignore the fill gate (bots even while surviving)
+                local cheap = v.troops * CFG.boatEdge <= me.troops * CFG.cheapFrac
+                local gateOk = cheap and (v.isBot or not surviving()) or (not surviving() and fill >= CFG.boatMin)
+                local t, d
+                if gateOk then t, d = crossing(r, list, CFG.islandMaxDist) end
                 -- boats sail 1 tile per tick: across a river the next boat lands ~1 s behind the last and merges
                 -- into the same attack, so a much thinner edge holds; on open sea a lone boat bleeds out
                 local river = d and d <= CFG.riverDist
                 if t and boat >= v.troops * CFG.boatEdge * (river and CFG.riverEdge or 1) then
                     -- thin armies spread over lots of land are the cheapest to take; grudges and bots first
-                    local score = v.troops / math.max(v.tiles, 1) * (grudge and 0.3 or 1) * (v.isBot and 0.7 or 1) + d * 0.5
+                    local loot = lootNear(o, t, CFG.lootRadius)
+                    local score = (v.troops / math.max(v.tiles, 1) * (grudge and 0.3 or 1) * (v.isBot and 0.7 or 1) + d * 0.5) / (1 + loot * CFG.lootWeight)
                     if not bestScore or score < bestScore then best, bestScore, bestTile, bestD = o, score, t, d end
                 end
             end
@@ -842,8 +862,9 @@ local function doFronts(r)
                 -- revenge only when I'm stronger overall; otherwise troops stay home (my defense = my total troops)
                 and (not grudge or me.troops >= v.troops * CFG.revengeStronger) then -- both paths: never chase a stronger grudge
                 -- lower score = better: weakest first, grudges/traitors/finishable players pulled to the front
-                local score = v.troops
-                local tag = "weakest"
+                local loot = lootNear(id, r.sample[id], CFG.lootRadius)
+                local score = v.troops / (1 + loot * CFG.lootWeight)
+                local tag = loot > 0 and ("loot " .. loot) or "weakest"
                 if CFG.finish and not v.isBot and v.troops < me.troops * 0.1 then score *= 0.2; tag = "finish off (50% of their gold)" end
                 if CFG.hitTraitors and traitors[id] then score *= 0.3; tag = "traitor (x0.5 defense)" end
                 if grudge and CFG.revenge then score *= 0.05; tag = "revenge" end
@@ -1612,7 +1633,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.6 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.7 · expand · combat · build · weapons · diplomacy · lobby",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1659,6 +1680,7 @@ CB:AddSlider("PC_AttackRatio", { Text = "Troops sent per attack %", Default = CF
 CB:AddSlider("PC_AttackMin", { Text = "Only attack above % of cap", Default = CFG.attackMin * 100, Min = 0, Max = 100, Rounding = 0, Callback = pct("attackMin") })
 CB:AddSlider("PC_Edge", { Text = "Required troop edge (x)", Default = CFG.edge, Min = 0.5, Max = 4, Rounding = 1, Callback = set("edge") })
 CB:AddSlider("PC_MaxFronts", { Text = "Max fronts (game cap 4)", Default = CFG.maxFronts, Min = 1, Max = 4, Rounding = 0, Callback = set("maxFronts") })
+CB:AddSlider("PC_LootWeight", { Text = "Loot pull (captured buildings)", Tooltip = "You keep buildings you conquer: weak targets with cities nearby go first. 0 = ignore", Default = CFG.lootWeight, Min = 0, Max = 0.3, Rounding = 2, Callback = set("lootWeight") })
 CB:AddToggle("PC_HoldHit", { Text = "Hold troops while a strong player attacks me", Tooltip = "Your defense = your total troops at home", Default = CFG.holdWhenHit, Callback = set("holdWhenHit") })
 CB:AddLabel("Allies and teammates are never attacked.", true)
 local CT = Tabs.Combat:AddLeftGroupbox("Counter attack (game cancels opposing attacks 1:1)", "shield")
@@ -1672,6 +1694,7 @@ CT:AddToggle("PC_LastAlly", { Text = "Last stand: ask the attacker to ally", Def
 CT:AddLabel("A nuke kills troops in the attacker's running attacks too, and wipes every building in its blast.", true)
 local BT = Tabs.Combat:AddLeftGroupbox("Across water (boat invasions)", "ship")
 BT:AddToggle("PC_BoatAttack", { Text = "Invade neighbours across water", Default = CFG.boatAttack, Callback = set("boatAttack") })
+BT:AddSlider("PC_CheapFrac", { Text = "Cheap grab: their army < % of mine", Tooltip = "Skips the fill gate; bots allowed even in SURVIVE", Default = math.floor(CFG.cheapFrac * 100 + 0.5), Min = 1, Max = 30, Rounding = 0, Callback = pct("cheapFrac") })
 BT:AddSlider("PC_BoatMin", { Text = "Only above % of cap", Default = CFG.boatMin * 100, Min = 10, Max = 95, Rounding = 0, Callback = pct("boatMin") })
 BT:AddSlider("PC_BoatEdge", { Text = "Boat must be x their army", Default = CFG.boatEdge, Min = 0.3, Max = 3, Rounding = 1, Callback = set("boatEdge") })
 BT:AddSlider("PC_BoatEvery", { Text = "Seconds between invasions", Default = CFG.boatEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("boatEvery") })
@@ -1897,5 +1920,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.6 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.6 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.7 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.7 ready — RightCtrl toggles the UI.", 5)

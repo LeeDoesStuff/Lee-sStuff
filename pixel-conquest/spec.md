@@ -294,3 +294,11 @@ Verified with the spy.
     - DOMINATE when I'm #1 with ≥ 2× the land of #2.
     - Auto attack, siege push and underdog strike are capped at `spare`.
   - Next for the "chess bot" goal: move from per-feature rules to scoring every candidate action (expected tiles and army after the game's loss formula, gold value, risk) and picking the best within the budget.
+- **v2.7 (2026-09-30): loot + cheap grabs**
+  - Captured buildings are KEPT: `Config.TIER[human].RAZES_CAPTURED = false` (only the "tribe" bot tier razes). Economy:983 transfers `ownerId`. A weak bot's Lv-N city is a free city with its levels.
+  - `lootNear(o, tile, 50)`: their buildings near the attack / landing tile (city 10×lv, anti-nuke 20, port 6, other 5).
+    - Land target score = troops / (1 + loot × lootWeight 0.05). The log tag becomes "loot N".
+    - The boat score is divided the same way.
+  - Cheap grab: a target army × boatEdge ≤ 8% of mine skips the 40% fill gate; bots are allowed even in SURVIVE.
+    - Why: boat invasions hadn't fired for 7 min while troops sat under 40% from wars, and Norway (2.4K vs an 11.8K boat) was skipped. Norway's city was then nuked by someone else.
+  - Live after the fix: Norway hit by land + boat; "loot 106: Japan (9.0K troops)" (Japan had a Lv 5 city cluster at the border).
