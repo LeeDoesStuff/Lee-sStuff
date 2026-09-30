@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.4  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.5  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -168,8 +168,27 @@ local function ratio(own) return CFG.useHudRatio and gameRatio() or own end
 -- ============================== sender (single queue, dedup, rate cap) ==============================
 local lastSent, lastAny = {}, 0
 local FORBID = { revive = true, topup = true, unally = true }
+local HOSTILE = { attack = true, nuke = true, airstrike = true, railgun = true }
+-- ally or teammate (fronts.diplo.allies + players.team); used by the sender's last-line check
+local function isFriend(id)
+    if not id or id == 0 or id == S.myId then return false end
+    for _, a in (S.diplo and S.diplo.allies or {}) do if tonumber(a) == id then return true end end
+    local me, v = S.me, S.byId[id]
+    return (me and v and me.team ~= nil and v.team == me.team) or false
+end
+local blockedAt = {}
 local function send(msg, key)
     if FORBID[msg.t] then return false end
+    if HOSTILE[msg.t] and S.map and type(msg.tile) == "number" and msg.tile >= 0 and msg.tile < N then
+        local o = readu8(S.map.owner, msg.tile)
+        if isFriend(o) then -- last line: never hit an ally / teammate, whatever picked the target
+            if os.clock() - (blockedAt[o] or -99) > 10 then
+                blockedAt[o] = os.clock()
+                log(("blocked %s on ally %s"):format(msg.t, S.names[o] or ("#" .. o)))
+            end
+            return false
+        end
+    end
     key = key or (msg.t .. ":" .. tostring(msg.tile or msg.id or ""))
     local now = os.clock()
     if lastSent[key] and now - lastSent[key] < 1 then return false end
@@ -644,8 +663,8 @@ local function doFronts(r)
         if sg then
             local v = S.byId[sg.id]
             local owner = readu8(S.map.owner, sg.tile)
-            if not v or not v.alive then
-                log("sea siege on " .. (S.names[sg.id] or "?") .. " ended (eliminated)")
+            if not v or not v.alive or isFriend(sg.id) then
+                log("sea siege on " .. (S.names[sg.id] or "?") .. " ended (" .. (v and v.alive and "now an ally" or "eliminated") .. ")")
                 S.siege = nil
             elseif r.contacts[sg.id] and r.sample[sg.id] then
                 -- BEACHHEAD: I border them now. Feed it by land every 4 s (attacks on the same player merge),
@@ -1019,8 +1038,20 @@ local function doEconomy(r)
             if s.ownerId == S.myId then mine[#mine + 1] = t end
             if s.kind == KIND.sam and s.ownerId ~= S.myId then sams[#sams + 1] = t end
         end
+        local own = S.map and S.map.owner
         local function safe(c)
             for _, t in mine do if dist(t, c) < nk.r + 2 then return false end end
+            for t, st in S.structs do if isFriend(st.ownerId) and dist(t, c) < nk.r + 2 then return false end end
+            if own then -- sample the blast disc for allied land
+                local cx, cy = c % W, c // W
+                for _, rr in { nk.r, nk.r * 0.6, nk.r * 0.3 } do
+                    for a = 0, 15 do
+                        local x = math.floor(cx + rr * math.cos(a * math.pi / 8) + 0.5)
+                        local y = math.floor(cy + rr * math.sin(a * math.pi / 8) + 0.5)
+                        if x >= 0 and x < W and y >= 0 and y < H and isFriend(readu8(own, y * W + x)) then return false end
+                    end
+                end
+            end
             for _, list in r.borderMine do for _, t in list do if dist(t, c) < nk.r + 5 then return false end end end
             if CFG.avoidSam then for _, t in sams do if dist(t, c) < 80 then return false end end end
             return true
@@ -1277,7 +1308,8 @@ local function doStrikes(r)
                     if not range or dist(from, t) <= range then
                         local v = 0 -- everything inside the hit radius counts
                         for _, u in targets do if dist(t, u) <= radius then v += worth(S.structs[u]) end end
-                        if not bv or v > bv then best, bv = t, v end
+                        for u, st in S.structs do if isFriend(st.ownerId) and dist(t, u) <= radius then v = -1 break end end -- splash on an ally
+                        if v >= 0 and (not bv or v > bv) then best, bv = t, v end
                     end
                 end
                 if not best then -- no known enemy building in range: nearest enemy border tile
@@ -1533,7 +1565,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.4 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.5 · expand · combat · build · weapons · diplomacy · lobby",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1812,5 +1844,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.4 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.4 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.5 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.5 ready — RightCtrl toggles the UI.", 5)

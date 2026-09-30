@@ -277,3 +277,9 @@ Verified with the spy.
     - Now siegeBots = on, and it sieges when 1 boat < siegeTrigger 2× their army.
   - Mid-inject names: the client id->name table is the number->string upvalue containing my Name/DisplayName.
   - All 10 Obsidian scripts now open at `Size = UDim2.fromOffset(704, 824)` (the user's pick).
+- **v2.5 (2026-09-30): ally safety**
+  - Target pickers already skipped allies. The gaps were: a running siege whose target became an ally, nuke blasts covering allied land or buildings, and strike splash.
+  - Root fix: `send()` refuses attack/nuke/airstrike/railgun when the target tile's owner is an ally (fronts.diplo.allies) or teammate (players.team), and logs "blocked X on ally Y".
+  - Nuke spots: no ally structure within r+2, and a 48-point sample of the blast disc must hold no allied land.
+  - Strike spots: a candidate whose splash covers an ally building scores -1 and is skipped.
+  - The siege ends when its target becomes an ally.
