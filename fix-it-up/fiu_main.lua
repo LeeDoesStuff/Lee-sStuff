@@ -3053,17 +3053,21 @@ do
         local done = {}
         for i = 1, math.min(#rims, #tires) do
             local before = myParts()
-            held = rims[i]; task.wait(0.8); fireclickdetector(cd); task.wait(1.2)
-            held = tires[i]; task.wait(0.8); fireclickdetector(cd)
-            local t, wheel = os.clock(), nil
-            repeat
-                task.wait(0.2)
-                for p in pairs(myParts()) do
-                    local c = p:GetAttribute("Category") or ""
-                    local ours = p == rims[i] or p == tires[i] or not before[p] -- never a finished wheel that was already lying around
-                    if ours and p:GetAttribute("IsWheel") and not c:find("^None|") and not c:find("^[^|]+|None|") and not table.find(done, p) then wheel = p end
-                end
-            until wheel or os.clock() - t > 4
+            local wheel
+            for try = 1, 3 do -- a pair sometimes doesn't take (1 of 4 on 2026-09-30): press again, slower
+                held = rims[i]; task.wait(0.8 + 0.4 * try); fireclickdetector(cd); task.wait(1.2 + 0.4 * try)
+                held = tires[i]; task.wait(0.8 + 0.4 * try); fireclickdetector(cd)
+                local t = os.clock()
+                repeat
+                    task.wait(0.2)
+                    for p in pairs(myParts()) do
+                        local c = p:GetAttribute("Category") or ""
+                        local ours = p == rims[i] or p == tires[i] or not before[p] -- never a finished wheel that was already lying around
+                        if ours and p:GetAttribute("IsWheel") and not c:find("^None|") and not c:find("^[^|]+|None|") and not table.find(done, p) then wheel = p end
+                    end
+                until wheel or os.clock() - t > 4
+                if wheel then break end
+            end
             held = nil
             if wheel then done[#done + 1] = wheel; X.held[wheel] = true; wheel:PivotTo(det.CFrame + Vector3.new(4 + i * 2, 1, 0)) end
         end
