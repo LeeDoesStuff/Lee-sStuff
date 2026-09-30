@@ -153,7 +153,7 @@ local CFG = {
     alerts = true, alertMin = "B",
     -- auto flip: everything off until the player (or SaveManager autoload) turns it on
     autoBuy = false, autoRepair = false, autoSell = false,
-    buyMinTier = "C", buyBy = "Tier", buyMaxPct = 1, buyModels = {}, buyMaxPrice = 60000, buyMinProfit = 0,
+    buyMinTier = "C", buySettle = 3.5, buyBy = "Tier", buyMaxPct = 1, buyModels = {}, buyMaxPrice = 60000, buyMinProfit = 0,
     contestOn = false, contestRadius = 40, snipeTier = "A", -- leave a car to a player standing at it, unless it's this rare
     reserve = 20000,
     repairMin = 1, replaceWorn = true, station = "Dealership",
@@ -1010,6 +1010,7 @@ local function scanJunk()
             local j = junkInfo(m)
             junk[m] = j
             makeEsp(j)
+            CONTEST.lastSpawn = os.clock() -- a refresh swaps the 10 cars one every ~2 s: auto buy waits for the wave
         end
     end
     local cp = camPos()
@@ -1211,7 +1212,14 @@ end)
 local autoStatus = "off"
 local function wantedJunk()
     local best, taken = nil, 0 -- taken = matching cars left to players standing at them
-    for _, j in ipairs(sortedJunk()) do
+    -- rarest first by the real spawn chance (tiers are too coarse: a 0.2% A beats a 0.9% A), then profit
+    local list = sortedJunk()
+    table.sort(list, function(a, b)
+        local sa, sb = a.sc or 100, b.sc or 100
+        if sa ~= sb then return sa < sb end
+        return a.profitHi > b.profitHi
+    end)
+    for _, j in ipairs(list) do
         local modelOk = next(CFG.buyModels) == nil
         for _, n in ipairs(j.names) do if CFG.buyModels[n] then modelOk = true end end
         local rareOk
@@ -1236,8 +1244,45 @@ local function goHome(force)
     tpTo(CFrame.lookAt(pos, pos + Vector3.new(h[4], 0, h[5])))
 end
 
+-- buy the best matching junk car. onlyRare: just A tier or rarer (they jump ahead of repairs and sales).
+-- returns true when it acted (or is holding for a refresh), so autoStep stops there
+local function buyStep(onlyRare)
+    if not CFG.autoBuy then return false end
+    if #entries() >= garageSlots() then
+        if not onlyRare then autoStatus = ("garage full %d/%d"):format(#entries(), garageSlots()) end
+        return false
+    end
+    local j, taken = wantedJunk()
+    if not j then
+        if not onlyRare then
+            autoStatus = taken > 0 and ("%d matching car%s left to players at them"):format(taken, taken == 1 and "" or "s")
+                or "no junk car matches the filters"
+        end
+        return false
+    end
+    if onlyRare and TIER_RANK[j.tier] > TIER_RANK.A then return false end
+    busy, busyWhat = true, "buying " .. j.name
+    local e, msg = buyJunk(j, { auto = true })
+    log(msg)
+    if not (e and CFG.autoRepair) then goHome() end -- a repair is next anyway: go straight there
+    busy = false
+    return true
+end
+
 local function autoStep()
     if busy or manualPending then return end
+    -- 0) a junkyard refresh spawns a car every ~2 s for ~20 s. Don't commit to anything (a buy, or a repair that
+    -- would block the rare that spawns last) until the wave is over, then pick the rarest. An S-tier or rarer match
+    -- is bought on sight: nothing later in the wave can beat it.
+    if CFG.autoBuy and #entries() < garageSlots() and os.clock() - (CONTEST.lastSpawn or 0) < CFG.buySettle then
+        local j = wantedJunk()
+        if not (j and TIER_RANK[j.tier] <= TIER_RANK.S) then
+            autoStatus = "junkyard refreshing: waiting for every car to spawn before choosing"
+            return
+        end
+    end
+    -- rare matches jump ahead of repairs and sales (another player would take them first)
+    if buyStep(true) then return end
     -- 1) finish cars we bought: repair, then sell
     for _, e in ipairs(entries()) do
         maybeAutoLock(e) -- also catches cars bought before auto lock was turned on
@@ -1273,20 +1318,7 @@ local function autoStep()
         end
     end
     -- 2) buy the best junk car that fits
-    if CFG.autoBuy then
-        if #entries() >= garageSlots() then autoStatus = ("garage full %d/%d"):format(#entries(), garageSlots()) return end
-        local j, taken = wantedJunk()
-        if not j then
-            autoStatus = taken > 0 and ("%d matching car%s left to players at them"):format(taken, taken == 1 and "" or "s")
-                or "no junk car matches the filters"
-            return
-        end
-        busy, busyWhat = true, "buying " .. j.name
-        local e, msg = buyJunk(j, { auto = true })
-        log(msg)
-        if not (e and CFG.autoRepair) then goHome() end -- a repair is next anyway: go straight there
-        busy = false
-    end
+    buyStep(false)
 end
 
 -- ============================== player ==============================

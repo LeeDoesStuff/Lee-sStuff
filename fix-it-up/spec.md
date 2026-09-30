@@ -251,3 +251,7 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - Open flags reset: 12 of 12 were free again later.
   - Still unseen: how the 40% junk-car prize arrives. The opener logs new Garage entries and the Cache contents to catch it.
 - 2026-09-30: the auction opener has a "Budget counts" dropdown (CFG.aucMode). Total spend (default, strict) passes budget - spent to openOne. Net loss passes budget + run net, so wins extend the run. Either way an open only starts if losing its full 75K fits, and the opens-per-run count and money floor still apply as hard stops.
+- 2026-09-30 junkyard refresh (watched live): the 10 junk cars are swapped one at a time, one removed and one added about every 2 s, so a wave takes ~20 s. Junk cars stay replicated 1000+ studs away (no streaming gap). Auto buy changes:
+  - CONTEST.lastSpawn is stamped on each new junk car. autoStep starts nothing (no buy, no repair) until CFG.buySettle (3.5 s) passes with no new spawn, unless the best match is S tier or rarer (bought on sight).
+  - wantedJunk sorts by real SpawnChance, then profit.
+  - buyStep(true) buys A-or-rarer matches BEFORE repairs and sales. A repair already running is never interrupted (loose parts).
