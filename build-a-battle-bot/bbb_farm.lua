@@ -1208,6 +1208,7 @@ local Window = Library:CreateWindow({
         return ok and id or "skull"
     end)(),
     Footer = "Build A Battle Bot · bot · crates · upgrades · rewards · scrap",
+    Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true,
     ToggleKeybind = Enum.KeyCode.RightControl,
 })

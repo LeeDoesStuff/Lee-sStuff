@@ -43,7 +43,7 @@ local CFG = {
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20,
     underdog = true, udRatio = 1.5, udDanger = 0.08, udDiplo = true, udStrike = true, udOpening = 0.6, udStrikeRatio = 0.5, udEdge = 1.0,
     udNuke = true, udDenyCd = 12, udDefense = true,
-    siege = true, siegeBots = false, siegeFill = 0.9, siegeEdge = 1.3, siegeKeep = 0.3, siegeHold = true, siegeGap = 25, siegeNuke = true, siegeNukeKind = "Best owned",
+    siege = true, siegeBots = true, siegeTrigger = 2, siegeFill = 0.9, siegeEdge = 1.3, siegeKeep = 0.3, siegeHold = true, siegeGap = 25, siegeNuke = true, siegeNukeKind = "Best owned",
     islands = true, islandMin = 0.45, islandMinLocked = 0.15, islandEvery = 15, islandMaxDist = 250, islandOnlyLocked = false,
     -- combat
     attack = false, attackRatio = 0.33, attackMin = 0.55, edge = 1.2, maxFronts = 3, hitBots = true, hitPlayers = true,
@@ -615,7 +615,7 @@ local function doFronts(r)
             for o, list in r.ecoast do
                 local v = S.byId[o]
                 if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al3) and (not v.isBot or CFG.siegeBots) then
-                    if me.troops / 5 < v.troops * CFG.boatEdge then -- one boat can't do it: siege material
+                    if me.troops / 5 < v.troops * CFG.siegeTrigger then -- one boat can't win comfortably: overwhelm with a salvo instead of trickling
                         local t, d
                         for _, c in list do
                             for k = 1, 8 do
@@ -707,6 +707,7 @@ local function doFronts(r)
             local v = S.byId[o]
             local grudge = (S.grudge[o] or 0) > now0
             if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al2) and now0 >= (S.boatBad[o] or 0)
+                and not (S.siege and S.siege.id == o) -- the siege is handling them
                 and ((v.isBot and CFG.hitBots) or (not v.isBot and CFG.hitPlayers)) and not blacklisted(o)
                 and boat >= v.troops * CFG.boatEdge then
                 -- nearest of their coast tiles to my coast
@@ -1530,6 +1531,7 @@ local Window = Library:CreateWindow({
         end)
         return ok and id or "skull"
     end)(), Footer = "Pixel Conquest · v2.3 · expand · combat · build · weapons · diplomacy · lobby",
+    Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -1606,6 +1608,7 @@ local udLabel = UD:AddLabel("-", true)
 local SG = Tabs.Combat:AddRightGroupbox("Sea siege (enemy only reachable by boat)", "anchor")
 SG:AddToggle("PC_Siege", { Text = "Sea siege when one boat can't win", Default = CFG.siege, Callback = set("siege") })
 SG:AddToggle("PC_SiegeBots", { Text = "Also siege bots", Default = CFG.siegeBots, Callback = set("siegeBots") })
+SG:AddSlider("PC_SiegeTrigger", { Text = "Siege when 1 boat < x their army", Tooltip = "Below this a single boat just bleeds out: send a 3-boat salvo instead", Default = CFG.siegeTrigger, Min = 1, Max = 5, Rounding = 1, Callback = set("siegeTrigger") })
 SG:AddSlider("PC_SiegeFill", { Text = "Charge to % of cap before the salvo", Default = CFG.siegeFill * 100, Min = 30, Max = 100, Rounding = 0, Callback = pct("siegeFill") })
 SG:AddSlider("PC_SiegeEdge", { Text = "...or once 3 boats = x their army", Default = CFG.siegeEdge, Min = 0.5, Max = 3, Rounding = 1, Callback = set("siegeEdge") })
 SG:AddSlider("PC_SiegeKeep", { Text = "Keep reinforcing while above % of cap", Default = CFG.siegeKeep * 100, Min = 5, Max = 90, Rounding = 0, Callback = pct("siegeKeep") })

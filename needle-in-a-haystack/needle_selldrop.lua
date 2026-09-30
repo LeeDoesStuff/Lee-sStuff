@@ -199,6 +199,7 @@ local Window = Library:CreateWindow({
         return ok and id or "skull"
     end)(),
     Footer = "Needle in a Haystack · vent run · recreated pass",
+    Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center   = true,
     AutoShow = true,
 })

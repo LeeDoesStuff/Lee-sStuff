@@ -1756,6 +1756,7 @@ local Window = Library:CreateWindow({
         end)
         return ok and id or "skull"
     end)(), Footer = "Fix It Up · junkyard tiers · auto flip · repair · distance farm",
+    Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 -- unloaded by a newer copy while we were still setting up: don't leave a dead menu behind

@@ -116,6 +116,7 @@ local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deivi
 local Window = Library:CreateWindow({
     Title    = "Fix It Up! — Server Hop",
     Footer   = "low Cars Sold finder",
+    Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center   = true,
     AutoShow = true,
 })

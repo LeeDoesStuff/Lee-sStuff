@@ -806,6 +806,7 @@ local Window = Library:CreateWindow({
         end)
         return ok and id or "skull"
     end)(), Footer = "Hit The Thrift · rack ESP · matcha · laundry · MRKET",
+    Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {

@@ -200,7 +200,7 @@ local Window = Library:CreateWindow({
   Footer = "Mog or Die",
   Center = true, AutoShow = true,
   ToggleKeybind = Enum.KeyCode.RightControl,
-  Size = UDim2.fromOffset(540, 460),
+  Size = UDim2.fromOffset(704, 824),
 })
 
 local Tabs = { Main = Window:AddTab("Main", "house"), Settings = Window:AddTab("Settings", "settings") }

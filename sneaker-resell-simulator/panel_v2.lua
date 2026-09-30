@@ -2755,7 +2755,7 @@ local Window = Library:CreateWindow({
     AutoShow = true,
     ShowCustomCursor = true,
     NotifySide = "Right",
-    Size = UDim2.fromOffset(680, 560),
+    Size = UDim2.fromOffset(704, 824),
 })
 
 -- Six tabs, one job each. A setting lives next to the loop that reads it, and every
