@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v3.1  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v3.2  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -40,6 +40,7 @@ local CFG = {
     -- expand
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
+    seaPath = true, seaEvery = 8,
     lootWeight = 0.05, lootRadius = 50, cheapFrac = 0.08, askAlly = false, leech = true, leechAny = false, leechMin = 0.3, leechEdge = 0.5,
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20, riverDist = 15, riverEdge = 0.6, riverEvery = 4,
     brain = true, brainSurvive = 0.25, brainNbrShare = 0.3, pushEdge = 0.5, surviveIn = 1.2, surviveOut = 0.8, postureDwell = 20,
@@ -306,7 +307,7 @@ local function scanMap()
     local own, ter, me = m.owner, m.terrain, S.myId
     S.map = m -- missile listener checks whether a launch lands on my land
     pcall(syncStructs)
-    local r = { ecoast = {}, ecoastN = {}, shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
+    local r = { seeds = {}, ecoast = {}, ecoastN = {}, shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
     for i = 0, N - 1 do
         local o = readu8(own, i)
         if o == me then
@@ -344,6 +345,7 @@ local function scanMap()
             if btest(readu8(ter, i), 64) then -- my coast: reservoir sample so the whole coastline is represented
                 r.shoreN += 1
                 if #r.shore < 300 then r.shore[#r.shore + 1] = i elseif math.random(r.shoreN) <= 300 then r.shore[math.random(300)] = i end
+                if #r.seeds < 4000 then r.seeds[#r.seeds + 1] = i elseif math.random(r.shoreN) <= 4000 then r.seeds[math.random(4000)] = i end
             end
         elseif o == 0 and i % 5 == 0 and btest(readu8(ter, i), 64) and passable(ter, i) then -- open coast anywhere (island targets)
             r.coastN += 1
@@ -673,8 +675,74 @@ local function surviving() return CFG.brain and S.brain and S.brain.posture == "
 local function spare() return CFG.brain and S.brain and S.brain.spare or math.huge end
 
 -- nearest crossing: every sampled coast tile of theirs vs every sampled coast tile of mine (<= 40 x 300)
+-- TRUE SEA DISTANCE: 8-way flood over water tiles from my coast, capped at islandMaxDist, double-buffered so readers
+-- never see a half-filled map. The server launches from my coast tile nearest the landing and pathfinds the shortest
+-- sea route (Navy.spawnTile / Navy.path), so picking the landing by real sailing distance = the shortest crossing.
+local seaBufs, seaCur = { buffer.create(N * 2), buffer.create(N * 2) }, nil
+local function seaFlood(r)
+    local m = S.map
+    if S.seaBusy or not m or #r.seeds == 0 then return end
+    S.seaBusy = true
+    local ter = m.terrain
+    local buf = seaBufs[seaCur == seaBufs[1] and 2 or 1]
+    buffer.fill(buf, 0, 255) -- 0xFFFF = unreached
+    local q, head, pushed = {}, 1, 0
+    local function push(j, d)
+        if buffer.readu16(buf, j * 2) == 65535 and not btest(readu8(ter, j), 128) then
+            buffer.writeu16(buf, j * 2, d); q[#q + 1] = j
+        end
+    end
+    for _, t in r.seeds do
+        local x, y = t % W, t // W
+        for dy = -1, 1 do for dx = -1, 1 do
+            local nx, ny = x + dx, y + dy
+            if nx >= 0 and nx < W and ny >= 0 and ny < H then push(ny * W + nx, 1) end
+        end end
+    end
+    local maxD = CFG.islandMaxDist
+    while head <= #q do
+        local i = q[head]; head += 1
+        local d = buffer.readu16(buf, i * 2)
+        if d < maxD then
+            local x, y = i % W, i // W
+            for dy = -1, 1 do
+                local ny = y + dy
+                if ny >= 0 and ny < H then
+                    for dx = -1, 1 do
+                        local nx = x + dx
+                        if nx >= 0 and nx < W and (dx ~= 0 or dy ~= 0) then push(ny * W + nx, d + 1) end
+                    end
+                end
+            end
+        end
+        if head % 15000 == 0 then task.wait() end
+    end
+    seaCur, S.seaAt, S.seaBusy, S.seaCells = buf, os.clock(), false, #q
+end
+-- sailing steps from my coast to a land (coast) tile: its best water neighbour; nil = unreachable by sea
+local function seaD(t)
+    if not seaCur then return nil end
+    local x, y, best = t % W, t // W, nil
+    for dy = -1, 1 do for dx = -1, 1 do
+        local nx, ny = x + dx, y + dy
+        if nx >= 0 and nx < W and ny >= 0 and ny < H then
+            local d = buffer.readu16(seaCur, (ny * W + nx) * 2)
+            if d ~= 65535 and (not best or d < best) then best = d end
+        end
+    end end
+    return best
+end
+local function seaFresh() return CFG.seaPath and S.seaAt and os.clock() - S.seaAt < 30 end
+
 local function crossing(r, list, maxD)
     local t, d
+    if seaFresh() then -- real sailing distance; unreachable waters drop out on their own
+        for _, c in list do
+            local dd = seaD(c)
+            if dd and dd <= maxD and (not d or dd < d) then t, d = c, dd end
+        end
+        return t, d
+    end
     for _, c in list do
         for _, m in r.shore do
             local dd = dist(m, c)
@@ -731,9 +799,14 @@ local function doFronts(r)
             local fresh = true
             for t, at in S.islandTargets do if now0 - at < 60 and dist(t, i) < 30 then fresh = false break end end
             if fresh then
-                for k = 1, 16 do
-                    local d = dist(r.shore[math.random(#r.shore)], i)
-                    if d > 3 and d <= CFG.islandMaxDist and (not bd or d < bd) then best, bd = i, d end
+                if seaFresh() then
+                    local d = seaD(i)
+                    if d and d > 3 and d <= CFG.islandMaxDist and (not bd or d < bd) then best, bd = i, d end
+                else
+                    for k = 1, 16 do
+                        local d = dist(r.shore[math.random(#r.shore)], i)
+                        if d > 3 and d <= CFG.islandMaxDist and (not bd or d < bd) then best, bd = i, d end
+                    end
                 end
             end
         end
@@ -1720,6 +1793,10 @@ task.spawn(function()
                 local r = scanMap()
                 if r then
                     S.scan = r
+                    if CFG.seaPath and not S.seaBusy and os.clock() - (S.seaRun or -99) >= CFG.seaEvery then
+                        S.seaRun = os.clock()
+                        task.spawn(function() local ok, e = pcall(seaFlood, r); if not ok then S.seaBusy = false; log("sea flood error: " .. tostring(e)) end end)
+                    end
                     guard("brain", doBrain, r)
                     guard("underdog", doUnderdog, r)
                     guard("fronts", doFronts, r)
@@ -1779,7 +1856,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v3.1 · brain · expand · attack · defend · build · weapons",
+    end)(), Footer = "Pixel Conquest · v3.2 · brain · expand · attack · defend · build · weapons",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1910,6 +1987,7 @@ P(BT, "PC_CheapFrac", "Cheap grab: army < % mine", "cheapFrac", 1, 30, "Skips th
 P(BT, "PC_BoatMin", "Above % of cap", "boatMin", 10, 95)
 Nm(BT, "PC_BoatEdge", "Boat vs their army (x)", "boatEdge", 0.3, 3, 1)
 Nm(BT, "PC_BoatEvery", "Seconds between boats", "boatEvery", 5, 120)
+T(BT, "PC_SeaPath", "Real sailing distance", "seaPath", "Flood-fills the water from your coast so crossings around land count their true length")
 Nm(BT, "PC_RiverDist", "River: up to tiles", "riverDist", 3, 60, 0, "Boats sail ~10 tiles/s: short crossings chain boats")
 Nm(BT, "PC_RiverEdge", "River: edge (x normal)", "riverEdge", 0.2, 1, 1)
 Nm(BT, "PC_RiverEvery", "River: seconds per boat", "riverEvery", 1, 30)
@@ -2100,5 +2178,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v3.1 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v3.1 ready — RightCtrl toggles the UI.", 5)
+log("loaded v3.2 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v3.2 ready — RightCtrl toggles the UI.", 5)

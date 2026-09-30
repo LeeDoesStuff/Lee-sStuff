@@ -344,3 +344,10 @@ Verified with the spy.
   - Before this, any feature that "asked" a player who had a pending request to me would silently ACCEPT them.
   - Defaults: accept=false, askAlly=false, request=false, lastStandAlly=false; renew=true and blockUnally=true stay.
   - Presets no longer touch diplomacy.
+- **v3.2 (2026-09-30): real sailing distance**
+  - How the server routes a boat: `Navy.landingTile` (the target tile, or the nearest landable tile of that owner within NAVY_LANDING_SEARCH 60) → `Navy.spawnTile` (my border tile with the smallest STRAIGHT-LINE distance to the landing, same water component, only the first NAVY_SPAWN_SCAN 6000 border tiles) → `Navy.path` (shortest sea path).
+  - The script picks the landing. It used to pick by straight line, so a spot across a peninsula could look close but sail long.
+  - `seaFlood`: 8-way BFS over water (terrain bit 128 unset) from ≤4000 reservoir-sampled coast tiles of mine, capped at islandMaxDist. Written into a u16 buffer (N×2 bytes), double-buffered and swapped when done, run in the background every seaEvery 8 s.
+  - `seaD(tile)` = best water neighbour; nil = not reachable by sea from my coast.
+  - `crossing()` and island picks use it when fresh (<30 s), else fall back to straight line.
+  - Live: 311K water cells in ~2.5 s. Diagonal moves count as 1 step, so on open water it reads slightly under the straight line (Peru 89 vs 94); around land it's the true detour.
