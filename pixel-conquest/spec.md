@@ -302,3 +302,21 @@ Verified with the spy.
   - Cheap grab: a target army × boatEdge ≤ 8% of mine skips the 40% fill gate; bots are allowed even in SURVIVE.
     - Why: boat invasions hadn't fired for 7 min while troops sat under 40% from wars, and Norway (2.4K vs an 11.8K boat) was skipped. Norway's city was then nuked by someone else.
   - Live after the fix: Norway hit by land + boat; "loot 106: Japan (9.0K troops)" (Japan had a Lv 5 city cluster at the border).
+- **v2.8 (2026-09-30): match review → brain v3**
+  - Review of the 5-player world map (log 00:12-00:19 + final state):
+    - local_afghani snowballed 17% → 86% (989K troops, densest 14.8/tile, across water). I finished 4th at 2%.
+    - Wrong enemy: siege/underdog went for Hello (biggest land), and 10 counters went at Cursed_king. Two fought, a third won.
+    - 32 defense post orders, 0 posts owned at the end: built on lost fronts and captured (RAZES_CAPTURED=false means the attacker keeps them).
+    - Gold: 3 revenge Atoms at Hello (2.25M) + 1 auto (0.75M) + a 1M anti-nuke while surviving. Nothing left to deny the winner.
+    - Posture flipped 17× in 3.5 min: fill-based, no hysteresis. It said CONTEND with 426K incoming vs my 55K.
+  - Brain v3:
+    - History every 10 s → growth/min (capped +100%).
+    - Threat = army × (1 + growth) × reach (land 1, sea 0.6, far 0.25), plus a huge bonus within denyMargin 15% of the win bar.
+    - MAIN ENEMY = top threat; sticky, switches only at 1.3×.
+    - Posture from pressure = (incoming + ½ strongest neighbour) / my army: SURVIVE ≥ 1.2, leave < 0.8, 20 s dwell.
+    - Side wars (attacker ≠ main): cancel only, no invade, plus an ally request.
+    - Underdog targets the main enemy.
+    - Revenge nukes while SURVIVE/deny only at the main enemy.
+    - Deny reserve: builds only with gold above one Atom.
+    - Defense posts only if incoming ≤ holdable 1.5× my army, last-stand posts 1 per 20 s.
+    - Recorder: `PixelConquest/match_<jobid>.csv`, top 8 + me every 30 s (tiles, troops, city levels, posture, main enemy).
