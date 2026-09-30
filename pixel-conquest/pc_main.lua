@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.2  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.3  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -41,6 +41,8 @@ local CFG = {
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20,
+    underdog = true, udRatio = 1.5, udDanger = 0.08, udDiplo = true, udStrike = true, udOpening = 0.6, udStrikeRatio = 0.5, udEdge = 1.0,
+    udNuke = true, udDenyCd = 12, udDefense = true,
     siege = true, siegeBots = false, siegeFill = 0.9, siegeEdge = 1.3, siegeKeep = 0.3, siegeHold = true, siegeGap = 25, siegeNuke = true, siegeNukeKind = "Best owned",
     islands = true, islandMin = 0.45, islandMinLocked = 0.15, islandEvery = 15, islandMaxDist = 250, islandOnlyLocked = false,
     -- combat
@@ -94,7 +96,7 @@ end
 
 -- ============================== state / log ==============================
 local S = { myId = nil, phase = nil, players = {}, byId = {}, names = {}, me = nil, fronts = nil, gold = 0, diplo = nil,
-    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
+    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, udPeak = {}, udEmbargo = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
     board = nil, lobbyMoney = nil, rewardClaimed = nil, scan = nil, readyAt = {}, leaveAt = nil }
 local reqAt, counterAt = {}, {}
 local stats = { sent = 0, attacks = 0, builds = 0, nukes = 0, strikes = 0, allies = 0, joins = 0, denied = 0 }
@@ -205,16 +207,24 @@ local function stateUpvalues()
 end
 local function getMap()
     local m, ups = stateUpvalues()
-    if ups and not S.namesFromClient then -- mid-match inject misses "roster": take the client's biggest id->name table
-        local best, bestN = nil, 0
+    if ups and not S.namesFromClient then
+        -- mid-match inject misses "roster": the client's id->name table is the number->string one holding MY name
+        -- (the biggest one can be a building-label table: "PORT", "ANTI-NUKE", ...)
+        local mine = { [lp.Name] = true, [lp.DisplayName] = true }
         for _, uv in ups do
             if type(uv) == "table" then
-                local n, ok = 0, true
-                for k, v in uv do if type(k) ~= "number" or type(v) ~= "string" then ok = false break end n += 1 end
-                if ok and n > bestN then best, bestN = uv, n end
+                local ok, hit = true, false
+                for k, v in uv do
+                    if type(k) ~= "number" or type(v) ~= "string" then ok = false break end
+                    if mine[v] then hit = true end
+                end
+                if ok and hit then
+                    for k, v in uv do S.names[k] = v end
+                    S.namesFromClient = true
+                    break
+                end
             end
         end
-        if best then for k, v in best do S.names[k] = S.names[k] or v end S.namesFromClient = true end
     end
     if m and not S.myId and ups then -- injected mid-match: recover my id from the client's id->userId table
         for _, uv in ups do
@@ -334,7 +344,7 @@ local function onState(k, p, full)
     if k == "init" and type(p) == "table" then
         S.myId = tonumber(p.yourId) or S.myId
         S.phase = p.phase; S.ended = false; S.leaveAt = nil
-        table.clear(S.structs); table.clear(S.badTile); S.spawnSent = 0; S.spawnOk = false; table.clear(S.grudge); table.clear(S.nukeGrudge); S.nukedAt = -1e9; S.nukeSeenAt = -1e9; table.clear(S.holes); S.islandOff = nil; S.playStart = nil; S.siege = nil
+        table.clear(S.structs); table.clear(S.badTile); S.spawnSent = 0; S.spawnOk = false; table.clear(S.grudge); table.clear(S.nukeGrudge); S.nukedAt = -1e9; S.nukeSeenAt = -1e9; table.clear(S.holes); S.islandOff = nil; S.playStart = nil; S.siege = nil; table.clear(S.udPeak); table.clear(S.udEmbargo)
         log("match init: id " .. tostring(S.myId) .. " phase " .. tostring(p.phase))
     elseif k == "roster" and type(p) == "table" then
         for _, v in p do
@@ -931,6 +941,7 @@ local function placeFor(kind, r)
         local top, topV = nil, -1
         if kind == "defense" then -- the biggest incoming attack
             for _, v in (S.fronts and S.fronts.inc or {}) do if v.troops and v.troops > topV and r.borderMine[v.id] then top, topV = v.id, v.troops end end
+            if not top and CFG.udDefense and S.underdog and r.borderMine[S.underdog.id] then top = S.underdog.id end -- brace for the leader
         else -- the enemy player I share the longest border with
             for id, c in r.contacts do if id ~= 0 and c > topV and r.borderMine[id] then top, topV = id, c end end
         end
@@ -977,7 +988,8 @@ local function wantBuild(kind)
         local lv = S.fronts and S.fronts.levels or 0
         return lv < CFG.max_city * (Config.CITY_MAX_LEVEL or 10) and (mine < CFG.max_city or CFG.upgradeCities)
     end
-    if kind == "defense" and #(S.fronts and S.fronts.inc or {}) == 0 then return false end
+    local udBorder = CFG.udDefense and S.underdog and S.scan and S.scan.contacts[S.underdog.id]
+    if kind == "defense" and #(S.fronts and S.fronts.inc or {}) == 0 and not udBorder then return false end
     return mine < CFG["max_" .. kind]
 end
 
@@ -1087,7 +1099,15 @@ local function doEconomy(r)
         if who and fireNuke(CFG.revengeNukeKind, who, 0, "revenge", false, CFG.revengeMinLv) and CFG.revengeOnce then S.nukeGrudge[who] = nil end
     end
     local freeNuke = CFG.useFree and (f.freeNukes or 0) > 0 -- product nukes (starter packs / railgun bundle) cost no gold
-    if (CFG.nuke or freeNuke) and now - (S.lastAutoNuke or -1e9) >= CFG.nukeCooldown then
+    local ud = CFG.udNuke and S.underdog
+    if ud then
+        local cd = ud.danger and CFG.udDenyCd or CFG.nukeCooldown
+        if (CFG.nuke or freeNuke or ud.danger) and now - (S.lastAutoNuke or -1e9) >= cd
+            and fireNuke(CFG.nukeKind, ud.id, ud.danger and 0 or CFG.nukeMinGold, ud.danger and "deny win" or "underdog", true) then
+            S.lastAutoNuke = now
+        end
+    end
+    if not ud and (CFG.nuke or freeNuke) and now - (S.lastAutoNuke or -1e9) >= CFG.nukeCooldown then
         local al, best, bestTiles = allies(), nil, 0
         for _, v in S.players do
             local grudge = (S.grudge[v.id] or 0) > now
@@ -1278,6 +1298,73 @@ local function doStrikes(r)
     if CFG.railgun then fire(KIND.railgun, "railgun", 25, nil, 5) end -- no range limit, radius 5
 end
 
+-- ============================== underdog (someone is running away with the game) ==============================
+-- Tools the rules give a losing player:
+--  * nukes turn the leader's tiles back into open land (Nukes.lua blast), so a leader near the win bar can be knocked under it
+--  * players.troops is HOME troops: when the leader commits big attacks elsewhere their home is thin -> hit it then
+--  * diplomacy: ally everyone else, "target" the leader for allies (10 s mark, 15 s cooldown), embargo their trade
+--  * city clusters are their army cap; defense posts on their border before they come
+local function doUnderdog(r)
+    S.underdog = nil
+    local me = S.me
+    if not CFG.underdog or not me or not me.alive then status.underdog = CFG.underdog and "-" or "off"; return end
+    local al = allies()
+    local lead
+    for _, v in S.players do
+        if v.alive and v.id ~= S.myId and not friendly(v.id, al) and (not lead or v.tiles > lead.tiles) then lead = v end
+    end
+    if not lead or lead.tiles < me.tiles * CFG.udRatio then
+        status.underdog = lead and ("not needed: biggest rival %s has %.1fx your land"):format(S.names[lead.id] or "?", lead.tiles / math.max(me.tiles, 1)) or "no rival"
+        return
+    end
+    local playable = S.playable or 0
+    local share = playable > 0 and lead.tiles / playable or 0
+    local th = S.threshold or 0.9
+    local bar = th <= 1 and th or (th <= 100 and th / 100 or (playable > 0 and th / playable or 0.9))
+    local ud = { id = lead.id, share = share, bar = bar, danger = share >= bar - CFG.udDanger }
+    S.underdog = ud
+    local now = os.clock()
+    local name = S.names[lead.id] or ("#" .. lead.id)
+
+    -- their home army's recent peak: a big drop means their troops are out attacking someone
+    local pk = S.udPeak[lead.id]
+    if not pk or now - pk.at > 60 or lead.troops > pk.v then pk = { v = lead.troops, at = now }; S.udPeak[lead.id] = pk end
+    ud.opening = lead.troops < pk.v * CFG.udOpening
+
+    if CFG.udDiplo then
+        if now - (S.udTargetAt or -99) > 16 then S.udTargetAt = now; send({ t = "target", id = lead.id }, "udtarget") end
+        if not S.udEmbargo[lead.id] then
+            S.udEmbargo[lead.id] = true
+            if send({ t = "embargo", id = lead.id, stop = false }, "udembargo") then log("underdog: embargo on " .. name) end
+        end
+        local outreq = setOf(S.diplo and S.diplo.outreq)
+        for _, v in S.players do
+            if v.alive and not v.isBot and v.id ~= S.myId and v.id ~= lead.id and not al[v.id] and not outreq[v.id]
+                and not blacklisted(v.id) and now - (reqAt[v.id] or -99) > 35 then
+                reqAt[v.id] = now
+                if send({ t = "ally", id = v.id }) then log(("underdog: asked %s to ally against %s"):format(S.names[v.id] or "?", name)) end
+            end
+        end
+    end
+
+    -- OPENING: their home is thin -> hit it with a real army, but never below my keep-home floor
+    if CFG.udStrike and ud.opening and r.contacts[lead.id] and r.sample[lead.id] and now - (S.udStrikeAt or -99) > 8 then
+        local cap = troopCap()
+        local spare = me.troops - math.max(me.troops * CFG.keepHome, cap * CFG.keepCap)
+        local sendT = math.min(spare, me.troops * CFG.udStrikeRatio)
+        if sendT >= (Config.MIN_ATTACK_TROOPS or 250) and sendT >= lead.troops * CFG.udEdge then
+            S.udStrikeAt = now
+            S.lastTile = r.sample[lead.id]
+            if send({ t = "attack", tile = r.sample[lead.id], ratio = math.clamp(sendT / me.troops, Config.MIN_ATTACK_RATIO or 0.05, 1) }, "udstrike") then
+                stats.attacks += 1
+                log(("underdog: %s's army is out (%s, peak %s) -> hitting home with %s"):format(name, fmtT(lead.troops), fmtT(pk.v), fmtT(sendT)))
+            end
+        end
+    end
+    status.underdog = ("UNDERDOG vs %s: they hold %.1f%% (win bar %.0f%%)%s%s"):format(name, share * 100, bar * 100,
+        ud.danger and " · DENYING THE WIN" or "", ud.opening and " · their army is out" or "")
+end
+
 -- ============================== diplomacy ==============================
 -- reqAt: defined at the top (shared with last stand)
 local function doDiplo(r)
@@ -1384,6 +1471,7 @@ task.spawn(function()
                 local r = scanMap()
                 if r then
                     S.scan = r
+                    guard("underdog", doUnderdog, r)
                     guard("fronts", doFronts, r)
                     guard("economy", doEconomy, r)
                     guard("strikes", doStrikes, r)
@@ -1441,7 +1529,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.2 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.3 · expand · combat · build · weapons · diplomacy · lobby",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -1504,6 +1592,17 @@ BT:AddSlider("PC_BoatMin", { Text = "Only above % of cap", Default = CFG.boatMin
 BT:AddSlider("PC_BoatEdge", { Text = "Boat must be x their army", Default = CFG.boatEdge, Min = 0.3, Max = 3, Rounding = 1, Callback = set("boatEdge") })
 BT:AddSlider("PC_BoatEvery", { Text = "Seconds between invasions", Default = CFG.boatEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("boatEvery") })
 BT:AddLabel("A boat carries 1/5 of your troops and fights their whole army. Thin armies, bots and grudges first. Uses the target filters above; max sea distance is on the Expand tab.", true)
+local UD = Tabs.Combat:AddRightGroupbox("Underdog (someone is running away with it)", "trending-up")
+UD:AddToggle("PC_Underdog", { Text = "Underdog mode", Tooltip = "Turns on when the biggest rival has x your land", Default = CFG.underdog, Callback = set("underdog") })
+UD:AddSlider("PC_UdRatio", { Text = "Trigger: rival has x my land", Default = CFG.udRatio, Min = 1.1, Max = 5, Rounding = 1, Callback = set("udRatio") })
+UD:AddToggle("PC_UdDiplo", { Text = "Ally everyone else, target + embargo them", Default = CFG.udDiplo, Callback = set("udDiplo") })
+UD:AddToggle("PC_UdStrike", { Text = "Hit their home when their army is out", Tooltip = "Their home army dropped under X of its 60 s peak", Default = CFG.udStrike, Callback = set("udStrike") })
+UD:AddSlider("PC_UdOpening", { Text = "Opening: their army under % of peak", Default = math.floor(CFG.udOpening * 100 + 0.5), Min = 20, Max = 95, Rounding = 0, Callback = pct("udOpening") })
+UD:AddSlider("PC_UdStrikeRatio", { Text = "Opening strike troops %", Default = math.floor(CFG.udStrikeRatio * 100 + 0.5), Min = 10, Max = 90, Rounding = 0, Callback = pct("udStrikeRatio") })
+UD:AddToggle("PC_UdNuke", { Text = "Nukes go at the leader", Tooltip = "Even if stronger; near their win bar they fire fast to knock them under it", Default = CFG.udNuke, Callback = set("udNuke") })
+UD:AddSlider("PC_UdDanger", { Text = "Deny the win within % of the bar", Default = math.floor(CFG.udDanger * 100 + 0.5), Min = 1, Max = 30, Rounding = 0, Callback = pct("udDanger") })
+UD:AddToggle("PC_UdDefense", { Text = "Defense posts on their border early", Default = CFG.udDefense, Callback = set("udDefense") })
+local udLabel = UD:AddLabel("-", true)
 local SG = Tabs.Combat:AddRightGroupbox("Sea siege (enemy only reachable by boat)", "anchor")
 SG:AddToggle("PC_Siege", { Text = "Sea siege when one boat can't win", Default = CFG.siege, Callback = set("siege") })
 SG:AddToggle("PC_SiegeBots", { Text = "Also siege bots", Default = CFG.siegeBots, Callback = set("siegeBots") })
@@ -1667,6 +1766,7 @@ task.spawn(function()
             buildLabel:SetText(status.build)
             weaponsLabel:SetText(status.weapons)
             samLabel:SetText(status.samInfo or "-")
+            udLabel:SetText(status.underdog or "-")
             local pl = {}
             for _, p in PASSES do
                 pl[#pl + 1] = ("%s %s - %s%s"):format(hasPass(p.key) and "[OWNED]" or "[  -  ]", p.key, p.use,
@@ -1703,5 +1803,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.2 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.2 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.3 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.3 ready — RightCtrl toggles the UI.", 5)

@@ -253,3 +253,14 @@ Verified with the spy.
   - Live: salvos of ~260-500K troops took their army from 358K to 154K in ~2 min; I won at 89%+ with bar 0.9 (`phase.threshold` is a FRACTION).
   - Flaw fixed after the win: v2.2a ended the siege on first land contact and handed off to normal combat, which never attacks an army that size. Beachheads died within 10 s and it re-salvoed immediately (4 waves in 80 s). The push stage and siegeGap fix that; the push stage is not tested live yet.
   - Info tab shows the win bar vs my land %.
+- **v2.3 (2026-09-29): underdog mode**
+  - Trigger: the biggest non-allied rival holds ≥ udRatio 1.5× my land.
+  - Diplomacy:
+    - `{t="target", id}` every 16 s (lasts 100 ticks, cooldown 150; Alliances.lua).
+    - `{t="embargo", id, stop=false}` once.
+    - Ally requests to every other human.
+  - Opening strike: `players.troops` is HOME troops. When the leader's home army drops under 60% of its 60 s peak, hit their border with up to 50% of my army, keeping the keep-home floor. The strike must be ≥ their army × udEdge 1.0.
+  - Nukes go at the leader, even when they're stronger. Within udDanger 8% of the win bar, fire every 12 s ("deny win"): nukes turn their tiles back into open land and knock them under the bar.
+  - Defense posts on the leader's border before they attack.
+  - Live 23:57: embargo + ally asks sent. Opening strike fired: "PORT's army is out (63.7K, peak 107.7K) -> hitting home with 72.5K".
+  - Name bug: the mid-inject name table was "the biggest number->string upvalue". That is sometimes the building-label table ("PORT", "ANTI-NUKE", "FACTORY"). It now picks the table containing my own Name/DisplayName.
