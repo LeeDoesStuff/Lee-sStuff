@@ -264,3 +264,16 @@ Verified with the spy.
   - Defense posts on the leader's border before they attack.
   - Live 23:57: embargo + ally asks sent. Opening strike fired: "PORT's army is out (63.7K, peak 107.7K) -> hitting home with 72.5K".
   - Name bug: the mid-inject name table was "the biggest number->string upvalue". That is sometimes the building-label table ("PORT", "ANTI-NUKE", "FACTORY"). It now picks the table containing my own Name/DisplayName.
+- **v2.4 (2026-09-30): rivers, bot sieges, window size**
+  - `TRANSPORT_BOAT_SPEED = 1` tile per tick (~10 tiles/s): a 10-tile river is ~1 s, a 200-tile sea ~20 s.
+  - Across a river (crossing ≤ riverDist 15):
+    - The next boat lands before the last landing bleeds out and MERGES into it, so the needed edge is boatEdge × riverEdge 0.6.
+    - Boats chain every riverEvery 4 s (vs 20 s on open sea).
+    - Siege only takes a river target if even chained boats can't win.
+  - `crossing()`: exact nearest pair between their coast sample (≤ 40) and my coast sample (≤ 300). It used to be 8 random tries per tile, which could miss a narrow river.
+  - Why exodus wasn't dominated (bot, 13.7K tiles, 50K troops vs my 241K, no land border):
+    - Siege excluded bots, and only triggered when one boat couldn't win at all.
+    - It trickled single ~1× boats every 20 s.
+    - Now siegeBots = on, and it sieges when 1 boat < siegeTrigger 2× their army.
+  - Mid-inject names: the client id->name table is the number->string upvalue containing my Name/DisplayName.
+  - All 10 Obsidian scripts now open at `Size = UDim2.fromOffset(704, 824)` (the user's pick).

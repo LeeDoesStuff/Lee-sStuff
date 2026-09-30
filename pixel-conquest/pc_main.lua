@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.3  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.4  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -40,7 +40,7 @@ local CFG = {
     -- expand
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
-    boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20,
+    boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20, riverDist = 15, riverEdge = 0.6, riverEvery = 4,
     underdog = true, udRatio = 1.5, udDanger = 0.08, udDiplo = true, udStrike = true, udOpening = 0.6, udStrikeRatio = 0.5, udEdge = 1.0,
     udNuke = true, udDenyCd = 12, udDefense = true,
     siege = true, siegeBots = true, siegeTrigger = 2, siegeFill = 0.9, siegeEdge = 1.3, siegeKeep = 0.3, siegeHold = true, siegeGap = 25, siegeNuke = true, siegeNukeKind = "Best owned",
@@ -535,6 +535,18 @@ local function doSpawn(r)
 end
 
 -- ============================== expand + combat (one front scheduler) ==============================
+-- nearest crossing: every sampled coast tile of theirs vs every sampled coast tile of mine (<= 40 x 300)
+local function crossing(r, list, maxD)
+    local t, d
+    for _, c in list do
+        for _, m in r.shore do
+            local dd = dist(m, c)
+            if dd <= maxD and (not d or dd < d) then t, d = c, dd end
+        end
+    end
+    return t, d
+end
+
 local function doFronts(r)
     local me, f = S.me, S.fronts
     if not me or not f or not me.alive then return end
@@ -615,14 +627,10 @@ local function doFronts(r)
             for o, list in r.ecoast do
                 local v = S.byId[o]
                 if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al3) and (not v.isBot or CFG.siegeBots) then
-                    if me.troops / 5 < v.troops * CFG.siegeTrigger then -- one boat can't win comfortably: overwhelm with a salvo instead of trickling
-                        local t, d
-                        for _, c in list do
-                            for k = 1, 8 do
-                                local dd = dist(r.shore[math.random(#r.shore)], c)
-                                if dd <= CFG.islandMaxDist and (not d or dd < d) then t, d = c, dd end
-                            end
-                        end
+                    local t, d = crossing(r, list, CFG.islandMaxDist)
+                    local river = d and d <= CFG.riverDist
+                    local need = river and CFG.boatEdge * CFG.riverEdge or CFG.siegeTrigger -- river: only if chained boats can't win either
+                    if t and me.troops / 5 < v.troops * need then -- one boat can't win comfortably: overwhelm with a salvo instead of trickling
                         if t and (not bestT or v.tiles > S.byId[best].tiles) then best, bestT, bestD = o, t, d end -- biggest island rival first
                     end
                 end
@@ -708,29 +716,24 @@ local function doFronts(r)
             local grudge = (S.grudge[o] or 0) > now0
             if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al2) and now0 >= (S.boatBad[o] or 0)
                 and not (S.siege and S.siege.id == o) -- the siege is handling them
-                and ((v.isBot and CFG.hitBots) or (not v.isBot and CFG.hitPlayers)) and not blacklisted(o)
-                and boat >= v.troops * CFG.boatEdge then
-                -- nearest of their coast tiles to my coast
-                local t, d
-                for _, c in list do
-                    for k = 1, 8 do
-                        local dd = dist(r.shore[math.random(#r.shore)], c)
-                        if dd <= CFG.islandMaxDist and (not d or dd < d) then t, d = c, dd end
-                    end
-                end
-                if t then
+                and ((v.isBot and CFG.hitBots) or (not v.isBot and CFG.hitPlayers)) and not blacklisted(o) then
+                local t, d = crossing(r, list, CFG.islandMaxDist)
+                -- boats sail 1 tile per tick: across a river the next boat lands ~1 s behind the last and merges
+                -- into the same attack, so a much thinner edge holds; on open sea a lone boat bleeds out
+                local river = d and d <= CFG.riverDist
+                if t and boat >= v.troops * CFG.boatEdge * (river and CFG.riverEdge or 1) then
                     -- thin armies spread over lots of land are the cheapest to take; grudges and bots first
                     local score = v.troops / math.max(v.tiles, 1) * (grudge and 0.3 or 1) * (v.isBot and 0.7 or 1) + d * 0.5
                     if not bestScore or score < bestScore then best, bestScore, bestTile, bestD = o, score, t, d end
                 end
             end
         end
-        S.boatAt = now0 + CFG.boatEvery
+        S.boatAt = now0 + ((bestD and bestD <= CFG.riverDist) and CFG.riverEvery or CFG.boatEvery)
         if best then
             S.lastTile, S.boatSent, S.boatOwner, S.lastDenied = bestTile, now0, best, "-"
             if send({ t = "attack", tile = bestTile, ratio = ratio(CFG.attackRatio) }, "boat:" .. best) then
                 stats.attacks += 1
-                status.combat = ("boat invasion -> %s (%s troops, %.0f tiles of sea, boat %s)"):format(S.names[best] or ("#" .. best), fmtT(S.byId[best].troops), bestD, fmtT(boat))
+                status.combat = ((bestD <= CFG.riverDist and "river crossing" or "boat invasion") .. " -> %s (%s troops, %.0f tiles of sea, boat %s)"):format(S.names[best] or ("#" .. best), fmtT(S.byId[best].troops), bestD, fmtT(boat))
                 log(status.combat)
             end
         end
@@ -1530,7 +1533,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.3 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.4 · expand · combat · build · weapons · diplomacy · lobby",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1593,6 +1596,9 @@ BT:AddToggle("PC_BoatAttack", { Text = "Invade neighbours across water", Default
 BT:AddSlider("PC_BoatMin", { Text = "Only above % of cap", Default = CFG.boatMin * 100, Min = 10, Max = 95, Rounding = 0, Callback = pct("boatMin") })
 BT:AddSlider("PC_BoatEdge", { Text = "Boat must be x their army", Default = CFG.boatEdge, Min = 0.3, Max = 3, Rounding = 1, Callback = set("boatEdge") })
 BT:AddSlider("PC_BoatEvery", { Text = "Seconds between invasions", Default = CFG.boatEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("boatEvery") })
+BT:AddSlider("PC_RiverDist", { Text = "River: crossing up to (tiles)", Tooltip = "Boats sail ~10 tiles/s: short crossings chain boats before a landing dies", Default = CFG.riverDist, Min = 3, Max = 60, Rounding = 0, Callback = set("riverDist") })
+BT:AddSlider("PC_RiverEdge", { Text = "River: edge needed (x normal)", Default = CFG.riverEdge, Min = 0.2, Max = 1, Rounding = 1, Callback = set("riverEdge") })
+BT:AddSlider("PC_RiverEvery", { Text = "River: seconds between boats", Default = CFG.riverEvery, Min = 1, Max = 30, Rounding = 0, Callback = set("riverEvery") })
 BT:AddLabel("A boat carries 1/5 of your troops and fights their whole army. Thin armies, bots and grudges first. Uses the target filters above; max sea distance is on the Expand tab.", true)
 local UD = Tabs.Combat:AddRightGroupbox("Underdog (someone is running away with it)", "trending-up")
 UD:AddToggle("PC_Underdog", { Text = "Underdog mode", Tooltip = "Turns on when the biggest rival has x your land", Default = CFG.underdog, Callback = set("underdog") })
@@ -1806,5 +1812,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.3 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.3 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.4 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.4 ready — RightCtrl toggles the UI.", 5)
