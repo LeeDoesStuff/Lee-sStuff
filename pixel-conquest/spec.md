@@ -283,3 +283,14 @@ Verified with the spy.
   - Nuke spots: no ally structure within r+2, and a 48-point sample of the blast disc must hold no allied land.
   - Strike spots: a candidate whose splash covers an ally building scores -1 and is skipped.
   - The siege ends when its target becomes an ally.
+- **v2.6 (2026-09-30): brain (posture + troop budget)**
+  - Bug seen live (5-player world map): siege picked the biggest-land rival (Hello, 127K army) while I had 12K troops at 9% of cap. After landing, the push stage fed every spare troop into them while Cursed_king (108K→202K) and local_afghani (253K) attacked me.
+  - Siege sanity:
+    - A target must be beatable by a full-cap salvo (cap × 0.49 ≥ army × siegeEdge).
+    - The push stops when send < their army × pushEdge 0.5 (abandon + skip that target 120 s).
+  - `doBrain()` runs before every other decision each scan:
+    - need = max(incoming × 1.1 + strongest non-allied land neighbour × brainNbrShare 0.3, cap × keepCap, troops × keepHome); spare = troops - need.
+    - SURVIVE when fill < 25% and threatened (incoming > 0 or a neighbour > 2× me): no siege / boat invasions / underdog strikes / attacks on players / auto or underdog nukes. Revenge, last stand, counters, expand, builds and diplomacy stay on.
+    - DOMINATE when I'm #1 with ≥ 2× the land of #2.
+    - Auto attack, siege push and underdog strike are capped at `spare`.
+  - Next for the "chess bot" goal: move from per-feature rules to scoring every candidate action (expected tiles and army after the game's loss formula, gold value, risk) and picking the best within the budget.

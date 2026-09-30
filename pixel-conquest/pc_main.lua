@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.5  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.6  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -41,6 +41,7 @@ local CFG = {
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20, riverDist = 15, riverEdge = 0.6, riverEvery = 4,
+    brain = true, brainSurvive = 0.25, brainNbrShare = 0.3, pushEdge = 0.5,
     underdog = true, udRatio = 1.5, udDanger = 0.08, udDiplo = true, udStrike = true, udOpening = 0.6, udStrikeRatio = 0.5, udEdge = 1.0,
     udNuke = true, udDenyCd = 12, udDefense = true,
     siege = true, siegeBots = true, siegeTrigger = 2, siegeFill = 0.9, siegeEdge = 1.3, siegeKeep = 0.3, siegeHold = true, siegeGap = 25, siegeNuke = true, siegeNukeKind = "Best owned",
@@ -96,7 +97,7 @@ end
 
 -- ============================== state / log ==============================
 local S = { myId = nil, phase = nil, players = {}, byId = {}, names = {}, me = nil, fronts = nil, gold = 0, diplo = nil,
-    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, udPeak = {}, udEmbargo = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
+    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, siegeSkip = {}, udPeak = {}, udEmbargo = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
     board = nil, lobbyMoney = nil, rewardClaimed = nil, scan = nil, readyAt = {}, leaveAt = nil }
 local reqAt, counterAt = {}, {}
 local stats = { sent = 0, attacks = 0, builds = 0, nukes = 0, strikes = 0, allies = 0, joins = 0, denied = 0 }
@@ -554,6 +555,44 @@ local function doSpawn(r)
 end
 
 -- ============================== expand + combat (one front scheduler) ==============================
+-- ============================== brain: one read of the position that every feature obeys ==============================
+-- posture SURVIVE / CONTEND / DOMINATE + a troop budget. Home defense need = incoming attacks + a share of the
+-- strongest non-allied land neighbour's army (their home troops can come at me any moment).
+local function doBrain(r)
+    local me, f = S.me, S.fronts or {}
+    local B = { posture = "CONTEND", spare = 0, need = 0 }
+    S.brain = B
+    if not me or not me.alive then return end
+    local cap = troopCap()
+    local fill = me.troops / math.max(cap, 1)
+    local al = allies()
+    local inc = 0
+    for _, v in f.inc or {} do inc += v.troops or 0 end
+    local nbr, nbrT = nil, 0
+    for id in r.contacts do
+        local v = S.byId[id]
+        if id ~= 0 and v and v.alive and not friendly(id, al) and v.troops > nbrT then nbr, nbrT = id, v.troops end
+    end
+    B.need = math.max(inc * 1.1 + nbrT * CFG.brainNbrShare, cap * CFG.keepCap, me.troops * CFG.keepHome)
+    B.spare = math.max(0, me.troops - B.need)
+    -- land ranking among rivals
+    local first, second
+    for _, v in S.players do
+        if v.alive and not friendly(v.id, al) or v.id == S.myId then
+            if not first or v.tiles > first.tiles then second = first; first = v
+            elseif not second or v.tiles > second.tiles then second = v end
+        end
+    end
+    local threatened = inc > 0 or nbrT > me.troops * 2
+    if fill < CFG.brainSurvive and threatened then B.posture = "SURVIVE"
+    elseif first and first.id == S.myId and (not second or me.tiles >= second.tiles * 2) then B.posture = "DOMINATE"; B.rival = second and second.id end
+    status.brain = ("%s · home needs %s, spare %s · incoming %s · strongest neighbour %s (%s)"):format(B.posture, fmtT(B.need), fmtT(B.spare),
+        fmtT(inc), nbr and (S.names[nbr] or "?") or "-", fmtT(nbrT))
+    if B.posture ~= S.lastPosture then log("brain: posture " .. tostring(S.lastPosture) .. " -> " .. B.posture); S.lastPosture = B.posture end
+end
+local function surviving() return CFG.brain and S.brain and S.brain.posture == "SURVIVE" end
+local function spare() return CFG.brain and S.brain and S.brain.spare or math.huge end
+
 -- nearest crossing: every sampled coast tile of theirs vs every sampled coast tile of mine (<= 40 x 300)
 local function crossing(r, list, maxD)
     local t, d
@@ -639,17 +678,18 @@ local function doFronts(r)
     -- and my attacks on the same player MERGE when they land (Sim launchAttack), so: charge troops, (nuke), then send
     -- a salvo of 3 boats at ONE landing tile (1 - 0.8^3 = 49% of my army) and keep reinforcing that beachhead.
     local sg = S.siege
-    if CFG.siege and S.map and #r.shore > 0 then
+    if CFG.siege and S.map and #r.shore > 0 and not surviving() then
         local al3 = allies()
         if not sg then
             local best, bestT, bestD
             for o, list in r.ecoast do
                 local v = S.byId[o]
-                if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al3) and (not v.isBot or CFG.siegeBots) then
+                if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al3) and (not v.isBot or CFG.siegeBots) and now0 >= (S.siegeSkip[o] or 0) then
                     local t, d = crossing(r, list, CFG.islandMaxDist)
                     local river = d and d <= CFG.riverDist
                     local need = river and CFG.boatEdge * CFG.riverEdge or CFG.siegeTrigger -- river: only if chained boats can't win either
-                    if t and me.troops / 5 < v.troops * need then -- one boat can't win comfortably: overwhelm with a salvo instead of trickling
+                    local reachable = troopCap() * (1 - 0.8 ^ 3) >= v.troops * CFG.siegeEdge -- a full-strength salvo could win at all
+                    if t and reachable and me.troops / 5 < v.troops * need then -- one boat can't win comfortably: overwhelm with a salvo instead of trickling
                         if t and (not bestT or v.tiles > S.byId[best].tiles) then best, bestT, bestD = o, t, d end -- biggest island rival first
                     end
                 end
@@ -670,8 +710,13 @@ local function doFronts(r)
                 -- BEACHHEAD: I border them now. Feed it by land every 4 s (attacks on the same player merge),
                 -- sized by the HUD ratio, never below my keep-home floor; normal combat would leave it to die
                 if sg.stage ~= "push" then sg.stage = "push"; log("sea siege: beachhead on " .. (S.names[sg.id] or "?") .. ", pushing") end
-                local spare = me.troops - math.max(me.troops * CFG.keepHome, cap * CFG.keepCap)
-                local send_ = math.min(me.troops * ratio(CFG.attackRatio), spare)
+                local spare_ = math.min(me.troops - math.max(me.troops * CFG.keepHome, cap * CFG.keepCap), spare())
+                local send_ = math.min(me.troops * ratio(CFG.attackRatio), spare_)
+                if send_ < v.troops * CFG.pushEdge then -- feeding a beachhead into a much bigger army is pure bleed
+                    log(("sea siege on %s abandoned: push %s vs their %s"):format(S.names[sg.id] or "?", fmtT(send_), fmtT(v.troops)))
+                    S.siege, send_ = nil, 0
+                    S.siegeSkip[sg.id] = now0 + 120
+                end
                 status.combat = ("SEA SIEGE vs %s: pushing the beachhead (their army %s)"):format(S.names[sg.id] or "?", fmtT(v.troops))
                 if send_ >= (Config.MIN_ATTACK_TROOPS or 250) and now0 - (sg.last or 0) >= 4 then
                     sg.last = now0
@@ -726,7 +771,7 @@ local function doFronts(r)
 
     -- BOAT INVASIONS: attack a neighbour across water. A boat carries troops/5 (ratio ignored) and fights the defender's
     -- WHOLE army (Sim attack loss), so only take on someone that boat can beat. Shares the 3-boat cap with islands.
-    if CFG.boatAttack and S.map and #r.shore > 0 and fill >= CFG.boatMin and now0 >= (S.boatAt or 0) and not (S.siege and S.siege.stage == "charge") then
+    if CFG.boatAttack and not surviving() and S.map and #r.shore > 0 and fill >= CFG.boatMin and now0 >= (S.boatAt or 0) and not (S.siege and S.siege.stage == "charge") then
         local boat = me.troops / 5
         local al2 = allies()
         local best, bestScore, bestTile, bestD
@@ -784,12 +829,13 @@ local function doFronts(r)
     local traitors = setOf(S.diplo and S.diplo.traitors)
 
     local function pickTarget(onlyGrudge)
-        local sendTroops = me.troops * ratio(CFG.attackRatio)
+        local sendTroops = math.min(me.troops * ratio(CFG.attackRatio), spare())
         local best, bestScore, why
         for id in r.contacts do
             local v = S.byId[id]
             local grudge = S.grudge[id] and S.grudge[id] > now
             if id ~= 0 and v and v.alive and not fronted[id] and not friendly(id, al) and (grudge or not onlyGrudge)
+                and not (surviving() and not v.isBot) -- surviving: no new wars with players
                 and ((v.isBot and CFG.hitBots) or (not v.isBot and CFG.hitPlayers) or (grudge and CFG.revenge))
                 -- Sim.attackLoss: attacker losses scale with the defender's WHOLE army / attack troops, so compare against all of it
                 and sendTroops >= v.troops * (grudge and CFG.revengeEdge or CFG.edge)
@@ -871,7 +917,7 @@ local function doFronts(r)
     if #out >= math.min(CFG.maxFronts, 4) then status.combat = "front limit"; return end
     if fill < CFG.attackMin then status.combat = ("saving troops (%.0f%% < %.0f%%)"):format(fill * 100, CFG.attackMin * 100); return end
     local best, why = pickTarget(false)
-    if best then strike(best, why, ratio(CFG.attackRatio)) else status.combat = "no valid target" end
+    if best then strike(best, why, math.min(ratio(CFG.attackRatio), spare() / math.max(me.troops, 1))) else status.combat = "no valid target" end
 end
 
 -- ============================== gold arbiter: build + nukes + reinforce ==============================
@@ -1134,7 +1180,7 @@ local function doEconomy(r)
         if who and fireNuke(CFG.revengeNukeKind, who, 0, "revenge", false, CFG.revengeMinLv) and CFG.revengeOnce then S.nukeGrudge[who] = nil end
     end
     local freeNuke = CFG.useFree and (f.freeNukes or 0) > 0 -- product nukes (starter packs / railgun bundle) cost no gold
-    local ud = CFG.udNuke and S.underdog
+    local ud = CFG.udNuke and not surviving() and S.underdog
     if ud then
         local cd = ud.danger and CFG.udDenyCd or CFG.nukeCooldown
         if (CFG.nuke or freeNuke or ud.danger) and now - (S.lastAutoNuke or -1e9) >= cd
@@ -1142,7 +1188,7 @@ local function doEconomy(r)
             S.lastAutoNuke = now
         end
     end
-    if not ud and (CFG.nuke or freeNuke) and now - (S.lastAutoNuke or -1e9) >= CFG.nukeCooldown then
+    if not ud and not surviving() and (CFG.nuke or freeNuke) and now - (S.lastAutoNuke or -1e9) >= CFG.nukeCooldown then
         local al, best, bestTiles = allies(), nil, 0
         for _, v in S.players do
             local grudge = (S.grudge[v.id] or 0) > now
@@ -1384,10 +1430,10 @@ local function doUnderdog(r)
     end
 
     -- OPENING: their home is thin -> hit it with a real army, but never below my keep-home floor
-    if CFG.udStrike and ud.opening and r.contacts[lead.id] and r.sample[lead.id] and now - (S.udStrikeAt or -99) > 8 then
+    if CFG.udStrike and not surviving() and ud.opening and r.contacts[lead.id] and r.sample[lead.id] and now - (S.udStrikeAt or -99) > 8 then
         local cap = troopCap()
         local spare = me.troops - math.max(me.troops * CFG.keepHome, cap * CFG.keepCap)
-        local sendT = math.min(spare, me.troops * CFG.udStrikeRatio)
+        local sendT = math.min(spare, me.troops * CFG.udStrikeRatio, (CFG.brain and S.brain) and S.brain.spare or math.huge)
         if sendT >= (Config.MIN_ATTACK_TROOPS or 250) and sendT >= lead.troops * CFG.udEdge then
             S.udStrikeAt = now
             S.lastTile = r.sample[lead.id]
@@ -1507,6 +1553,7 @@ task.spawn(function()
                 local r = scanMap()
                 if r then
                     S.scan = r
+                    guard("brain", doBrain, r)
                     guard("underdog", doUnderdog, r)
                     guard("fronts", doFronts, r)
                     guard("economy", doEconomy, r)
@@ -1565,7 +1612,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.5 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.6 · expand · combat · build · weapons · diplomacy · lobby",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1768,6 +1815,11 @@ PS2:AddToggle("PC_UseFree", { Text = "Use free items from packs (nukes, cities, 
 PS2:AddLabel("Robux-only passes (VIP, Fast Reload, Host, Advanced) are detected but never bought.", true)
 
 -- Info
+local IB = Tabs.Info:AddLeftGroupbox("Brain", "brain")
+IB:AddToggle("PC_Brain", { Text = "Posture + troop budget", Tooltip = "SURVIVE / CONTEND / DOMINATE; offense only spends troops home defense doesn't need", Default = CFG.brain, Callback = set("brain") })
+IB:AddSlider("PC_BrainSurvive", { Text = "Survive below % of cap (when threatened)", Default = math.floor(CFG.brainSurvive * 100 + 0.5), Min = 5, Max = 60, Rounding = 0, Callback = pct("brainSurvive") })
+IB:AddSlider("PC_BrainNbr", { Text = "Keep home vs strongest neighbour (x)", Default = CFG.brainNbrShare, Min = 0, Max = 1, Rounding = 1, Callback = set("brainNbrShare") })
+local brainLabel = IB:AddLabel("-", true)
 local IN = Tabs.Info:AddLeftGroupbox("Match", "activity")
 local infoLabel = IN:AddLabel("-", true)
 local IN2 = Tabs.Info:AddRightGroupbox("Standings", "list")
@@ -1808,6 +1860,7 @@ task.spawn(function()
             weaponsLabel:SetText(status.weapons)
             samLabel:SetText(status.samInfo or "-")
             udLabel:SetText(status.underdog or "-")
+            brainLabel:SetText(status.brain or "-")
             local pl = {}
             for _, p in PASSES do
                 pl[#pl + 1] = ("%s %s - %s%s"):format(hasPass(p.key) and "[OWNED]" or "[  -  ]", p.key, p.use,
@@ -1844,5 +1897,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.5 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.5 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.6 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.6 ready — RightCtrl toggles the UI.", 5)
