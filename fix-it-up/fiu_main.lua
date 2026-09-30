@@ -1385,7 +1385,7 @@ local TeleportService = game:GetService("TeleportService")
 local req = request or http_request or (syn and syn.request)
 local HOP_FILE, VISIT_TTL = "fiu_hop.json", 3600
 local HOP = readJSON(HOP_FILE, {})
-for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500,
+for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500, gate = false, leaveOnFail = false,
     antiMod = true, modRank = 2, modAction = "Leave game", staffBoard = true }) do if HOP[k] == nil then HOP[k] = v end end
 local function saveHop() writeJSON(HOP_FILE, HOP) end
 do
@@ -1581,13 +1581,20 @@ end
 local function checkServer()
     local vals = scanServer()
     local ok, over, hard = judge(vals, HOP)
+    -- the action gate: an empty server is fine to farm in (judge() wants >= 1 other player only for hop hunting)
+    STAFF.gateOk = #vals == 0 or ok
+    if HOP.leaveOnFail and not STAFF.gateOk and not STAFF.leaving and not HOP.auto then task.spawn(STAFF.leave) end
     local shown = {}
     for i, v in ipairs(vals) do shown[i] = v == math.huge and "?" or tostring(v) end
-    hopServer = ("%d others · %d at/over %d%s\nlowest %s · highest %s\n%s"):format(#vals, over, HOP.max,
+    hopServer = ("%d others · %d at/over %d%s\nlowest %s · highest %s\n%s%s"):format(#vals, over, HOP.max,
         HOP.hard and (" · %d hard-blocked (%d+)"):format(hard, HOP.hardMax) or "",
-        shown[1] or "-", shown[#shown] or "-", ok and "PASSES" or "fails")
+        shown[1] or "-", shown[#shown] or "-", ok and "PASSES" or "fails",
+        HOP.gate and (STAFF.gateOk and " · actions allowed" or " · ACTIONS BLOCKED") or "")
     return ok, #vals, over
 end
+-- "Block actions in failing servers": nothing acts until this server has been checked and passes
+function STAFF.gated() return STAFF.leaving or (HOP.gate and STAFF.gateOk ~= true) end
+STAFF.gateMsg = "this server fails the hop requirements"
 
 -- ONE request per hop, page 1 only: the API 429s on the 3rd call within 4 s (measured 2026-09-25)
 local function candidates()
@@ -1666,6 +1673,26 @@ local function hopRun()
     end
 end
 
+-- "Hop away when the server breaks the rules": block new actions, let the running one finish (a repair has loose
+-- engine parts on the floor that a teleport would strand), re-check, then start the normal auto hop hunt.
+function STAFF.leave()
+    STAFF.leaving = true -- STAFF.gated() is now true: auto, buttons, farm and gold start nothing new
+    hopStatus = "server broke the rules: finishing the current job, then hopping"
+    lifeLog("rules broken: waiting for " .. tostring(busy and busyWhat or "nothing") .. " before hopping")
+    local t = os.clock()
+    while running and (busy or manualPending) and os.clock() - t < 600 do task.wait(0.5) end
+    task.wait(1) -- let a finished job's last parts settle into the car / inventory
+    if not running then return end
+    checkServer()
+    if STAFF.gateOk then -- whoever broke it left while we waited
+        STAFF.leaving = false
+        hopStatus = "the rule breaker left, staying"
+        return
+    end
+    lifeLog("rules broken: hopping")
+    if hopToggle then hopToggle:SetValue(true) else HOP.auto = true; saveHop(); task.spawn(hopRun) end
+end
+
 -- ============================== unload ==============================
 local Library
 local function unload()
@@ -1722,7 +1749,8 @@ task.spawn(function() -- players move: their labels refresh 4x a second (positio
 end)
 task.spawn(function()
     while running do
-        if CFG.autoBuy or CFG.autoRepair or CFG.autoSell then guard("auto", autoStep) else autoStatus = "off" end
+        if STAFF.gated() then autoStatus = "blocked: " .. STAFF.gateMsg
+        elseif CFG.autoBuy or CFG.autoRepair or CFG.autoSell then guard("auto", autoStep) else autoStatus = "off" end
         task.wait(2)
     end
 end)
@@ -1778,6 +1806,7 @@ local function set(key) return function(v) CFG[key] = v end end
 local STAY = { ["tp junk"] = true, spawn = true, ["tp car"] = true, tp = true, ["tp garage"] = true, ["tp player"] = true, hood = true }
 local function run(name, f) -- buttons: one action at a time, off the UI thread
     return function()
+        if STAFF.gated() then notify("Blocked: " .. STAFF.gateMsg) return end
         -- the distance farm holds busy all the time it drives: it steps out for a button and resumes after. Teleport
         -- buttons stay refused while it drives (it would take you straight back to the highway)
         if busy and (busyWhat ~= "farming distance" or STAY[name]) then notify("Busy: " .. tostring(busyWhat)) return end
@@ -1829,6 +1858,7 @@ List:AddButton({ Text = "Teleport to car", Func = run("tp junk", function()
     if j and j.model.Parent then tpTo(j.model:GetPivot() * CFrame.new(0, 3, 8)) end
 end) })
 local function queued(what, f) -- one job at a time: wait for a running repair/sell instead of refusing
+    if STAFF.gated() then notify("Blocked: " .. STAFF.gateMsg) return end
     if manualPending then notify("Another button is still waiting") return end
     manualPending = true -- auto starts nothing new and the distance farm steps out while this is pending
     task.spawn(function()
@@ -2887,7 +2917,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_StaffBoard", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_HopGate", "FIU_HopLeave", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_StaffBoard", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 -- CruelHub look: near-black with a crimson accent (still switchable under Settings > Themes)
@@ -3188,7 +3218,7 @@ do
                     c.on = false; saveGold()
                     notify(("Gold contract done: %d gold for %s"):format(c.filled, money(c.spent)))
                     log("gold contract done")
-                elseif c.maxPrice > 0 and priceNow() <= c.maxPrice then
+                elseif c.maxPrice > 0 and priceNow() <= c.maxPrice and not STAFF.gated() then
                     busy, busyWhat = true, "buying gold"
                     local price = priceNow()
                     local ok, got, msg = pcall(buyGold, left)
@@ -3412,6 +3442,7 @@ do
             if not CFG.driveNoLimit and owed + CFG.driveExtra <= 0 then farm.status = ("done: drove %.2f km"):format(km - farm.startKm); notify("Distance farm done"); break end
             if farm.chosen and farm.car ~= e then farm.yielded = true; farm.status = "switching car"; break end -- picked another car mid-run
             if manualPending then farm.yielded = true; farm.status = "paused for a button"; break end
+            if STAFF.gated() then farm.yielded = true; farm.status = "blocked: " .. STAFF.gateMsg; break end
             if CFG.farmYield and os.clock() - (farm.lastCheck or 0) > 1 then
                 farm.lastCheck = os.clock()
                 if farm.pending() then farm.yielded = true; farm.status = "paused: auto flip has work"; break end
@@ -3443,6 +3474,10 @@ do
                         if busy or manualPending then
                             farm.status = "waiting for " .. (busy and tostring(busyWhat) or "a button")
                             repeat task.wait(0.5) until not (busy or manualPending) or not farm.on or not running
+                        end
+                        if STAFF.gated() then
+                            farm.status = "blocked: " .. STAFF.gateMsg
+                            repeat task.wait(1) until not STAFF.gated() or not farm.on or not running
                         end
                         if not (farm.on and running) then break end
                         busy, busyWhat = true, "farming distance"
@@ -3558,6 +3593,14 @@ HopBox:AddInput("FIU_HopHardMax", { Text = "Hard block at Cars Sold", Default = 
     Callback = function(v) HOP.hardMax = math.max(1, math.floor(tonumber(v) or 1500)); saveHop() end })
 HopBox:AddSlider("FIU_HopMaxP", { Text = "Max other players", Default = HOP.maxp, Min = 1, Max = 21, Rounding = 0,
     Tooltip = "Only hop into servers with at most this many players", Callback = function(v) HOP.maxp = v; saveHop() end })
+HopBox:AddToggle("FIU_HopGate", { Text = "Block actions in failing servers", Default = HOP.gate,
+    Tooltip = "While this server fails the rules above (e.g. someone with 2k sold is here), nothing runs: auto buy/repair/sell, "
+        .. "buttons, the distance farm and gold contracts all wait. Rechecked every 15 s and when someone joins; hopping still works.",
+    Callback = function(v) HOP.gate = v; saveHop(); task.spawn(checkServer) end })
+HopBox:AddToggle("FIU_HopLeave", { Text = "Hop away when the server breaks the rules", Default = HOP.leaveOnFail,
+    Tooltip = "When someone who fails the rules above is here (or joins), new actions stop, the running job (a repair, sale, swap...) "
+        .. "finishes so no parts are left lying around, and then auto hop hunts for a passing server.",
+    Callback = function(v) HOP.leaveOnFail = v; saveHop(); task.spawn(checkServer) end })
 local hopLabel = HopBox:AddLabel("-", true)
 local HopInfo = Tabs.Hop:AddRightGroupbox("This server", "server")
 local hopServerLabel = HopInfo:AddLabel("-", true)
@@ -3624,6 +3667,14 @@ task.spawn(function()
 end)
 end
 if HOP.auto then task.spawn(hopRun) else task.spawn(checkServer) end
+-- keep the verdict current for the action gate: people join, leave and keep selling
+on(Players.PlayerAdded, function() task.wait(3); if running then pcall(checkServer) end end)
+task.spawn(function()
+    while running do
+        task.wait(15)
+        if running and not hopping then pcall(checkServer) end
+    end
+end)
 
 lifeLog("ready")
 Library:Notify("Fix It Up ready — RightCtrl toggles the UI. Only script-bought cars are ever sold.", 5)
