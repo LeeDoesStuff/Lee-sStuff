@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.8  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.9  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -1732,238 +1732,261 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.8 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.9 · brain · expand · attack · defend · build · weapons",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
-    Expand = Window:AddTab("Expand", "map"), Combat = Window:AddTab("Combat", "swords"), Build = Window:AddTab("Build", "hammer"),
-    Weapons = Window:AddTab("Weapons", "flame"), Diplo = Window:AddTab("Diplomacy", "handshake"), Lobby = Window:AddTab("Lobby", "repeat"),
-    Passes = Window:AddTab("Passes", "badge-check"), Info = Window:AddTab("Info", "activity"), Settings = Window:AddTab("Settings", "settings"),
+    Overview = Window:AddTab("Overview", "layout-dashboard"), Brain = Window:AddTab("Brain", "brain"),
+    Expand = Window:AddTab("Expand", "map"), Attack = Window:AddTab("Attack", "swords"), Defend = Window:AddTab("Defend", "shield"),
+    Build = Window:AddTab("Build", "hammer"), Weapons = Window:AddTab("Weapons", "radiation"), Diplo = Window:AddTab("Diplomacy", "handshake"),
+    Lobby = Window:AddTab("Lobby & Passes", "repeat"), Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(k) return function(v) CFG[k] = v end end
 local function pct(k) return function(v) CFG[k] = v / 100 end end
+-- compact builders: same option ids as before, so saved configs keep loading
+local function T(b, id, text, key, tip) return b:AddToggle(id, { Text = text, Tooltip = tip, Default = CFG[key], Callback = set(key) }) end
+local function P(b, id, text, key, lo, hi, tip) return b:AddSlider(id, { Text = text, Tooltip = tip, Default = math.floor(CFG[key] * 100 + 0.5), Min = lo, Max = hi, Rounding = 0, Callback = pct(key) }) end
+local function Nm(b, id, text, key, lo, hi, rnd, tip) return b:AddSlider(id, { Text = text, Tooltip = tip, Default = CFG[key], Min = lo, Max = hi, Rounding = rnd or 0, Callback = set(key) }) end
+local function K(b, id, text, key, hi, tip) return b:AddSlider(id, { Text = text, Tooltip = tip, Default = math.floor((CFG[key] or 0) / 1000), Min = 0, Max = hi, Rounding = 0, Callback = function(v) CFG[key] = v * 1000 end }) end
+local NUKES = { "Best owned", "Atom", "Mega", "Scattershot" }
+local function Dd(b, id, text, key, values, tip) return b:AddDropdown(id, { Text = text, Tooltip = tip, Values = values, Default = CFG[key], Callback = set(key) }) end
 
--- Expand
-local EX = Tabs.Expand:AddLeftGroupbox("Spawn", "map-pin")
-EX:AddToggle("PC_Spawn", { Text = "Auto pick spawn", Default = CFG.spawn, Callback = set("spawn") })
-EX:AddToggle("PC_SpawnCoast", { Text = "Prefer coast (ports / trade)", Default = CFG.spawnCoast, Callback = set("spawnCoast") })
-EX:AddLabel("Picks open land as far as possible from everyone already placed.", true)
-local EX2 = Tabs.Expand:AddRightGroupbox("Expand into open land", "expand")
-EX2:AddToggle("PC_Expand", { Text = "Auto expand", Default = CFG.expand, Callback = set("expand") })
-EX2:AddSlider("PC_ExpandRatio", { Text = "Troops sent per push %", Default = CFG.expandRatio * 100, Min = 5, Max = 100, Rounding = 0, Callback = pct("expandRatio") })
-EX2:AddSlider("PC_BandLow", { Text = "Only push above % of cap", Default = CFG.bandLow * 100, Min = 0, Max = 95, Rounding = 0, Callback = pct("bandLow") })
-EX2:AddLabel("Troops grow fastest at 40-60% of cap: small pushes that keep you there grow the most.", true)
-EX2:AddSlider("PC_BandHigh", { Text = "Seed other open pockets above % of cap", Default = CFG.bandHigh * 100, Min = 10, Max = 100, Rounding = 0, Callback = pct("bandHigh") })
-local EXI = Tabs.Expand:AddRightGroupbox("Islands (transport boats)", "ship")
-EXI:AddToggle("PC_Islands", { Text = "Boat to open land across water", Default = CFG.islands, Callback = set("islands") })
-EXI:AddToggle("PC_IslandLocked", { Text = "Only when no open land borders me", Default = CFG.islandOnlyLocked, Callback = set("islandOnlyLocked") })
-EXI:AddSlider("PC_IslandMin", { Text = "Only above % of cap", Default = CFG.islandMin * 100, Min = 10, Max = 95, Rounding = 0, Callback = pct("islandMin") })
-EXI:AddSlider("PC_IslandMinLocked", { Text = "...when boxed in (no open land next to me)", Default = CFG.islandMinLocked * 100, Min = 0, Max = 95, Rounding = 0, Callback = pct("islandMinLocked") })
-EXI:AddSlider("PC_IslandEvery", { Text = "Seconds between boats", Default = CFG.islandEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("islandEvery") })
-EXI:AddSlider("PC_IslandDist", { Text = "Max sea distance (tiles)", Default = CFG.islandMaxDist, Min = 20, Max = 600, Rounding = 0, Callback = set("islandMaxDist") })
-EXI:AddLabel("Each boat carries 1/5 of your troops (game rule, ratio ignored), max 3 at sea. Nearest open coast first.", true)
-local EX3 = Tabs.Expand:AddLeftGroupbox("Reclaim nuked land", "radiation")
-EX3:AddToggle("PC_Reclaim", { Text = "Retake land nuked out of my territory", Default = CFG.reclaim, Callback = set("reclaim") })
-EX3:AddSlider("PC_ReclaimMin", { Text = "Only above % of cap", Default = CFG.reclaimMin * 100, Min = 0, Max = 90, Rounding = 0, Callback = pct("reclaimMin") })
-EX3:AddSlider("PC_ReclaimRatio", { Text = "Troops per reclaim push %", Default = CFG.reclaimRatio * 100, Min = 5, Max = 60, Rounding = 0, Callback = pct("reclaimRatio") })
-EX3:AddLabel("Holes aren't connected to your expand front, so each gets its own push. Fallout tiles defend ~x5 for a while.", true)
-local expandLabel = EX2:AddLabel("-", true)
+-- ============ OVERVIEW: what the brain sees + the big switches ============
+local OB = Tabs.Overview:AddLeftGroupbox("Brain", "brain")
+local brainLabel = OB:AddLabel("-", true)
+local udLabel = OB:AddLabel("-", true)
+local OS = Tabs.Overview:AddLeftGroupbox("Autopilot", "power")
+T(OS, "PC_Brain", "Brain (posture + budget)", "brain", "Reads the whole position first; every feature obeys it")
+T(OS, "PC_Expand", "Expand", "expand")
+T(OS, "PC_Attack", "Attack", "attack", "Land attacks on the best target (boats and siege are on the Attack tab)")
+T(OS, "PC_Build", "Build", "build")
+T(OS, "PC_Nuke", "Auto nukes", "nuke")
+T(OS, "PC_SamAuto", "Auto anti-nuke", "samAuto")
+T(OS, "PC_Accept", "Accept alliances", "accept")
+T(OS, "PC_Queue", "Auto queue (lobby)", "queue")
+local OP = Tabs.Overview:AddRightGroupbox("Play style", "sliders-horizontal")
+local PRESETS = {
+    Balanced = { PC_Attack = true, PC_AttackMin = 55, PC_Edge = 1.2, PC_KeepHome = 35, PC_CounterPunish = true, PC_Nuke = false, PC_BoatAttack = true, PC_Siege = true,
+        PC_SurviveIn = 1.2, PC_UdStrike = true, PC_Request = false, PC_SamMode = "Prepare" },
+    Aggressive = { PC_Attack = true, PC_AttackMin = 30, PC_Edge = 1.0, PC_KeepHome = 25, PC_CounterPunish = true, PC_Nuke = true, PC_BoatAttack = true, PC_Siege = true,
+        PC_SurviveIn = 1.6, PC_UdStrike = true, PC_Request = false, PC_SamMode = "Once nukes fly" },
+    Defensive = { PC_Attack = false, PC_AttackMin = 70, PC_Edge = 1.5, PC_KeepHome = 50, PC_CounterPunish = false, PC_Nuke = false, PC_BoatAttack = false, PC_Siege = false,
+        PC_SurviveIn = 0.9, PC_UdStrike = false, PC_Request = true, PC_SamMode = "Prepare" },
+    ["Money farm (survive long)"] = { PC_Attack = true, PC_AttackMin = 60, PC_Edge = 1.5, PC_KeepHome = 45, PC_CounterPunish = false, PC_Nuke = false, PC_BoatAttack = true,
+        PC_Siege = false, PC_SurviveIn = 1.0, PC_UdStrike = false, PC_Request = true, PC_SamMode = "Prepare" },
+}
+local PRESET_TIPS = {
+    Balanced = "Default brain play: grow, hit weak targets, deny winners.",
+    Aggressive = "Attacks earlier, nukes on, less kept home. Wins fast or loses fast.",
+    Defensive = "Holds land: no auto attacks or boats, keeps half the army home, asks neighbours to ally.",
+    ["Money farm (survive long)"] = "Money pays per minute survived: cheap growth, allies, no risky wars.",
+}
+local presetLabel
+OP:AddDropdown("PC_Preset", { Text = "Preset", Values = { "Balanced", "Aggressive", "Defensive", "Money farm (survive long)" }, Default = "Balanced",
+    Callback = function(v) if presetLabel then presetLabel:SetText(PRESET_TIPS[v] or "") end end })
+OP:AddButton({ Text = "Apply preset", Func = function()
+    local name = Library.Options.PC_Preset.Value
+    for id, v in PRESETS[name] or {} do
+        local o = Library.Toggles[id] or Library.Options[id]
+        if o then pcall(o.SetValue, o, v) end
+    end
+    notify("Play style: " .. name)
+end })
+presetLabel = OP:AddLabel(PRESET_TIPS.Balanced, true)
+local standLabel = Tabs.Overview:AddRightGroupbox("Standings", "list"):AddLabel("-", true)
+local infoLabel = Tabs.Overview:AddRightGroupbox("Match", "activity"):AddLabel("-", true)
+local logLabel = Tabs.Overview:AddLeftGroupbox("Log", "scroll-text"):AddLabel("-", true)
 
--- Combat
-local CB = Tabs.Combat:AddLeftGroupbox("Auto attack", "swords")
-CB:AddToggle("PC_Attack", { Text = "Attack weakest neighbour", Default = CFG.attack, Callback = set("attack") })
-CB:AddToggle("PC_HitBots", { Text = "Target bots / nations", Default = CFG.hitBots, Callback = set("hitBots") })
-CB:AddToggle("PC_HitPlayers", { Text = "Target players", Default = CFG.hitPlayers, Callback = set("hitPlayers") })
-CB:AddSlider("PC_AttackRatio", { Text = "Troops sent per attack %", Default = CFG.attackRatio * 100, Min = 5, Max = 100, Rounding = 0, Callback = pct("attackRatio") })
-CB:AddSlider("PC_AttackMin", { Text = "Only attack above % of cap", Default = CFG.attackMin * 100, Min = 0, Max = 100, Rounding = 0, Callback = pct("attackMin") })
-CB:AddSlider("PC_Edge", { Text = "Required troop edge (x)", Default = CFG.edge, Min = 0.5, Max = 4, Rounding = 1, Callback = set("edge") })
-CB:AddSlider("PC_MaxFronts", { Text = "Max fronts (game cap 4)", Default = CFG.maxFronts, Min = 1, Max = 4, Rounding = 0, Callback = set("maxFronts") })
-CB:AddSlider("PC_LootWeight", { Text = "Loot pull (captured buildings)", Tooltip = "You keep buildings you conquer: weak targets with cities nearby go first. 0 = ignore", Default = CFG.lootWeight, Min = 0, Max = 0.3, Rounding = 2, Callback = set("lootWeight") })
-CB:AddToggle("PC_HoldHit", { Text = "Hold troops while a strong player attacks me", Tooltip = "Your defense = your total troops at home", Default = CFG.holdWhenHit, Callback = set("holdWhenHit") })
-CB:AddLabel("Allies and teammates are never attacked.", true)
-local CT = Tabs.Combat:AddLeftGroupbox("Counter attack (game cancels opposing attacks 1:1)", "shield")
-CT:AddToggle("PC_CounterCancel", { Text = "Cancel incoming attacks", Tooltip = "Sends exactly their attack size back: both armies cancel 1:1", Default = CFG.counterCancel, Callback = set("counterCancel") })
-CT:AddToggle("PC_CounterPunish", { Text = "Cancel + invade when I can afford it", Tooltip = "Extra troops push into their home, which is emptied by their own attack", Default = CFG.counterPunish, Callback = set("counterPunish") })
-CT:AddSlider("PC_KeepHome", { Text = "Always keep % of my troops home", Default = CFG.keepHome * 100, Min = 0, Max = 90, Rounding = 0, Callback = pct("keepHome") })
-CT:AddSlider("PC_KeepCap", { Text = "...and never below % of my cap", Default = CFG.keepCap * 100, Min = 0, Max = 60, Rounding = 0, Callback = pct("keepCap") })
-CT:AddToggle("PC_LastStand", { Text = "Last stand when I can't cancel it", Tooltip = "Nuke the attacker, defense post on that border, reinforce, ask to ally", Default = CFG.lastStand, Callback = set("lastStand") })
-CT:AddDropdown("PC_LastNuke", { Text = "Last stand nuke", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.lastStandNuke, Callback = set("lastStandNuke") })
-CT:AddToggle("PC_LastAlly", { Text = "Last stand: ask the attacker to ally", Default = CFG.lastStandAlly, Callback = set("lastStandAlly") })
-CT:AddLabel("A nuke kills troops in the attacker's running attacks too, and wipes every building in its blast.", true)
-local BT = Tabs.Combat:AddLeftGroupbox("Across water (boat invasions)", "ship")
-BT:AddToggle("PC_BoatAttack", { Text = "Invade neighbours across water", Default = CFG.boatAttack, Callback = set("boatAttack") })
-BT:AddSlider("PC_CheapFrac", { Text = "Cheap grab: their army < % of mine", Tooltip = "Skips the fill gate; bots allowed even in SURVIVE", Default = math.floor(CFG.cheapFrac * 100 + 0.5), Min = 1, Max = 30, Rounding = 0, Callback = pct("cheapFrac") })
-BT:AddSlider("PC_BoatMin", { Text = "Only above % of cap", Default = CFG.boatMin * 100, Min = 10, Max = 95, Rounding = 0, Callback = pct("boatMin") })
-BT:AddSlider("PC_BoatEdge", { Text = "Boat must be x their army", Default = CFG.boatEdge, Min = 0.3, Max = 3, Rounding = 1, Callback = set("boatEdge") })
-BT:AddSlider("PC_BoatEvery", { Text = "Seconds between invasions", Default = CFG.boatEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("boatEvery") })
-BT:AddSlider("PC_RiverDist", { Text = "River: crossing up to (tiles)", Tooltip = "Boats sail ~10 tiles/s: short crossings chain boats before a landing dies", Default = CFG.riverDist, Min = 3, Max = 60, Rounding = 0, Callback = set("riverDist") })
-BT:AddSlider("PC_RiverEdge", { Text = "River: edge needed (x normal)", Default = CFG.riverEdge, Min = 0.2, Max = 1, Rounding = 1, Callback = set("riverEdge") })
-BT:AddSlider("PC_RiverEvery", { Text = "River: seconds between boats", Default = CFG.riverEvery, Min = 1, Max = 30, Rounding = 0, Callback = set("riverEvery") })
-BT:AddLabel("A boat carries 1/5 of your troops and fights their whole army. Thin armies, bots and grudges first. Uses the target filters above; max sea distance is on the Expand tab.", true)
-local UD = Tabs.Combat:AddRightGroupbox("Underdog (someone is running away with it)", "trending-up")
-UD:AddToggle("PC_Underdog", { Text = "Underdog mode", Tooltip = "Turns on when the biggest rival has x your land", Default = CFG.underdog, Callback = set("underdog") })
-UD:AddSlider("PC_UdRatio", { Text = "Trigger: rival has x my land", Default = CFG.udRatio, Min = 1.1, Max = 5, Rounding = 1, Callback = set("udRatio") })
-UD:AddToggle("PC_UdDiplo", { Text = "Ally everyone else, target + embargo them", Default = CFG.udDiplo, Callback = set("udDiplo") })
-UD:AddToggle("PC_UdStrike", { Text = "Hit their home when their army is out", Tooltip = "Their home army dropped under X of its 60 s peak", Default = CFG.udStrike, Callback = set("udStrike") })
-UD:AddSlider("PC_UdOpening", { Text = "Opening: their army under % of peak", Default = math.floor(CFG.udOpening * 100 + 0.5), Min = 20, Max = 95, Rounding = 0, Callback = pct("udOpening") })
-UD:AddSlider("PC_UdStrikeRatio", { Text = "Opening strike troops %", Default = math.floor(CFG.udStrikeRatio * 100 + 0.5), Min = 10, Max = 90, Rounding = 0, Callback = pct("udStrikeRatio") })
-UD:AddToggle("PC_UdNuke", { Text = "Nukes go at the leader", Tooltip = "Even if stronger; near their win bar they fire fast to knock them under it", Default = CFG.udNuke, Callback = set("udNuke") })
-UD:AddSlider("PC_UdDanger", { Text = "Deny the win within % of the bar", Default = math.floor(CFG.udDanger * 100 + 0.5), Min = 1, Max = 30, Rounding = 0, Callback = pct("udDanger") })
-UD:AddToggle("PC_UdDefense", { Text = "Defense posts on their border early", Default = CFG.udDefense, Callback = set("udDefense") })
-local udLabel = UD:AddLabel("-", true)
-local SG = Tabs.Combat:AddRightGroupbox("Sea siege (enemy only reachable by boat)", "anchor")
-SG:AddToggle("PC_Siege", { Text = "Sea siege when one boat can't win", Default = CFG.siege, Callback = set("siege") })
-SG:AddToggle("PC_SiegeBots", { Text = "Also siege bots", Default = CFG.siegeBots, Callback = set("siegeBots") })
-SG:AddSlider("PC_SiegeTrigger", { Text = "Siege when 1 boat < x their army", Tooltip = "Below this a single boat just bleeds out: send a 3-boat salvo instead", Default = CFG.siegeTrigger, Min = 1, Max = 5, Rounding = 1, Callback = set("siegeTrigger") })
-SG:AddSlider("PC_SiegeFill", { Text = "Charge to % of cap before the salvo", Default = CFG.siegeFill * 100, Min = 30, Max = 100, Rounding = 0, Callback = pct("siegeFill") })
-SG:AddSlider("PC_SiegeEdge", { Text = "...or once 3 boats = x their army", Default = CFG.siegeEdge, Min = 0.5, Max = 3, Rounding = 1, Callback = set("siegeEdge") })
-SG:AddSlider("PC_SiegeKeep", { Text = "Keep reinforcing while above % of cap", Default = CFG.siegeKeep * 100, Min = 5, Max = 90, Rounding = 0, Callback = pct("siegeKeep") })
-SG:AddSlider("PC_SiegeGap", { Text = "Min seconds between salvos", Default = CFG.siegeGap, Min = 5, Max = 120, Rounding = 0, Callback = set("siegeGap") })
-SG:AddToggle("PC_SiegeHold", { Text = "Pause other attacks while charging", Default = CFG.siegeHold, Callback = set("siegeHold") })
-SG:AddToggle("PC_SiegeNuke", { Text = "Nuke them right before the salvo", Default = CFG.siegeNuke, Callback = set("siegeNuke") })
-SG:AddDropdown("PC_SiegeNukeKind", { Text = "Siege nuke", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.siegeNukeKind, Callback = set("siegeNukeKind") })
-SG:AddLabel("3 boats at once carry ~49% of your army and merge into one attack when they land. A nuke kills their troops on every tile it hits.", true)
-local RV = Tabs.Combat:AddRightGroupbox("Revenge & priorities", "skull")
-RV:AddToggle("PC_Revenge", { Text = "Revenge: hit back whoever attacks me", Tooltip = "Works even with auto attack off", Default = CFG.revenge, Callback = set("revenge") })
-RV:AddSlider("PC_RevRatio", { Text = "Revenge troops sent %", Default = CFG.revengeRatio * 100, Min = 5, Max = 100, Rounding = 0, Callback = pct("revengeRatio") })
-RV:AddSlider("PC_RevMin", { Text = "Revenge only above % of cap", Default = CFG.revengeMin * 100, Min = 0, Max = 100, Rounding = 0, Callback = pct("revengeMin") })
-RV:AddSlider("PC_RevEdge", { Text = "Revenge troop edge (x)", Default = CFG.revengeEdge, Min = 0.1, Max = 4, Rounding = 1, Callback = set("revengeEdge") })
-RV:AddSlider("PC_RevStronger", { Text = "Revenge only if my army is x theirs", Default = CFG.revengeStronger, Min = 0.5, Max = 4, Rounding = 1, Callback = set("revengeStronger") })
-RV:AddSlider("PC_Grudge", { Text = "Remember attackers for (s)", Default = CFG.grudgeSecs, Min = 10, Max = 600, Rounding = 0, Callback = set("grudgeSecs") })
-RV:AddToggle("PC_Traitors", { Text = "Prioritise traitors (x0.5 defense)", Default = CFG.hitTraitors, Callback = set("hitTraitors") })
-RV:AddToggle("PC_Finish", { Text = "Prioritise finishing weak players (+50% their gold)", Default = CFG.finish, Callback = set("finish") })
-local combatLabel = RV:AddLabel("-", true)
+-- ============ BRAIN ============
+local BP = Tabs.Brain:AddLeftGroupbox("Posture", "gauge")
+Nm(BP, "PC_SurviveIn", "SURVIVE at pressure (x)", "surviveIn", 0.5, 3, 1, "(incoming + half the strongest neighbour) / my army")
+Nm(BP, "PC_SurviveOut", "Leave SURVIVE below (x)", "surviveOut", 0.2, 2, 1)
+Nm(BP, "PC_BrainNbr", "Keep home vs neighbour (x)", "brainNbrShare", 0, 1, 1, "Share of the strongest neighbour's army kept home")
+Nm(BP, "PC_Holdable", "Posts if incoming < x army", "holdable", 0.5, 4, 1, "Posts on a front you can't hold become the attacker's")
+BP:AddLabel("SURVIVE: defend and grab cheap land only. CONTEND: normal. DOMINATE: #1 with 2x the land of #2.", true)
+local BD_ = Tabs.Brain:AddLeftGroupbox("Deny the winner", "octagon-x")
+P(BD_, "PC_DenyMargin", "Deny within % of win bar", "denyMargin", 2, 40)
+T(BD_, "PC_DenyReserve", "Keep gold for a deny nuke", "denyReserve", "Nukes turn their land open again: knock them under the bar")
+T(BD_, "PC_Record", "Record match (CSV / 30 s)", "record", "PixelConquest/match_<server>.csv, for reviews")
+local UD = Tabs.Brain:AddRightGroupbox("Underdog", "trending-up")
+T(UD, "PC_Underdog", "Underdog mode", "underdog", "When the main enemy has x your land")
+Nm(UD, "PC_UdRatio", "Trigger: they have x my land", "udRatio", 1.1, 5, 1)
+T(UD, "PC_UdDiplo", "Gang up: ally, target, embargo", "udDiplo")
+T(UD, "PC_UdStrike", "Hit home when their army is out", "udStrike")
+P(UD, "PC_UdOpening", "Opening: army < % of peak", "udOpening", 20, 95)
+P(UD, "PC_UdStrikeRatio", "Opening strike troops %", "udStrikeRatio", 10, 90)
+T(UD, "PC_UdNuke", "Nukes go at the main enemy", "udNuke")
+P(UD, "PC_UdDanger", "Fast nukes within % of bar", "udDanger", 1, 30)
+T(UD, "PC_UdDefense", "Posts on their border early", "udDefense")
 
--- Build
-local BD = Tabs.Build:AddLeftGroupbox("Auto build (priority top to bottom)", "hammer")
-BD:AddToggle("PC_Build", { Text = "Auto build", Default = CFG.build, Callback = set("build") })
-BD:AddToggle("PC_Upgrade", { Text = "Upgrade cities in place (to Lv 10)", Default = CFG.upgradeCities, Callback = set("upgradeCities") })
-BD:AddSlider("PC_CityMaxLv", { Text = "Upgrade each city to Lv (then build a new one)", Tooltip = "One nuke wipes every building in its blast: spread levels over several cities", Default = CFG.cityMaxLv, Min = 1, Max = 10, Rounding = 0, Callback = set("cityMaxLv") })
-BD:AddSlider("PC_CitySpread", { Text = "Min tiles between cities", Tooltip = "31 = outside one Atom blast, 61 = outside a Mega", Default = CFG.citySpread, Min = 16, Max = 90, Rounding = 0, Callback = set("citySpread") })
-BD:AddToggle("PC_CityWeight", { Text = "Weigh cities by army fill", Tooltip = "Cities add army cap; cap only limits growth when troops are near it", Default = CFG.cityWeight, Callback = set("cityWeight") })
-BD:AddSlider("PC_CityHigh", { Text = "Cities first above % of cap (nukes wait)", Default = CFG.cityFillHigh * 100, Min = 20, Max = 100, Rounding = 0, Callback = pct("cityFillHigh") })
-BD:AddSlider("PC_CityLow", { Text = "Cities only with spare gold below % of cap", Default = CFG.cityFillLow * 100, Min = 0, Max = 80, Rounding = 0, Callback = pct("cityFillLow") })
-BD:AddSlider("PC_CitySpare", { Text = "...spare gold = x city cost", Default = CFG.citySpare, Min = 1, Max = 5, Rounding = 1, Callback = set("citySpare") })
-BD:AddToggle("PC_SaveTop", { Text = "Save gold for the top missing building", Default = CFG.saveForTop, Callback = set("saveForTop") })
-BD:AddSlider("PC_Reserve", { Text = "Gold reserve (K)", Default = CFG.reserve / 1000, Min = 0, Max = 5000, Rounding = 0, Callback = function(v) CFG.reserve = v * 1000 end })
-local BD2 = Tabs.Build:AddRightGroupbox("Buildings", "building")
-local NAMES = { city = "City (+army cap)", port = "Port (trade gold)", defense = "Defense post (on attacked border)", sam = "Anti-nuke (near cities)",
-    artillery = "Artillery (pass)", airfield = "Airfield (pass)", railgun = "Railgun (pass)" }
-for _, k in ORDER do
-    BD2:AddToggle("PC_B_" .. k, { Text = NAMES[k], Default = CFG["b_" .. k], Callback = set("b_" .. k) })
-    BD2:AddSlider("PC_M_" .. k, { Text = "  max " .. k .. (k == "city" and " (count)" or ""), Default = CFG["max_" .. k], Min = 0, Max = 10, Rounding = 0, Callback = set("max_" .. k) })
-end
+-- ============ EXPAND ============
+local EX = Tabs.Expand:AddLeftGroupbox("Spawn & open land", "map-pin")
+T(EX, "PC_Spawn", "Auto spawn (far from others)", "spawn")
+T(EX, "PC_SpawnCoast", "Prefer coast", "spawnCoast")
+P(EX, "PC_ExpandRatio", "Troops per push %", "expandRatio", 5, 100)
+P(EX, "PC_BandLow", "Push above % of cap", "bandLow", 0, 95, "Troops grow fastest at 40-60% of cap")
+P(EX, "PC_BandHigh", "Seed pockets above % of cap", "bandHigh", 10, 100)
+local expandLabel = EX:AddLabel("-", true)
+local EXI = Tabs.Expand:AddRightGroupbox("Islands", "ship")
+T(EXI, "PC_Islands", "Boat to open land", "islands", "Each boat carries 1/5 of your troops; max 3 at sea")
+T(EXI, "PC_IslandLocked", "Only when boxed in", "islandOnlyLocked")
+P(EXI, "PC_IslandMin", "Above % of cap", "islandMin", 10, 95)
+P(EXI, "PC_IslandMinLocked", "Boxed in: above % of cap", "islandMinLocked", 0, 95)
+Nm(EXI, "PC_IslandEvery", "Seconds between boats", "islandEvery", 5, 120)
+Nm(EXI, "PC_IslandDist", "Max sea distance", "islandMaxDist", 20, 600)
+local EX3 = Tabs.Expand:AddRightGroupbox("Reclaim nuked land", "radiation")
+T(EX3, "PC_Reclaim", "Retake nuked holes", "reclaim", "Holes aren't connected to your expand front")
+P(EX3, "PC_ReclaimMin", "Above % of cap", "reclaimMin", 0, 90)
+P(EX3, "PC_ReclaimRatio", "Troops per push %", "reclaimRatio", 5, 60)
+
+-- ============ ATTACK ============
+local AT = Tabs.Attack:AddLeftGroupbox("Targets", "crosshair")
+T(AT, "PC_HitBots", "Bots / nations", "hitBots")
+T(AT, "PC_HitPlayers", "Players", "hitPlayers")
+Nm(AT, "PC_LootWeight", "Loot pull", "lootWeight", 0, 0.3, 2, "You keep buildings you conquer: weak targets with cities go first")
+T(AT, "PC_Finish", "Finish weak players (+50% gold)", "finish")
+T(AT, "PC_Traitors", "Traitors first (x0.5 defense)", "hitTraitors")
+Nm(AT, "PC_Edge", "Edge vs their army (x)", "edge", 0.5, 4, 1)
+P(AT, "PC_AttackMin", "Attack above % of cap", "attackMin", 0, 100)
+P(AT, "PC_AttackRatio", "Troops per attack %", "attackRatio", 5, 100, "Ignored while 'Use game ATTACK SIZE' is on")
+Nm(AT, "PC_MaxFronts", "Max fronts", "maxFronts", 1, 4)
+local combatLabel = AT:AddLabel("-", true)
+local BT = Tabs.Attack:AddRightGroupbox("Across water", "ship")
+T(BT, "PC_BoatAttack", "Boat invasions", "boatAttack", "A boat carries 1/5 of your troops and fights their whole army")
+P(BT, "PC_CheapFrac", "Cheap grab: army < % mine", "cheapFrac", 1, 30, "Skips the fill gate; bots allowed even in SURVIVE")
+P(BT, "PC_BoatMin", "Above % of cap", "boatMin", 10, 95)
+Nm(BT, "PC_BoatEdge", "Boat vs their army (x)", "boatEdge", 0.3, 3, 1)
+Nm(BT, "PC_BoatEvery", "Seconds between boats", "boatEvery", 5, 120)
+Nm(BT, "PC_RiverDist", "River: up to tiles", "riverDist", 3, 60, 0, "Boats sail ~10 tiles/s: short crossings chain boats")
+Nm(BT, "PC_RiverEdge", "River: edge (x normal)", "riverEdge", 0.2, 1, 1)
+Nm(BT, "PC_RiverEvery", "River: seconds per boat", "riverEvery", 1, 30)
+local SG = Tabs.Attack:AddRightGroupbox("Sea siege", "anchor")
+T(SG, "PC_Siege", "Sea siege", "siege", "3 boats at once (~49% of your army) merge on landing")
+T(SG, "PC_SiegeBots", "Siege bots too", "siegeBots")
+Nm(SG, "PC_SiegeTrigger", "When 1 boat < x army", "siegeTrigger", 1, 5, 1)
+P(SG, "PC_SiegeFill", "Charge to % of cap", "siegeFill", 30, 100)
+Nm(SG, "PC_SiegeEdge", "...or salvo = x army", "siegeEdge", 0.5, 3, 1)
+P(SG, "PC_SiegeKeep", "Reinforce above % of cap", "siegeKeep", 5, 90)
+Nm(SG, "PC_SiegeGap", "Seconds between salvos", "siegeGap", 5, 120)
+T(SG, "PC_SiegeHold", "Pause attacks while charging", "siegeHold")
+T(SG, "PC_SiegeNuke", "Nuke before the salvo", "siegeNuke")
+Dd(SG, "PC_SiegeNukeKind", "Siege nuke", "siegeNukeKind", NUKES)
+
+-- ============ DEFEND ============
+local CT = Tabs.Defend:AddLeftGroupbox("Counter attacks", "shield")
+T(CT, "PC_CounterCancel", "Cancel incoming (1:1)", "counterCancel", "Their attack size sent back: both armies cancel")
+T(CT, "PC_CounterPunish", "Cancel + invade", "counterPunish", "Only vs the main enemy; side wars just cancel")
+P(CT, "PC_KeepHome", "Keep % of troops home", "keepHome", 0, 90)
+P(CT, "PC_KeepCap", "...and % of cap", "keepCap", 0, 60)
+T(CT, "PC_HoldHit", "Hold when a strong player hits", "holdWhenHit")
+local LS = Tabs.Defend:AddLeftGroupbox("Last stand", "flag")
+T(LS, "PC_LastStand", "Last stand", "lastStand", "Can't cancel it: nuke them, post, reinforce, ask to ally")
+Dd(LS, "PC_LastNuke", "Nuke", "lastStandNuke", NUKES)
+T(LS, "PC_LastAlly", "Ask the attacker to ally", "lastStandAlly")
+local RV = Tabs.Defend:AddRightGroupbox("Revenge", "skull")
+T(RV, "PC_Revenge", "Hit back attackers", "revenge", "Only when you're stronger")
+P(RV, "PC_RevRatio", "Troops %", "revengeRatio", 5, 100)
+P(RV, "PC_RevMin", "Above % of cap", "revengeMin", 0, 100)
+Nm(RV, "PC_RevEdge", "Edge (x)", "revengeEdge", 0.1, 4, 1)
+Nm(RV, "PC_RevStronger", "Only if my army is x theirs", "revengeStronger", 0.5, 4, 1)
+Nm(RV, "PC_Grudge", "Remember attackers (s)", "grudgeSecs", 10, 600)
+
+-- ============ BUILD ============
+local BD = Tabs.Build:AddLeftGroupbox("Cities & gold", "building-2")
+T(BD, "PC_Upgrade", "Upgrade cities in place", "upgradeCities")
+Nm(BD, "PC_CityMaxLv", "Each city to Lv", "cityMaxLv", 1, 10, 0, "Then a new city: one nuke wipes a whole cluster")
+Nm(BD, "PC_CitySpread", "Tiles between cities", "citySpread", 16, 90, 0, "31 = outside an Atom, 61 = outside a Mega")
+T(BD, "PC_CityWeight", "Weigh cities by army fill", "cityWeight", "Cap only limits growth when troops are near it")
+P(BD, "PC_CityHigh", "Cities first above %", "cityFillHigh", 20, 100)
+P(BD, "PC_CityLow", "Spare gold only below %", "cityFillLow", 0, 80)
+Nm(BD, "PC_CitySpare", "Spare gold = x cost", "citySpare", 1, 5, 1)
+T(BD, "PC_SaveTop", "Save for the top building", "saveForTop")
+K(BD, "PC_Reserve", "Gold reserve (K)", "reserve", 5000)
 local buildLabel = BD:AddLabel("-", true)
+local BD2 = Tabs.Build:AddRightGroupbox("Buildings", "building")
+local NAMES = { city = "City", port = "Port", defense = "Defense post", artillery = "Artillery (pass)", airfield = "Airfield (pass)", railgun = "Railgun (pass)" }
+for _, k in ORDER do
+    BD2:AddToggle("PC_B_" .. k, { Text = NAMES[k] or k, Default = CFG["b_" .. k], Callback = set("b_" .. k) })
+    BD2:AddSlider("PC_M_" .. k, { Text = "max " .. (k == "city" and "cities" or k), Default = CFG["max_" .. k], Min = 0, Max = 10, Rounding = 0, Callback = set("max_" .. k) })
+end
 
--- Weapons
+-- ============ WEAPONS ============
 local WP = Tabs.Weapons:AddLeftGroupbox("Nukes", "radiation")
-WP:AddToggle("PC_Nuke", { Text = "Auto nuke biggest enemy", Default = CFG.nuke, Callback = set("nuke") })
-WP:AddDropdown("PC_NukeKind", { Text = "Nuke type", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.nukeKind, Callback = set("nukeKind") })
-WP:AddSlider("PC_NukeMin", { Text = "Min gold before nuking (K)", Default = 0, Min = 0, Max = 10000, Rounding = 0, Callback = function(v) CFG.nukeMinGold = v * 1000 end })
-WP:AddSlider("PC_NukeCd", { Text = "Seconds between auto nukes", Default = CFG.nukeCooldown, Min = 5, Max = 300, Rounding = 0, Callback = set("nukeCooldown") })
-WP:AddToggle("PC_NukeStronger", { Text = "Also nuke stronger players who aren't attacking me", Tooltip = "Off = don't provoke them", Default = CFG.nukeStronger, Callback = set("nukeStronger") })
-WP:AddToggle("PC_NukeBots", { Text = "Skip bots", Default = CFG.nukeSkipBots, Callback = set("nukeSkipBots") })
-WP:AddToggle("PC_AvoidSam", { Text = "Skip targets under an enemy anti-nuke", Default = CFG.avoidSam, Callback = set("avoidSam") })
-WP:AddLabel("Aims at their highest-level city; never within blast range of your own border.", true)
+Dd(WP, "PC_NukeKind", "Type", "nukeKind", NUKES)
+K(WP, "PC_NukeMin", "Min gold (K)", "nukeMinGold", 10000)
+Nm(WP, "PC_NukeCd", "Seconds between nukes", "nukeCooldown", 5, 300)
+T(WP, "PC_NukeStronger", "Also unprovoked stronger", "nukeStronger", "Off = don't provoke them")
+T(WP, "PC_NukeBots", "Skip bots", "nukeSkipBots")
+T(WP, "PC_AvoidSam", "Skip targets under anti-nuke", "avoidSam")
 local WR = Tabs.Weapons:AddLeftGroupbox("Revenge nukes", "skull")
-WR:AddToggle("PC_RevNuke", { Text = "Nuke back whoever nukes my land", Tooltip = "Aims at their best city cluster (city Lv = their army cap); holds if none known", Default = CFG.revengeNuke, Callback = set("revengeNuke") })
-WR:AddDropdown("PC_RevNukeKind", { Text = "Revenge nuke type", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.revengeNukeKind, Callback = set("revengeNukeKind") })
-WR:AddSlider("PC_RevMinLv", { Text = "Only if the blast hits city levels >=", Default = CFG.revengeMinLv, Min = 1, Max = 30, Rounding = 0, Callback = set("revengeMinLv") })
-WR:AddToggle("PC_RevStrikes", { Text = "Also for airstrikes / railgun hits", Default = CFG.revengeNukeStrikes, Callback = set("revengeNukeStrikes") })
-WR:AddToggle("PC_RevOnce", { Text = "One nuke per offence (off = keep nuking)", Default = CFG.revengeOnce, Callback = set("revengeOnce") })
-WR:AddSlider("PC_NukeGrudge", { Text = "Remember nukers for (s)", Default = CFG.nukeGrudgeSecs, Min = 30, Max = 900, Rounding = 0, Callback = set("nukeGrudgeSecs") })
-local AN = Tabs.Weapons:AddRightGroupbox("Auto anti-nuke", "shield-check")
-AN:AddToggle("PC_SamAuto", { Text = "Auto anti-nuke", Default = CFG.samAuto, Callback = set("samAuto") })
-AN:AddDropdown("PC_SamMode", { Text = "When", Values = { "Prepare", "Always", "Once nukes fly", "After I'm nuked" }, Default = CFG.samMode, Callback = set("samMode") })
-AN:AddSlider("PC_SamPrepMin", { Text = "Prepare: arm after minutes played", Default = CFG.samPrepMin, Min = 0, Max = 30, Rounding = 0, Callback = set("samPrepMin") })
-AN:AddSlider("PC_SamPrepLv", { Text = "Prepare: or once cities total Lv", Default = CFG.samPrepCityLv, Min = 1, Max = 100, Rounding = 0, Callback = set("samPrepCityLv") })
-AN:AddSlider("PC_SamMax", { Text = "Max anti-nukes", Default = CFG.max_sam, Min = 0, Max = 8, Rounding = 0, Callback = set("max_sam") })
-AN:AddSlider("PC_SamCityLv", { Text = "Only once my cities total Lv", Default = CFG.samMinCityLv, Min = 0, Max = 50, Rounding = 0, Callback = set("samMinCityLv") })
-AN:AddSlider("PC_SamMinValue", { Text = "New one must cover value (city Lv x10)", Default = CFG.samMinValue, Min = 0, Max = 200, Rounding = 0, Callback = set("samMinValue") })
-AN:AddSlider("PC_SamMaxLv", { Text = "Max upgrade level", Default = CFG.samMaxLv, Min = 1, Max = 10, Rounding = 0, Callback = set("samMaxLv") })
-AN:AddToggle("PC_SamUpgrade", { Text = "Upgrade them for range when all covered", Tooltip = "Lv1 70 tiles -> Lv10 118 tiles", Default = CFG.samUpgrade, Callback = set("samUpgrade") })
-AN:AddToggle("PC_SamPriority", { Text = "Pause other builds to fund it once nukes fly", Default = CFG.samPriority, Callback = set("samPriority") })
-AN:AddLabel("Placed to cover your highest-level cities first. Being nuked always triggers it (ignores the reserve).", true)
+T(WR, "PC_RevNuke", "Nuke back nukers", "revengeNuke", "Their best city cluster")
+Dd(WR, "PC_RevNukeKind", "Type", "revengeNukeKind", NUKES)
+Nm(WR, "PC_RevMinLv", "Blast must hit city Lv", "revengeMinLv", 1, 30)
+T(WR, "PC_RevStrikes", "Also for strikes / railgun", "revengeNukeStrikes")
+T(WR, "PC_RevOnce", "One per offence", "revengeOnce")
+Nm(WR, "PC_NukeGrudge", "Remember nukers (s)", "nukeGrudgeSecs", 30, 900)
+local weaponsLabel = WR:AddLabel("-", true)
+local AN = Tabs.Weapons:AddRightGroupbox("Anti-nuke", "shield-check")
+Dd(AN, "PC_SamMode", "When", "samMode", { "Prepare", "Always", "Once nukes fly", "After I'm nuked" })
+Nm(AN, "PC_SamPrepMin", "Prepare: after minutes", "samPrepMin", 0, 30)
+Nm(AN, "PC_SamPrepLv", "Prepare: or city Lv", "samPrepCityLv", 1, 100)
+Nm(AN, "PC_SamMax", "Max anti-nukes", "max_sam", 0, 8)
+Nm(AN, "PC_SamCityLv", "Only once city Lv", "samMinCityLv", 0, 50)
+Nm(AN, "PC_SamMinValue", "Must cover value", "samMinValue", 0, 200, 0, "City Lv x10")
+Nm(AN, "PC_SamMaxLv", "Max upgrade Lv", "samMaxLv", 1, 10)
+T(AN, "PC_SamUpgrade", "Upgrade for range", "samUpgrade", "Lv1 70 tiles -> Lv10 118")
+T(AN, "PC_SamPriority", "Pause builds once nukes fly", "samPriority")
 local samLabel = AN:AddLabel("-", true)
-local WP2 = Tabs.Weapons:AddRightGroupbox("Strikes & reinforce", "crosshair")
-WP2:AddToggle("PC_Air", { Text = "Airstrike on cooldown (needs airfield)", Default = CFG.airstrike, Callback = set("airstrike") })
-WP2:AddToggle("PC_Rail", { Text = "Railgun on cooldown (needs railgun)", Default = CFG.railgun, Callback = set("railgun") })
-WP2:AddToggle("PC_Reinforce", { Text = "Auto reinforce (BARRACKS pass)", Default = CFG.reinforce, Callback = set("reinforce") })
-WP2:AddSlider("PC_ReinBelow", { Text = "Reinforce below % of cap", Default = CFG.reinforceBelow * 100, Min = 5, Max = 100, Rounding = 0, Callback = pct("reinforceBelow") })
-local weaponsLabel = WP2:AddLabel("-", true)
+local WP2 = Tabs.Weapons:AddRightGroupbox("Strikes & reinforce", "zap")
+T(WP2, "PC_Air", "Airstrikes", "airstrike")
+T(WP2, "PC_Rail", "Railgun", "railgun")
+T(WP2, "PC_Reinforce", "Reinforce (Barracks)", "reinforce")
+P(WP2, "PC_ReinBelow", "Reinforce below % of cap", "reinforceBelow", 5, 100)
 
--- Diplomacy
+-- ============ DIPLOMACY ============
 local DP = Tabs.Diplo:AddLeftGroupbox("Alliances", "handshake")
-DP:AddToggle("PC_Accept", { Text = "Auto accept requests", Default = CFG.accept, Callback = set("accept") })
-DP:AddToggle("PC_Renew", { Text = "Auto renew expiring alliances", Default = CFG.renew, Callback = set("renew") })
-DP:AddToggle("PC_Request", { Text = "Ask stronger neighbours to ally", Default = CFG.request, Callback = set("request") })
-DP:AddSlider("PC_ReqRatio", { Text = "Ask when they have x my troops", Default = CFG.requestRatio, Min = 0.5, Max = 5, Rounding = 1, Callback = set("requestRatio") })
-DP:AddToggle("PC_BlockUnally", { Text = "Block breaking alliances (traitor = x0.5 defense)", Default = CFG.blockUnally, Callback = set("blockUnally") })
-DP:AddInput("PC_Blacklist", { Text = "Never ally (names, comma separated)", Default = "", Finished = true, Callback = set("blacklist") })
+T(DP, "PC_Renew", "Renew expiring", "renew")
+T(DP, "PC_Request", "Ask stronger neighbours", "request")
+Nm(DP, "PC_ReqRatio", "When they have x my troops", "requestRatio", 0.5, 5, 1)
+T(DP, "PC_BlockUnally", "Block breaking alliances", "blockUnally", "Traitors get x0.5 defense")
+DP:AddInput("PC_Blacklist", { Text = "Never ally (names)", Default = "", Finished = true, Callback = set("blacklist") })
 local diploLabel = Tabs.Diplo:AddRightGroupbox("Status", "activity"):AddLabel("-", true)
 
--- Lobby
+-- ============ LOBBY & PASSES ============
 local LB = Tabs.Lobby:AddLeftGroupbox("Loop", "repeat")
-LB:AddToggle("PC_Queue", { Text = "Auto queue (fullest open slot)", Default = CFG.queue, Callback = set("queue") })
-LB:AddDropdown("PC_Sizes", { Text = "Only these lobbies", Tooltip = "None picked = any", Values = { "SKIRMISH", "BATTLE", "WORLD WAR" }, Multi = true, Default = {}, Callback = set("queueSizes") })
-LB:AddToggle("PC_SkipSpecial", { Text = "Skip special / historical modes", Default = CFG.skipSpecial, Callback = set("skipSpecial") })
-LB:AddToggle("PC_Leave", { Text = "Leave after win / death (+ dead-server watchdog)", Default = CFG.leave, Callback = set("leave") })
-LB:AddSlider("PC_LeaveDelay", { Text = "Wait before leaving (s)", Default = CFG.leaveDelay, Min = 0, Max = 30, Rounding = 0, Callback = set("leaveDelay") })
-LB:AddToggle("PC_Reinject", { Text = "Reload after teleport", Default = CFG.reinject, Callback = set("reinject") })
-LB:AddLabel("Money pays mostly per minute survived: long survival beats fast wins.", true)
-local LB2 = Tabs.Lobby:AddRightGroupbox("Rewards & passes", "gift")
-LB2:AddToggle("PC_Reward", { Text = "Claim the one-time free reward", Default = CFG.claimReward, Callback = set("claimReward") })
-LB2:AddToggle("PC_BuyPasses", { Text = "Buy passes with Money", Default = CFG.buyPasses, Callback = set("buyPasses") })
-LB2:AddLabel("Order: Mega Nuke 10K, Barracks 20K, Scattershot 20K, Artillery 25K, Airstrike 100K, Railgun 250K", true)
-LB2:AddSlider("PC_PassReserve", { Text = "Keep Money (K)", Default = 0, Min = 0, Max = 250, Rounding = 0, Callback = function(v) CFG.passReserve = v * 1000 end })
-local lobbyLabel = LB2:AddLabel("-", true)
-
--- Passes
-local PS = Tabs.Passes:AddLeftGroupbox("Your passes", "badge-check")
-PS:AddLabel("Each feature only runs when you own its pass. Money passes can be bought here with in-game Money.", true)
+LB:AddDropdown("PC_Sizes", { Text = "Only these lobbies", Tooltip = "None = any", Values = { "SKIRMISH", "BATTLE", "WORLD WAR" }, Multi = true, Default = {}, Callback = set("queueSizes") })
+T(LB, "PC_SkipSpecial", "Skip special modes", "skipSpecial")
+T(LB, "PC_Leave", "Leave after win / death", "leave")
+Nm(LB, "PC_LeaveDelay", "Wait before leaving (s)", "leaveDelay", 0, 30)
+T(LB, "PC_Reinject", "Reload after teleport", "reinject")
+T(LB, "PC_Reward", "Claim free reward", "claimReward")
+T(LB, "PC_BuyPasses", "Auto buy passes (Money)", "buyPasses")
+K(LB, "PC_PassReserve", "Keep Money (K)", "passReserve", 250)
+local lobbyLabel = LB:AddLabel("-", true)
+local PS = Tabs.Lobby:AddRightGroupbox("Passes", "badge-check")
 local passLabel = PS:AddLabel("-", true)
-local PS2 = Tabs.Passes:AddRightGroupbox("Buy with Money", "coins")
 local moneyKeys = {}
 for _, p in PASSES do if p.money then moneyKeys[#moneyKeys + 1] = p.key end end
-PS2:AddDropdown("PC_BuyPick", { Text = "Pass", Values = moneyKeys, Default = moneyKeys[1] })
-PS2:AddButton({ Text = "Buy selected (lobby only)", Func = function()
+PS:AddDropdown("PC_BuyPick", { Text = "Buy with Money", Values = moneyKeys, Default = moneyKeys[1] })
+PS:AddButton({ Text = "Buy (lobby only)", Func = function()
     local k = Library.Options.PC_BuyPick.Value
     if role() ~= "lobby" then notify("Passes can only be bought in the lobby"); return end
     if hasPass(k) then notify("You already own " .. k); return end
     Shop:FireServer("passmoney", k); log("bought pass " .. k .. " with Money (manual)")
 end })
-PS2:AddToggle("PC_UseFree", { Text = "Use free items from packs (nukes, cities, posts, anti-nukes)", Tooltip = "Free nukes fire even with auto nuke off", Default = CFG.useFree, Callback = set("useFree") })
-PS2:AddLabel("Robux-only passes (VIP, Fast Reload, Host, Advanced) are detected but never bought.", true)
+T(PS, "PC_UseFree", "Use free pack items", "useFree", "Free nukes fire even with auto nuke off")
 
--- Info
-local IB = Tabs.Info:AddLeftGroupbox("Brain", "brain")
-IB:AddToggle("PC_Brain", { Text = "Posture + troop budget", Tooltip = "SURVIVE / CONTEND / DOMINATE; offense only spends troops home defense doesn't need", Default = CFG.brain, Callback = set("brain") })
-IB:AddSlider("PC_SurviveIn", { Text = "SURVIVE at pressure (x my army)", Tooltip = "(incoming + half the strongest neighbour) / my army", Default = CFG.surviveIn, Min = 0.5, Max = 3, Rounding = 1, Callback = set("surviveIn") })
-IB:AddSlider("PC_SurviveOut", { Text = "...leave SURVIVE below (x)", Default = CFG.surviveOut, Min = 0.2, Max = 2, Rounding = 1, Callback = set("surviveOut") })
-IB:AddSlider("PC_DenyMargin", { Text = "Deny mode within % of the win bar", Default = math.floor(CFG.denyMargin * 100 + 0.5), Min = 2, Max = 40, Rounding = 0, Callback = pct("denyMargin") })
-IB:AddToggle("PC_DenyReserve", { Text = "Deny mode: keep gold for a nuke", Default = CFG.denyReserve, Callback = set("denyReserve") })
-IB:AddSlider("PC_Holdable", { Text = "Posts only if incoming < x my army", Tooltip = "Captured posts become the attacker's", Default = CFG.holdable, Min = 0.5, Max = 4, Rounding = 1, Callback = set("holdable") })
-IB:AddToggle("PC_Record", { Text = "Record match (CSV every 30 s)", Tooltip = "PixelConquest/match_<server>.csv, for reviews", Default = CFG.record, Callback = set("record") })
-IB:AddSlider("PC_BrainNbr", { Text = "Keep home vs strongest neighbour (x)", Default = CFG.brainNbrShare, Min = 0, Max = 1, Rounding = 1, Callback = set("brainNbrShare") })
-local brainLabel = IB:AddLabel("-", true)
-local IN = Tabs.Info:AddLeftGroupbox("Match", "activity")
-local infoLabel = IN:AddLabel("-", true)
-local IN2 = Tabs.Info:AddRightGroupbox("Standings", "list")
-local standLabel = IN2:AddLabel("-", true)
-local IN3 = Tabs.Info:AddLeftGroupbox("Log (also PixelConquest/log.txt)", "scroll-text")
-local logLabel = IN3:AddLabel("-", true)
-
--- Settings
-local SA = Tabs.Settings:AddLeftGroupbox("Safety", "shield-alert")
-SA:AddToggle("PC_HudRatio", { Text = "Use the game's ATTACK SIZE slider", Tooltip = "Expand, attack, revenge and islands send the % set on the game HUD. Off = each feature's own slider. Counter attacks always size themselves to cancel the incoming attack.", Default = CFG.useHudRatio, Callback = set("useHudRatio") })
-SA:AddToggle("PC_BlockPrompts", { Text = "Block the game's Robux purchase prompts", Tooltip = "Also blocks prompts you click yourself", Default = CFG.blockPrompts, Callback = set("blockPrompts") })
-SA:AddSlider("PC_Gap", { Text = "Min seconds between actions", Default = CFG.gap, Min = 0.05, Max = 1, Rounding = 2, Callback = set("gap") })
-SA:AddSlider("PC_ScanEvery", { Text = "Think every (s)", Default = CFG.scanEvery, Min = 1, Max = 10, Rounding = 0, Callback = set("scanEvery") })
+-- ============ SETTINGS ============
+local SA = Tabs.Settings:AddLeftGroupbox("Behaviour", "shield-alert")
+T(SA, "PC_HudRatio", "Use game ATTACK SIZE", "useHudRatio", "Expand, attack, revenge and boats send the HUD %; counters size themselves")
+T(SA, "PC_BlockPrompts", "Block Robux prompts", "blockPrompts", "Also blocks prompts you click yourself")
+Nm(SA, "PC_Gap", "Seconds between actions", "gap", 0.05, 1, 2)
+Nm(SA, "PC_ScanEvery", "Think every (s)", "scanEvery", 1, 10)
 local CM = Tabs.Settings:AddRightGroupbox("Camera", "camera")
 CM:AddToggle("PC_CamUnlock", { Text = "Unlock camera bounds", Default = CFG.camUnlock, Callback = function(v) CFG.camUnlock = v; applyCamera() end })
-CM:AddSlider("PC_CamMargin", { Text = "Pan past the map edge (x screen)", Default = CFG.camMargin, Min = 0, Max = 2, Rounding = 1, Callback = function(v) CFG.camMargin = v; applyCamera() end })
-CM:AddSlider("PC_CamZoom", { Text = "Zoom range (x game's)", Default = CFG.camZoom, Min = 1, Max = 4, Rounding = 1, Callback = function(v) CFG.camZoom = v; applyCamera() end })
+CM:AddSlider("PC_CamMargin", { Text = "Pan past edge (x screen)", Default = CFG.camMargin, Min = 0, Max = 2, Rounding = 1, Callback = function(v) CFG.camMargin = v; applyCamera() end })
+CM:AddSlider("PC_CamZoom", { Text = "Zoom range (x)", Default = CFG.camZoom, Min = 1, Max = 4, Rounding = 1, Callback = function(v) CFG.camZoom = v; applyCamera() end })
 local Menu = Tabs.Settings:AddRightGroupbox("Menu", "menu")
 Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 Library:OnUnload(unload)
@@ -2024,5 +2047,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.8 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.8 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.9 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.9 ready — RightCtrl toggles the UI.", 5)

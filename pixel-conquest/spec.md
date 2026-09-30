@@ -320,3 +320,14 @@ Verified with the spy.
     - Deny reserve: builds only with gold above one Atom.
     - Defense posts only if incoming ≤ holdable 1.5× my army, last-stand posts 1 per 20 s.
     - Recorder: `PixelConquest/match_<jobid>.csv`, top 8 + me every 30 s (tiles, troops, city levels, posture, main enemy).
+- **v2.9 (2026-09-30): GUI rebuilt around the brain**
+  - Tabs: Overview · Brain · Expand · Attack · Defend · Build · Weapons · Diplomacy · Lobby & Passes · Settings.
+  - Overview:
+    - Brain status (posture, pressure, main enemy, deny) + underdog line.
+    - Autopilot master switches: brain, expand, attack, build, auto nukes, anti-nuke, accept alliances, queue.
+    - Play-style presets (Balanced / Aggressive / Defensive / Money farm) applied via `Library.Toggles/Options[id]:SetValue`, so the controls move too.
+    - Standings, match line, log.
+  - Builders T/P/Nm/K/Dd:
+    - P shows % sliders as clean integers, which fixes the "55.00000000001" display.
+    - Short labels; the explanations moved to tooltips.
+  - ALL option ids unchanged (diffed the old vs new id sets: 0 missing), so saved configs keep loading.
