@@ -40,7 +40,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStu
 ### [Pixel Conquest](pixel-conquest/)
 A full-match bot for the OpenFront-style territory game, one tab per system:
 - **Expand:** smart spawn far from everyone, auto expand that holds troops in the fastest-growth band, boats to open islands, and retaking land that was nuked out of your territory.
-- **Combat:** attacks the weakest neighbour (by land or by boat across water), counterattacks sized to cancel incoming attacks 1:1 (and invade when you can afford it), revenge only when you're stronger, and a last stand (nuke, defense post, reinforce, ally request) when you can't hold.
+- **Combat:** attacks the weakest neighbour (by land or by boat across water), a sea siege that charges up and lands 3-boat salvos on island rivals, counterattacks sized to cancel incoming attacks 1:1 (and invade when you can afford it), revenge only when you're stronger, and a last stand (nuke, defense post, reinforce, ally request) when you can't hold.
 - **Build:** cities (upgraded in place), ports, defense posts on attacked borders, artillery, airfields and railguns, with a gold reserve.
 - **Weapons:** auto nukes on the biggest enemy's city cluster, revenge nukes on whoever nukes you, an anti-nuke manager that covers your best cities before nukes fly, airstrikes and railgun on cooldown.
 - **Diplomacy and lobby:** auto accept and renew alliances (breaking them is blocked), auto queue, leave and requeue, the free reward, and buying passes with Money.

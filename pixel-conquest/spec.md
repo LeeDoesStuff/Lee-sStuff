@@ -237,3 +237,19 @@ Verified with the spy.
     - fill ≤ cityFillLow (25%): cities only when gold ≥ citySpare 2× cost.
     - Seen live: auto nuke fired 5 Atoms in 3 min while cities starved; after the fix, "auto nuke on hold: cities first (troops at 87% of cap)".
     - The hold check must not use wantBuild (its 3 s build timer let a nuke slip through).
+- **v2.2 (2026-09-29): sea siege (the 1v1 vs an island rival)**
+  - Situation: me 86% of land vs local_afghani 15% on islands. No land border, and one boat (troops/5) < their whole army, so every attack rule stayed idle.
+  - Game rules used:
+    - Max 3 transport boats at sea, each troops/5 of what's left → 3 at once = 1 - 0.8³ = 49% of my army.
+    - My attacks on the same player MERGE on landing (Sim launchAttack adds to the existing attack).
+    - A nuke kills their troops per tile hit, including troops in their attacks.
+  - Stages:
+    - charge: hold other attacks until fill ≥ siegeFill 90%, or salvo ≥ 1.3× their army, and ≥ siegeGap 25 s since the last salvo;
+    - optional siege nuke on their best spot;
+    - salvo of 3 boats 0.35 s apart at ONE coast tile;
+    - reinforce: a boat every 4 s while fill ≥ 30%;
+    - push: once a land border exists, a land attack every 4 s above the keep-home floor.
+    - Beachhead lost → back to charge. Refused landing (boatBad) → new tile.
+  - Live: salvos of ~260-500K troops took their army from 358K to 154K in ~2 min; I won at 89%+ with bar 0.9 (`phase.threshold` is a FRACTION).
+  - Flaw fixed after the win: v2.2a ended the siege on first land contact and handed off to normal combat, which never attacks an army that size. Beachheads died within 10 s and it re-salvoed immediately (4 waves in 80 s). The push stage and siegeGap fix that; the push stage is not tested live yet.
+  - Info tab shows the win bar vs my land %.

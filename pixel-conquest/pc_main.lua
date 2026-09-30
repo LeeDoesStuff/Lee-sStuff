@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.1  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.2  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -41,6 +41,7 @@ local CFG = {
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20,
+    siege = true, siegeBots = false, siegeFill = 0.9, siegeEdge = 1.3, siegeKeep = 0.3, siegeHold = true, siegeGap = 25, siegeNuke = true, siegeNukeKind = "Best owned",
     islands = true, islandMin = 0.45, islandMinLocked = 0.15, islandEvery = 15, islandMaxDist = 250, islandOnlyLocked = false,
     -- combat
     attack = false, attackRatio = 0.33, attackMin = 0.55, edge = 1.2, maxFronts = 3, hitBots = true, hitPlayers = true,
@@ -93,7 +94,7 @@ end
 
 -- ============================== state / log ==============================
 local S = { myId = nil, phase = nil, players = {}, byId = {}, names = {}, me = nil, fronts = nil, gold = 0, diplo = nil,
-    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
+    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
     board = nil, lobbyMoney = nil, rewardClaimed = nil, scan = nil, readyAt = {}, leaveAt = nil }
 local reqAt, counterAt = {}, {}
 local stats = { sent = 0, attacks = 0, builds = 0, nukes = 0, strikes = 0, allies = 0, joins = 0, denied = 0 }
@@ -333,7 +334,7 @@ local function onState(k, p, full)
     if k == "init" and type(p) == "table" then
         S.myId = tonumber(p.yourId) or S.myId
         S.phase = p.phase; S.ended = false; S.leaveAt = nil
-        table.clear(S.structs); table.clear(S.badTile); S.spawnSent = 0; S.spawnOk = false; table.clear(S.grudge); table.clear(S.nukeGrudge); S.nukedAt = -1e9; S.nukeSeenAt = -1e9; table.clear(S.holes); S.islandOff = nil; S.playStart = nil
+        table.clear(S.structs); table.clear(S.badTile); S.spawnSent = 0; S.spawnOk = false; table.clear(S.grudge); table.clear(S.nukeGrudge); S.nukedAt = -1e9; S.nukeSeenAt = -1e9; table.clear(S.holes); S.islandOff = nil; S.playStart = nil; S.siege = nil
         log("match init: id " .. tostring(S.myId) .. " phase " .. tostring(p.phase))
     elseif k == "roster" and type(p) == "table" then
         for _, v in p do
@@ -359,6 +360,8 @@ local function onState(k, p, full)
         if p.phase ~= S.phase then log("phase " .. tostring(p.phase)) end
         if p.phase == "playing" and S.phase == "spawn" then S.playStart = os.clock() end -- real start seen (not a mid-match inject)
         S.phase = p.phase
+        S.threshold = tonumber(p.threshold) or S.threshold -- tiles needed to win (drops after 30 min)
+        S.playable = tonumber(p.contested or p.playableLand) or S.playable
     elseif k == "structs" and type(p) == "table" then
         if full then table.clear(S.structs) end
         for _, v in p do
@@ -591,9 +594,102 @@ local function doFronts(r)
         elseif d == "toomanytransportboats" or d == "busy" then S.islandAt = now0 + 20; S.islandSent = nil end
     end
 
+    -- SEA SIEGE: an enemy only reachable by sea whose army beats one boat. Boats carry troops/5 each, max 3 at sea,
+    -- and my attacks on the same player MERGE when they land (Sim launchAttack), so: charge troops, (nuke), then send
+    -- a salvo of 3 boats at ONE landing tile (1 - 0.8^3 = 49% of my army) and keep reinforcing that beachhead.
+    local sg = S.siege
+    if CFG.siege and S.map and #r.shore > 0 then
+        local al3 = allies()
+        if not sg then
+            local best, bestT, bestD
+            for o, list in r.ecoast do
+                local v = S.byId[o]
+                if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al3) and (not v.isBot or CFG.siegeBots) then
+                    if me.troops / 5 < v.troops * CFG.boatEdge then -- one boat can't do it: siege material
+                        local t, d
+                        for _, c in list do
+                            for k = 1, 8 do
+                                local dd = dist(r.shore[math.random(#r.shore)], c)
+                                if dd <= CFG.islandMaxDist and (not d or dd < d) then t, d = c, dd end
+                            end
+                        end
+                        if t and (not bestT or v.tiles > S.byId[best].tiles) then best, bestT, bestD = o, t, d end -- biggest island rival first
+                    end
+                end
+            end
+            if best then
+                sg = { id = best, tile = bestT, stage = "charge", at = now0 }
+                S.siege = sg
+                log(("sea siege on %s: landing at %d (%.0f tiles of sea)"):format(S.names[best] or ("#" .. best), bestT, bestD))
+            end
+        end
+        if sg then
+            local v = S.byId[sg.id]
+            local owner = readu8(S.map.owner, sg.tile)
+            if not v or not v.alive then
+                log("sea siege on " .. (S.names[sg.id] or "?") .. " ended (eliminated)")
+                S.siege = nil
+            elseif r.contacts[sg.id] and r.sample[sg.id] then
+                -- BEACHHEAD: I border them now. Feed it by land every 4 s (attacks on the same player merge),
+                -- sized by the HUD ratio, never below my keep-home floor; normal combat would leave it to die
+                if sg.stage ~= "push" then sg.stage = "push"; log("sea siege: beachhead on " .. (S.names[sg.id] or "?") .. ", pushing") end
+                local spare = me.troops - math.max(me.troops * CFG.keepHome, cap * CFG.keepCap)
+                local send_ = math.min(me.troops * ratio(CFG.attackRatio), spare)
+                status.combat = ("SEA SIEGE vs %s: pushing the beachhead (their army %s)"):format(S.names[sg.id] or "?", fmtT(v.troops))
+                if send_ >= (Config.MIN_ATTACK_TROOPS or 250) and now0 - (sg.last or 0) >= 4 then
+                    sg.last = now0
+                    S.lastTile = r.sample[sg.id]
+                    if send({ t = "attack", tile = r.sample[sg.id], ratio = math.clamp(send_ / me.troops, Config.MIN_ATTACK_RATIO or 0.05, 1) }, "siegeP") then stats.attacks += 1 end
+                end
+            else
+                if sg.stage == "push" then -- beachhead lost: recharge before the next wave
+                    log("sea siege: beachhead on " .. (S.names[sg.id] or "?") .. " lost, recharging")
+                    sg.stage, sg.at, sg.lastSalvo = "charge", now0, sg.lastSalvo or now0
+                end
+                if (S.boatBad[sg.id] or 0) > now0 then S.boatBad[sg.id] = nil; owner = -1 end -- last landing refused (no beach / route)
+                if owner ~= sg.id then -- landing tile changed hands or was refused: pick another of their coast tiles
+                    local l = r.ecoast[sg.id]
+                    if l and #l > 0 then sg.tile = l[math.random(#l)] end
+                end
+                local salvo = me.troops * (1 - 0.8 ^ 3)
+                local ready = (fill >= CFG.siegeFill or salvo >= v.troops * CFG.siegeEdge) and now0 - (sg.lastSalvo or -99) >= CFG.siegeGap
+                if sg.stage == "charge" then
+                    status.combat = ("SEA SIEGE vs %s: charging %d%% / %d%% (salvo %s vs their %s)"):format(S.names[sg.id] or "?",
+                        math.floor(fill * 100), math.floor(CFG.siegeFill * 100), fmtT(salvo), fmtT(v.troops))
+                    if ready then
+                        sg.stage, sg.at = "salvo", now0
+                        if CFG.siegeNuke then S.siegeNukeWanted = sg.id end -- doEconomy fires one at their best spot
+                    end
+                elseif sg.stage == "salvo" then
+                    -- give the nuke a moment, then 3 boats ~0.35 s apart (server launches 1 boat per 0.1 s tick)
+                    if now0 - sg.at >= (CFG.siegeNuke and 2 or 0) then
+                        local sent = 0
+                        for n = 1, 3 do
+                            S.lastTile, S.boatSent, S.boatOwner, S.lastDenied = sg.tile, os.clock(), sg.id, "-"
+                            if send({ t = "attack", tile = sg.tile, ratio = ratio(CFG.attackRatio) }, "siege" .. n .. ":" .. math.floor(now0)) then sent += 1 end
+                            task.wait(0.35)
+                        end
+                        stats.attacks += sent
+                        log(("sea siege: salvo of %d boats -> %s (~%s troops)"):format(sent, S.names[sg.id] or "?", fmtT(salvo)))
+                        sg.stage, sg.at, sg.lastSalvo = "reinforce", now0, now0
+                    end
+                elseif sg.stage == "reinforce" then
+                    status.combat = ("SEA SIEGE vs %s: reinforcing the landing (their army %s)"):format(S.names[sg.id] or "?", fmtT(v.troops))
+                    -- a boat slot frees as boats land; keep feeding the same beachhead while I have troops to spare
+                    if fill >= CFG.siegeKeep and now0 - (sg.last or 0) >= 4 then
+                        sg.last = now0
+                        S.lastTile, S.boatSent, S.boatOwner, S.lastDenied = sg.tile, now0, sg.id, "-"
+                        send({ t = "attack", tile = sg.tile, ratio = ratio(CFG.attackRatio) }, "siegeR")
+                    end
+                    if now0 - sg.at > 90 then sg.stage, sg.at = "charge", now0 end -- wave spent: recharge for the next salvo
+                end
+            end
+        end
+    end
+
     -- BOAT INVASIONS: attack a neighbour across water. A boat carries troops/5 (ratio ignored) and fights the defender's
     -- WHOLE army (Sim attack loss), so only take on someone that boat can beat. Shares the 3-boat cap with islands.
-    if CFG.boatAttack and S.map and #r.shore > 0 and fill >= CFG.boatMin and now0 >= (S.boatAt or 0) then
+    if CFG.boatAttack and S.map and #r.shore > 0 and fill >= CFG.boatMin and now0 >= (S.boatAt or 0) and not (S.siege and S.siege.stage == "charge") then
         local boat = me.troops / 5
         local al2 = allies()
         local best, bestScore, bestTile, bestD
@@ -731,6 +827,7 @@ local function doFronts(r)
         if id and strike(id, "revenge", ratio(CFG.revengeRatio)) then out = table.clone(out); out[#out + 1] = { id = id } end
     end
 
+    if S.siege and S.siege.stage == "charge" and CFG.siegeHold then return end -- saving troops for the salvo
     if not CFG.attack then if not status.combat:find("^revenge") then status.combat = "auto attack off" end return end
     if CFG.holdWhenHit then
         for _, v in f.inc or {} do
@@ -975,6 +1072,11 @@ local function doEconomy(r)
                 if send({ t = "build", tile = tile, kind = KIND.defense }) then stats.builds += 1; log("last stand: defense post at " .. tile); gold -= cost end
             end
         end
+    end
+    if S.siegeNukeWanted then
+        local who = S.siegeNukeWanted
+        S.siegeNukeWanted = nil
+        fireNuke(CFG.siegeNukeKind, who, 0, "siege", true)
     end
     if CFG.revengeNuke then
         local who, latest = nil, 0
@@ -1339,7 +1441,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.1 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.2 · expand · combat · build · weapons · diplomacy · lobby",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -1402,6 +1504,17 @@ BT:AddSlider("PC_BoatMin", { Text = "Only above % of cap", Default = CFG.boatMin
 BT:AddSlider("PC_BoatEdge", { Text = "Boat must be x their army", Default = CFG.boatEdge, Min = 0.3, Max = 3, Rounding = 1, Callback = set("boatEdge") })
 BT:AddSlider("PC_BoatEvery", { Text = "Seconds between invasions", Default = CFG.boatEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("boatEvery") })
 BT:AddLabel("A boat carries 1/5 of your troops and fights their whole army. Thin armies, bots and grudges first. Uses the target filters above; max sea distance is on the Expand tab.", true)
+local SG = Tabs.Combat:AddRightGroupbox("Sea siege (enemy only reachable by boat)", "anchor")
+SG:AddToggle("PC_Siege", { Text = "Sea siege when one boat can't win", Default = CFG.siege, Callback = set("siege") })
+SG:AddToggle("PC_SiegeBots", { Text = "Also siege bots", Default = CFG.siegeBots, Callback = set("siegeBots") })
+SG:AddSlider("PC_SiegeFill", { Text = "Charge to % of cap before the salvo", Default = CFG.siegeFill * 100, Min = 30, Max = 100, Rounding = 0, Callback = pct("siegeFill") })
+SG:AddSlider("PC_SiegeEdge", { Text = "...or once 3 boats = x their army", Default = CFG.siegeEdge, Min = 0.5, Max = 3, Rounding = 1, Callback = set("siegeEdge") })
+SG:AddSlider("PC_SiegeKeep", { Text = "Keep reinforcing while above % of cap", Default = CFG.siegeKeep * 100, Min = 5, Max = 90, Rounding = 0, Callback = pct("siegeKeep") })
+SG:AddSlider("PC_SiegeGap", { Text = "Min seconds between salvos", Default = CFG.siegeGap, Min = 5, Max = 120, Rounding = 0, Callback = set("siegeGap") })
+SG:AddToggle("PC_SiegeHold", { Text = "Pause other attacks while charging", Default = CFG.siegeHold, Callback = set("siegeHold") })
+SG:AddToggle("PC_SiegeNuke", { Text = "Nuke them right before the salvo", Default = CFG.siegeNuke, Callback = set("siegeNuke") })
+SG:AddDropdown("PC_SiegeNukeKind", { Text = "Siege nuke", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.siegeNukeKind, Callback = set("siegeNukeKind") })
+SG:AddLabel("3 boats at once carry ~49% of your army and merge into one attack when they land. A nuke kills their troops on every tile it hits.", true)
 local RV = Tabs.Combat:AddRightGroupbox("Revenge & priorities", "skull")
 RV:AddToggle("PC_Revenge", { Text = "Revenge: hit back whoever attacks me", Tooltip = "Works even with auto attack off", Default = CFG.revenge, Callback = set("revenge") })
 RV:AddSlider("PC_RevRatio", { Text = "Revenge troops sent %", Default = CFG.revengeRatio * 100, Min = 5, Max = 100, Rounding = 0, Callback = pct("revengeRatio") })
@@ -1567,7 +1680,12 @@ task.spawn(function()
                 S.rewardClaimed == nil and "?" or (S.rewardClaimed and "claimed" or "available")))
             local me = S.me
             local payout = type(S.money) == "table" and (S.money.total or S.money.amount or S.money.money) or S.money
-            infoLabel:SetText(("server %s · phase %s · id %s\ngold %s · troops %s / %s · land %s tiles\npayout so far %s\nsent %d · attacks %d · builds %d · nukes %d · strikes %d · allies %d · joins %d\ndenied %d (last: %s)"):format(
+            local winTxt = ""
+            if S.threshold and S.playable and S.playable > 0 and me then
+                local bar = S.threshold <= 1 and S.threshold * 100 or (S.threshold <= 100 and S.threshold or S.threshold / S.playable * 100)
+                winTxt = ("\nwin bar %.1f%% of land · you %.1f%%"):format(bar, me.tiles / S.playable * 100)
+            end
+            infoLabel:SetText((winTxt ~= "" and (winTxt:sub(2) .. "\n") or "") .. ("server %s · phase %s · id %s\ngold %s · troops %s / %s · land %s tiles\npayout so far %s\nsent %d · attacks %d · builds %d · nukes %d · strikes %d · allies %d · joins %d\ndenied %d (last: %s)"):format(
                 tostring(role()), tostring(S.phase), tostring(S.myId), fmt(S.gold), fmtT(me and me.troops), fmtT(troopCap()), me and me.tiles or 0,
                 tostring(payout or "-"), stats.sent, stats.attacks, stats.builds, stats.nukes, stats.strikes, stats.allies, stats.joins, stats.denied, S.lastDenied))
             local list = table.clone(S.players)
@@ -1585,5 +1703,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.1 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.1 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.2 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.2 ready — RightCtrl toggles the UI.", 5)
