@@ -1344,3 +1344,5 @@ Inventory safety while a trade is open is §8.2 (*Trading, mail & gifting*). The
 - A one-pass dump that ran `game:GetDescendants()` and `getscriptbytecode` over every script **with no `task.wait()` froze the client for 2+ minutes**, blocking the execute queue too (a ping never answered).
 - Every recon loop yields: `task.wait()` every ~500 instances and every ~25 scripts. Scan `ReplicatedStorage`/`workspace`/`LocalPlayer`, not `game`.
 - `writefile` partial output after each section, so a hang still leaves data and shows which section stalled.
+
+- **Forward-declared helpers become nil globals.** In Luau a `local f` declared below a function that calls it compiles fine, but that call reads the global `f` (nil) and only crashes at runtime, often on a rare path. Fix It Up 2026-09-30: `notify` was declared under buyJunk, so every rare auto-locked buy crashed and froze the auto loop. Declare shared helpers (notify, log) near the top as `local x = function() end` and reassign later. Also clear busy flags when a guarded step errors.
