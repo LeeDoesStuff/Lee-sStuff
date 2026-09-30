@@ -1,7 +1,7 @@
 name = "Pixel Conquest"
 place_id = 138110382920220
 game_id = 10764297006
-status = "v2.0 (tested live)"
+status = "v2.1 (tested live)"
 script = "pc_main.lua"
 loader = 'loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/pixel-conquest/pc_main.lua"))()'
 ui = "Obsidian"

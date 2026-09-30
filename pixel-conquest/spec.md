@@ -229,3 +229,11 @@ Verified with the spy.
   - Score: troops per tile (×0.3 grudge, ×0.7 bot) + sea distance × 0.5. Lowest wins; it lands on their coast tile nearest my coast.
   - A `nobeach`/`nosearoute`/`nocoast`/`immunity`/`ally` denial right after the send → that owner is skipped 90 s. `toomanytransportboats`/`busy` → wait 20 s. Shares the 3-boat cap with island expand.
   - Live: 3 invasions in ~45 s (THEmonkey's leftover islands ×2, Canada 292K vs a 992K boat), 0 denials.
+- **v2.1 (2026-09-29): city weighting + struct sync + troop units**
+  - **Troops are stored ×10.** `players.troops`, `fronts.inc[].troops` and the cap formula are all ×10. The HUD shows `Numbers.formatTroops(n) = format(n/10)`. Comparisons are unit-consistent, so only displays were wrong (the user caught 11.09M vs HUD 1.11M). `fmtT` = fmt(n/10). Earlier notes quoting raw troop counts (e.g. THEmonkey 3.21M) are ×10.
+  - Structure sync: the client's structures renderer holds every building in `.byTile[tile] = {ownerId, kind, level, site, ...}`, found as a State-handler upvalue with a `byTile` field. It is mirrored into S.structs every scan. After a mid-match reload the listener only knew 1 of my 20 cities; after the fix it saw 20 cities, levels 46 = fronts.levels.
+  - City weighting by army fill (growth ∝ 1 - troops/cap):
+    - fill ≥ cityFillHigh (55%): cities first, and auto nuke holds unless gold covers nuke + city.
+    - fill ≤ cityFillLow (25%): cities only when gold ≥ citySpare 2× cost.
+    - Seen live: auto nuke fired 5 Atoms in 3 min while cities starved; after the fix, "auto nuke on hold: cities first (troops at 87% of cap)".
+    - The hold check must not use wantBuild (its 3 s build timer let a nuke slip through).

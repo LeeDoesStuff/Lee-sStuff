@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v2.0  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.1  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -55,7 +55,7 @@ local CFG = {
     build = true, reserve = 0, saveForTop = false,
     b_city = true, b_port = true, b_defense = true, b_sam = false, b_artillery = true, b_airfield = true, b_railgun = false,
     max_city = 10, max_port = 3, max_defense = 4, max_sam = 2, max_artillery = 3, max_airfield = 1, max_railgun = 1,
-    upgradeCities = true, cityMaxLv = 5, citySpread = 31,
+    upgradeCities = true, cityMaxLv = 5, citySpread = 31, cityWeight = true, cityFillHigh = 0.55, cityFillLow = 0.25, citySpare = 2,
     -- weapons
     nuke = false, nukeKind = "Best owned", nukeMinGold = 0, nukeSkipBots = true, avoidSam = true,
     airstrike = true, railgun = true, reinforce = true, reinforceBelow = 0.5,
@@ -113,6 +113,7 @@ local function fmt(n)
     if n >= 1e6 then return ("%.2fM"):format(n / 1e6) elseif n >= 1e3 then return ("%.1fK"):format(n / 1e3) end
     return tostring(math.floor(n))
 end
+local function fmtT(n) return fmt((tonumber(n) or 0) / 10) end -- troops are stored x10; the HUD shows troops/10 (Numbers.formatTroops)
 -- every pass (Products.lua). Money passes show up as the ConquestPass_<KEY> attribute; Robux-only ones
 -- (VIP, FAST_RELOAD, HOST, ADVANCED) are checked through the pass API once at load.
 local PASSES = {
@@ -226,6 +227,34 @@ local function getMap()
     end
     return m
 end
+-- the client keeps every building in its structures renderer (.byTile[tile] = {ownerId, kind, level, site, ...});
+-- my own "structs" listener misses the full list after a mid-match reload, so mirror the client's list each scan
+local function syncStructs()
+    local byTile
+    for _, c in getconnections(State.OnClientEvent) do
+        local f = c.Function
+        if f and islclosure(f) then
+            local ok, ups = pcall(debug.getupvalues, f)
+            if ok then
+                for _, uv in ups do
+                    if type(uv) == "table" and type(rawget(uv, "byTile")) == "table" then byTile = uv.byTile break end
+                end
+            end
+        end
+        if byTile then break end
+    end
+    if not byTile then return false end
+    local fresh = {}
+    for t, e in byTile do
+        if type(t) == "number" and type(e) == "table" and e.ownerId and e.ownerId ~= 0 and not e.site then
+            fresh[t] = { tile = t, ownerId = e.ownerId, kind = e.kind or 1, level = e.level or 1 }
+        end
+    end
+    for t, v in S.structs do if v.pending and not fresh[t] then fresh[t] = v end end -- keep my just-ordered anti-nukes
+    S.structs = fresh
+    return true
+end
+
 local function passable(ter, i)
     local b = readu8(ter, i)
     return btest(b, 128) and bit32.band(b, 63) < 63
@@ -237,6 +266,7 @@ local function scanMap()
     if not m or not S.myId then return nil end
     local own, ter, me = m.owner, m.terrain, S.myId
     S.map = m -- missile listener checks whether a launch lands on my land
+    pcall(syncStructs)
     local r = { ecoast = {}, ecoastN = {}, shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
     for i = 0, N - 1 do
         local o = readu8(own, i)
@@ -500,7 +530,7 @@ local function doFronts(r)
     local out = f.out or {}
     local fronted = {}
     for _, v in out do fronted[v.id] = true end
-    status.expand = ("troops %s / %s (%.0f%%) · fronts %d out / %d in · land %d tiles"):format(fmt(me.troops), fmt(cap), fill * 100, #out, #(f.inc or {}), me.tiles)
+    status.expand = ("troops %s / %s (%.0f%%) · fronts %d out / %d in · land %d tiles"):format(fmtT(me.troops), fmtT(cap), fill * 100, #out, #(f.inc or {}), me.tiles)
     if me.troops < (Config.MIN_ATTACK_TROOPS or 250) * 2 then return end
 
     if CFG.expand and not fronted[0] and #out < 4 and r.sample[0] and fill >= CFG.bandLow then
@@ -593,7 +623,7 @@ local function doFronts(r)
             S.lastTile, S.boatSent, S.boatOwner, S.lastDenied = bestTile, now0, best, "-"
             if send({ t = "attack", tile = bestTile, ratio = ratio(CFG.attackRatio) }, "boat:" .. best) then
                 stats.attacks += 1
-                status.combat = ("boat invasion -> %s (%s troops, %.0f tiles of sea, boat %s)"):format(S.names[best] or ("#" .. best), fmt(S.byId[best].troops), bestD, fmt(boat))
+                status.combat = ("boat invasion -> %s (%s troops, %.0f tiles of sea, boat %s)"):format(S.names[best] or ("#" .. best), fmtT(S.byId[best].troops), bestD, fmtT(boat))
                 log(status.combat)
             end
         end
@@ -652,7 +682,7 @@ local function doFronts(r)
         S.lastTile = r.sample[id]
         if r.sample[id] and send({ t = "attack", tile = r.sample[id], ratio = ratio }, "atk:" .. id) then
             stats.attacks += 1
-            status.combat = ("%s: %s (%s troops) @%d%%"):format(why, S.names[id] or ("#" .. id), fmt(S.byId[id].troops), math.floor(ratio * 100 + 0.5))
+            status.combat = ("%s: %s (%s troops) @%d%%"):format(why, S.names[id] or ("#" .. id), fmtT(S.byId[id].troops), math.floor(ratio * 100 + 0.5))
             log(status.combat)
             fronted[id] = true
             return true
@@ -688,7 +718,7 @@ local function doFronts(r)
         end
     end
     if S.threat then
-        status.combat = ("LAST STAND vs %s (attack %s, my home %s)"):format(S.names[S.threat.id] or ("#" .. S.threat.id), fmt(S.threat.inc), fmt(me.troops))
+        status.combat = ("LAST STAND vs %s (attack %s, my home %s)"):format(S.names[S.threat.id] or ("#" .. S.threat.id), fmtT(S.threat.inc), fmtT(me.troops))
         if CFG.lastStandAlly and not (S.byId[S.threat.id] or {}).isBot and now - (reqAt[S.threat.id] or -99) > 35 then
             reqAt[S.threat.id] = now
             if send({ t = "ally", id = S.threat.id }) then log("last stand: asked " .. (S.names[S.threat.id] or "?") .. " for an alliance") end
@@ -705,7 +735,7 @@ local function doFronts(r)
     if CFG.holdWhenHit then
         for _, v in f.inc or {} do
             local a = S.byId[v.id]
-            if a and a.troops >= me.troops * 0.7 then status.combat = ("holding troops: %s (%s) is attacking"):format(S.names[v.id] or ("#" .. v.id), fmt(a.troops)); return end
+            if a and a.troops >= me.troops * 0.7 then status.combat = ("holding troops: %s (%s) is attacking"):format(S.names[v.id] or ("#" .. v.id), fmtT(a.troops)); return end
         end
     end
     if #out >= math.min(CFG.maxFronts, 4) then status.combat = "front limit"; return end
@@ -832,6 +862,15 @@ end
 
 local ORDER = { "city", "port", "defense", "artillery", "airfield", "railgun" } -- anti-nukes: own manager (samAuto)
 local builtAt = {}
+-- growth per tick ~ (1 - troops/cap): cap only matters when troops are near it
+local function cityPriority()
+    local me = S.me
+    if not me then return "normal", 0 end
+    local fill = me.troops / math.max(troopCap(), 1)
+    if fill >= CFG.cityFillHigh then return "high", fill end
+    if fill <= CFG.cityFillLow then return "low", fill end
+    return "normal", fill
+end
 local function wantBuild(kind)
     if not CFG["b_" .. kind] then return false end
     if os.clock() - (builtAt[kind] or -99) < 3 then return false end -- structs packet lags; don't overshoot the max
@@ -954,7 +993,12 @@ local function doEconomy(r)
             local provoke = v.troops > me.troops and not grudge and not CFG.nukeStronger
             if v.id ~= S.myId and v.alive and not friendly(v.id, al) and not (v.isBot and CFG.nukeSkipBots) and not provoke and v.tiles > bestTiles then best, bestTiles = v.id, v.tiles end
         end
-        if best and fireNuke(CFG.nukeKind, best, CFG.nukeMinGold, "auto", true) then S.lastAutoNuke = now end
+        local prio, fill = cityPriority()
+        local cityCost = buildCost("city")
+        local nukeCost = (NUKE[CFG.nukeKind] or NUKE.Atom).cost
+        if best and not freeNuke and CFG.cityWeight and prio == "high" and CFG.b_city and (f.levels or 0) < CFG.max_city * (Config.CITY_MAX_LEVEL or 10) and cityCost and gold - nukeCost < cityCost then
+            status.weapons = ("auto nuke on hold: cities first (troops at %d%% of cap)"):format(math.floor(fill * 100))
+        elseif best and fireNuke(CFG.nukeKind, best, CFG.nukeMinGold, "auto", true) then S.lastAutoNuke = now end
     end
 
     -- AUTO ANTI-NUKE: cover my most valuable structures, then upgrade for range (Nukes.samRange = 150 - 480/(lv+5))
@@ -1054,9 +1098,14 @@ local function doEconomy(r)
     end
 
     if not CFG.build then status.build = "off"; return end
+    local prio, fill = cityPriority()
     for _, kind in ORDER do
         if wantBuild(kind) then
             local cost = buildCost(kind)
+            if cost and kind == "city" and CFG.cityWeight and prio == "low" and cost > 0 and gold - CFG.reserve < cost * CFG.citySpare then
+                status.build = ("cities waiting: troops only at %d%% of cap, more cap won't help yet"):format(math.floor(fill * 100))
+                cost = nil -- skip to the next building type
+            end
             if cost then
                 if gold - CFG.reserve >= cost then
                     local tile = placeFor(kind, r)
@@ -1290,7 +1339,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v2.0 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.1 · expand · combat · build · weapons · diplomacy · lobby",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -1370,6 +1419,10 @@ BD:AddToggle("PC_Build", { Text = "Auto build", Default = CFG.build, Callback = 
 BD:AddToggle("PC_Upgrade", { Text = "Upgrade cities in place (to Lv 10)", Default = CFG.upgradeCities, Callback = set("upgradeCities") })
 BD:AddSlider("PC_CityMaxLv", { Text = "Upgrade each city to Lv (then build a new one)", Tooltip = "One nuke wipes every building in its blast: spread levels over several cities", Default = CFG.cityMaxLv, Min = 1, Max = 10, Rounding = 0, Callback = set("cityMaxLv") })
 BD:AddSlider("PC_CitySpread", { Text = "Min tiles between cities", Tooltip = "31 = outside one Atom blast, 61 = outside a Mega", Default = CFG.citySpread, Min = 16, Max = 90, Rounding = 0, Callback = set("citySpread") })
+BD:AddToggle("PC_CityWeight", { Text = "Weigh cities by army fill", Tooltip = "Cities add army cap; cap only limits growth when troops are near it", Default = CFG.cityWeight, Callback = set("cityWeight") })
+BD:AddSlider("PC_CityHigh", { Text = "Cities first above % of cap (nukes wait)", Default = CFG.cityFillHigh * 100, Min = 20, Max = 100, Rounding = 0, Callback = pct("cityFillHigh") })
+BD:AddSlider("PC_CityLow", { Text = "Cities only with spare gold below % of cap", Default = CFG.cityFillLow * 100, Min = 0, Max = 80, Rounding = 0, Callback = pct("cityFillLow") })
+BD:AddSlider("PC_CitySpare", { Text = "...spare gold = x city cost", Default = CFG.citySpare, Min = 1, Max = 5, Rounding = 1, Callback = set("citySpare") })
 BD:AddToggle("PC_SaveTop", { Text = "Save gold for the top missing building", Default = CFG.saveForTop, Callback = set("saveForTop") })
 BD:AddSlider("PC_Reserve", { Text = "Gold reserve (K)", Default = CFG.reserve / 1000, Min = 0, Max = 5000, Rounding = 0, Callback = function(v) CFG.reserve = v * 1000 end })
 local BD2 = Tabs.Build:AddRightGroupbox("Buildings", "building")
@@ -1515,7 +1568,7 @@ task.spawn(function()
             local me = S.me
             local payout = type(S.money) == "table" and (S.money.total or S.money.amount or S.money.money) or S.money
             infoLabel:SetText(("server %s · phase %s · id %s\ngold %s · troops %s / %s · land %s tiles\npayout so far %s\nsent %d · attacks %d · builds %d · nukes %d · strikes %d · allies %d · joins %d\ndenied %d (last: %s)"):format(
-                tostring(role()), tostring(S.phase), tostring(S.myId), fmt(S.gold), fmt(me and me.troops), fmt(troopCap()), me and me.tiles or 0,
+                tostring(role()), tostring(S.phase), tostring(S.myId), fmt(S.gold), fmtT(me and me.troops), fmtT(troopCap()), me and me.tiles or 0,
                 tostring(payout or "-"), stats.sent, stats.attacks, stats.builds, stats.nukes, stats.strikes, stats.allies, stats.joins, stats.denied, S.lastDenied))
             local list = table.clone(S.players)
             table.sort(list, function(a, b) return a.tiles > b.tiles end)
@@ -1523,7 +1576,7 @@ task.spawn(function()
             for i = 1, math.min(#list, 10) do
                 local v = list[i]
                 lines[#lines + 1] = ("%d. %s%s  %s tiles · %s troops%s%s%s"):format(i, S.names[v.id] or ("#" .. v.id), v.id == S.myId and " (you)" or "",
-                    fmt(v.tiles), fmt(v.troops), v.isBot and " · bot" or "", al[v.id] and " · ALLY" or "", traitors[v.id] and " · TRAITOR" or "")
+                    fmt(v.tiles), fmtT(v.troops), v.isBot and " · bot" or "", al[v.id] and " · ALLY" or "", traitors[v.id] and " · TRAITOR" or "")
             end
             standLabel:SetText(#lines > 0 and table.concat(lines, "\n") or "-")
             logLabel:SetText(table.concat(logLines, "\n", 1, math.min(#logLines, 14)))
@@ -1532,5 +1585,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v2.0 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v2.0 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.1 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.1 ready — RightCtrl toggles the UI.", 5)
