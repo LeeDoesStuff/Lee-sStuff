@@ -202,3 +202,24 @@ Verified with the spy.
     - Boats skip spots within 30 tiles of a target from the last 60 s.
   - The counter war vs Andtesd108 drained troops 700K → 16K while land went +50%. keepHome was a % of current troops (shrinks to 0); added a keepCap 10% floor.
   - Camera: patched the `Camera2D.clamp`/`settle` module table (the client calls it through the table). Margin is camMargin × viewport on every side, with no spring-back. `Config.MIN/MAX_ZOOM` ×/÷ camZoom (0.35–12 → 0.175–24). Restored on unload.
+- **v1.9 (2026-09-29): every pass checked + used**
+  - Passes (Products.lua, id / Money price):
+    - MEGANUKE 1989902339 / 10K
+    - SCATTERSHOT 1999838282 / 20K
+    - BARRACKS 1990256322 / 20K
+    - ARTILLERY 1987550354 / 25K
+    - AIRSTRIKE 1988684354 / 100K
+    - RAILGUN 1998602304 / 250K
+    - FAST_RELOAD 1998782486 (Robux only)
+    - VIP 1983032307 (+10% growth)
+    - HOST 1969592603, ADVANCED 1969906389 (private rooms)
+    - PERSISTENT_LOBBY (id 0)
+  - Ownership: the `ConquestPass_<KEY>` attribute (set for money passes), else `MarketplaceService:UserOwnsGamePassAsync` once at load.
+  - Products granting free items: STARTER_PACK (post), STARTER_PACK2 (3 posts, city, anti-nuke), RAILGUN_BUNDLE (3 nukes, railgun, post). They show in `fronts.freeNukes`/`freeCities`/`freePosts`/`freeSams`. `useFree` fires free nukes even with auto nuke off.
+  - "Best owned" nuke type (Scattershot > Mega > Atom, owned and affordable) is the default for auto, revenge and last stand.
+  - Airstrike (radius 15) and railgun (radius 5, no range limit) targets are now scored by value inside the hit radius:
+    - anti-nuke 40, railgun 30, airfield 25, artillery 15, defense 8, port 6, city 10×level;
+    - ×2 for players attacking me or on my grudge list.
+    - Before this, the target was the nearest building.
+  - Passes tab: owned list, what each one unlocks, a manual "buy with Money" button (lobby only), free items, Money 2x.
+  - Private-room payout is server-side and unknown, so HOST/ADVANCED are detected only.

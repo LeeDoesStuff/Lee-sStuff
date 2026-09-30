@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v1.8  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v1.9  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -44,10 +44,11 @@ local CFG = {
     -- combat
     attack = false, attackRatio = 0.33, attackMin = 0.55, edge = 1.2, maxFronts = 3, hitBots = true, hitPlayers = true,
     counterCancel = true, counterPunish = true, keepHome = 0.35, keepCap = 0.1,
-    lastStand = true, lastStandNuke = "Atom", lastStandAlly = true,
+    lastStand = true, lastStandNuke = "Best owned", lastStandAlly = true,
     revenge = true, revengeRatio = 0.3, revengeMin = 0.5, revengeEdge = 0.6, revengeStronger = 1.3, grudgeSecs = 120,
     hitTraitors = true, finish = true, holdWhenHit = true, nukeCooldown = 45, nukeStronger = false,
-    revengeNuke = true, revengeNukeKind = "Atom", revengeMinLv = 1, nukeGrudgeSecs = 300, revengeOnce = true, revengeNukeStrikes = false,
+    revengeNuke = true, revengeNukeKind = "Best owned", revengeMinLv = 1, nukeGrudgeSecs = 300, revengeOnce = true, revengeNukeStrikes = false,
+    useFree = true,
     samAuto = true, samMode = "Prepare", samPrepMin = 6, samPrepCityLv = 20, samMaxLv = 5, samMinCityLv = 5, samMinValue = 20, samUpgrade = true, samPriority = true,
     -- build
     build = true, reserve = 0, saveForTop = false,
@@ -55,7 +56,7 @@ local CFG = {
     max_city = 10, max_port = 3, max_defense = 4, max_sam = 2, max_artillery = 3, max_airfield = 1, max_railgun = 1,
     upgradeCities = true, cityMaxLv = 5, citySpread = 31,
     -- weapons
-    nuke = false, nukeKind = "Atom", nukeMinGold = 0, nukeSkipBots = true, avoidSam = true,
+    nuke = false, nukeKind = "Best owned", nukeMinGold = 0, nukeSkipBots = true, avoidSam = true,
     airstrike = true, railgun = true, reinforce = true, reinforceBelow = 0.5,
     -- diplomacy
     accept = true, renew = true, request = false, requestRatio = 1.5, blockUnally = true, blacklist = "",
@@ -111,7 +112,29 @@ local function fmt(n)
     if n >= 1e6 then return ("%.2fM"):format(n / 1e6) elseif n >= 1e3 then return ("%.1fK"):format(n / 1e3) end
     return tostring(math.floor(n))
 end
-local function hasPass(k) return lp:GetAttribute("ConquestPass_" .. k) == true end
+-- every pass (Products.lua). Money passes show up as the ConquestPass_<KEY> attribute; Robux-only ones
+-- (VIP, FAST_RELOAD, HOST, ADVANCED) are checked through the pass API once at load.
+local PASSES = {
+    { key = "MEGANUKE", id = 1989902339, money = 10000, use = "Mega nuke (4x blast) in auto / revenge / last stand" },
+    { key = "SCATTERSHOT", id = 1999838282, money = 20000, use = "Scattershot nuke (+4-6 warheads)" },
+    { key = "BARRACKS", id = 1990256322, money = 20000, use = "Auto reinforce + last stand reinforce" },
+    { key = "ARTILLERY", id = 1987550354, money = 25000, use = "Auto artillery behind the longest enemy border" },
+    { key = "AIRSTRIKE", id = 1988684354, money = 100000, use = "Auto airfield + airstrikes on the best target in range" },
+    { key = "RAILGUN", id = 1998602304, money = 250000, use = "Auto railgun + shots at the most valuable enemy building" },
+    { key = "FAST_RELOAD", id = 1998782486, use = "Strike timers halved (airfield / railgun)" },
+    { key = "VIP", id = 1983032307, use = "+10% troop growth (passive)" },
+    { key = "HOST", id = 1969592603, use = "Private room settings (not automated)" },
+    { key = "ADVANCED", id = 1969906389, use = "Private room modes (not automated)" },
+}
+local passApi = {}
+task.spawn(function()
+    local MPS = game:GetService("MarketplaceService")
+    for _, p in PASSES do
+        local ok, owns = pcall(MPS.UserOwnsGamePassAsync, MPS, lp.UserId, p.id)
+        if ok and owns then passApi[p.key] = true end
+    end
+end)
+local function hasPass(k) return lp:GetAttribute("ConquestPass_" .. k) == true or passApi[k] == true end
 local function role() return RS:GetAttribute("ConquestRole") end
 local function dist(a, b)
     local dx, dy = a % W - b % W, a // W - b // W
@@ -358,6 +381,8 @@ table.insert(conns, Lobby.OnClientEvent:Connect(function(k, p, p2)
         if ok then S.board = b end
     elseif k == "money" then
         S.lobbyMoney = tonumber(p)
+    elseif k == "patterns" and type(p) == "table" then
+        S.money2x = p.money2x
     elseif k == "reward" and type(p) == "table" then
         S.rewardClaimed = p.claimed == true
     end
@@ -818,8 +843,15 @@ local function doEconomy(r)
     end
 
     local function fireNuke(kindName, who, minGold, why, allowLand, minLv)
-        local nk = NUKE[kindName]
         local free = (f.freeNukes or 0) > 0
+        if kindName == "Best owned" then -- strongest nuke I own and can pay for (a free nuke takes the strongest owned)
+            kindName = "Atom"
+            for _, k in { "Scattershot", "Mega" } do
+                local n = NUKE[k]
+                if hasPass(n.pass) and (free or gold - CFG.reserve >= math.max(n.cost, minGold)) then kindName = k break end
+            end
+        end
+        local nk = NUKE[kindName]
         if not nk or (nk.pass and not hasPass(nk.pass)) then return false end
         if not free and gold - CFG.reserve < math.max(nk.cost, minGold) then
             status.weapons = ("%s: saving for %s nuke (%s / %s)"):format(why, kindName, fmt(gold), fmt(nk.cost)); return false
@@ -861,7 +893,8 @@ local function doEconomy(r)
         end
         if who and fireNuke(CFG.revengeNukeKind, who, 0, "revenge", false, CFG.revengeMinLv) and CFG.revengeOnce then S.nukeGrudge[who] = nil end
     end
-    if CFG.nuke and now - (S.lastAutoNuke or -1e9) >= CFG.nukeCooldown then
+    local freeNuke = CFG.useFree and (f.freeNukes or 0) > 0 -- product nukes (starter packs / railgun bundle) cost no gold
+    if (CFG.nuke or freeNuke) and now - (S.lastAutoNuke or -1e9) >= CFG.nukeCooldown then
         local al, best, bestTiles = allies(), nil, 0
         for _, v in S.players do
             local grudge = (S.grudge[v.id] or 0) > now
@@ -996,22 +1029,32 @@ end
 local function doStrikes(r)
     if not S.me or not S.me.alive then return end
     local al = allies()
-    local function enemyTargets()
-        local list = {}
-        for t, s in S.structs do if s.ownerId ~= S.myId and not friendly(s.ownerId, al) then list[#list + 1] = t end end
-        return list
+    -- value of hitting an enemy building: anti-nukes and strike platforms first, then city levels
+    local VAL = { [KIND.sam] = 40, [KIND.railgun] = 30, [KIND.airfield] = 25, [KIND.artillery] = 15, [KIND.defense] = 8, [KIND.port] = 6 }
+    local incoming = {}
+    for _, v in (S.fronts and S.fronts.inc or {}) do incoming[v.id] = true end
+    local function worth(s)
+        local v = s.kind == KIND.city and 10 * (s.level or 1) or (VAL[s.kind] or 3)
+        if incoming[s.ownerId] or (S.grudge[s.ownerId] or 0) > os.clock() then v *= 2 end -- whoever is fighting me
+        return v
     end
+    local targets = {}
+    for t, s in S.structs do if s.ownerId ~= S.myId and not friendly(s.ownerId, al) then targets[#targets + 1] = t end end
     local now = os.clock()
     local cd = hasPass("FAST_RELOAD") and 0.5 or 1
-    local function fire(kind, verb, reload, range)
+    local function fire(kind, verb, reload, range, radius)
         for _, from in myStructs(kind) do
             if now >= (S.readyAt[from] or 0) then
-                local best, bd
-                for _, t in enemyTargets() do
-                    local d = dist(from, t)
-                    if (not range or d <= range) and (not bd or d < bd) then best, bd = t, d end
+                local best, bv
+                for _, t in targets do
+                    if not range or dist(from, t) <= range then
+                        local v = 0 -- everything inside the hit radius counts
+                        for _, u in targets do if dist(t, u) <= radius then v += worth(S.structs[u]) end end
+                        if not bv or v > bv then best, bv = t, v end
+                    end
                 end
-                if not best then -- no known enemy structure in range: nearest sampled enemy border tile
+                if not best then -- no known enemy building in range: nearest enemy border tile
+                    local bd
                     for id, t in r.sample do
                         if id ~= 0 and not friendly(id, al) then
                             local d = dist(from, t)
@@ -1022,13 +1065,14 @@ local function doStrikes(r)
                 if best and send({ t = verb, from = from, tile = best }) then
                     S.readyAt[from] = now + reload * cd + 1
                     stats.strikes += 1
-                    status.weapons = verb .. " from " .. from .. " -> " .. best
+                    local st = S.structs[best]
+                    status.weapons = ("%s -> %s (%s)"):format(verb, st and (S.names[st.ownerId] or "?") or "border", bv and ("value " .. bv) or "no buildings in range")
                 end
             end
         end
     end
-    if CFG.airstrike then fire(KIND.airfield, "airstrike", 30, Config.AIRFIELD_RANGE or 156) end
-    if CFG.railgun then fire(KIND.railgun, "railgun", 25, nil) end
+    if CFG.airstrike then fire(KIND.airfield, "airstrike", 30, Config.AIRFIELD_RANGE or 156, 15) end -- strike radius 15
+    if CFG.railgun then fire(KIND.railgun, "railgun", 25, nil, 5) end -- no range limit, radius 5
 end
 
 -- ============================== diplomacy ==============================
@@ -1194,13 +1238,13 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v1.8 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v1.9 · expand · combat · build · weapons · diplomacy · lobby",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
     Expand = Window:AddTab("Expand", "map"), Combat = Window:AddTab("Combat", "swords"), Build = Window:AddTab("Build", "hammer"),
     Weapons = Window:AddTab("Weapons", "flame"), Diplo = Window:AddTab("Diplomacy", "handshake"), Lobby = Window:AddTab("Lobby", "repeat"),
-    Info = Window:AddTab("Info", "activity"), Settings = Window:AddTab("Settings", "settings"),
+    Passes = Window:AddTab("Passes", "badge-check"), Info = Window:AddTab("Info", "activity"), Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(k) return function(v) CFG[k] = v end end
 local function pct(k) return function(v) CFG[k] = v / 100 end end
@@ -1248,7 +1292,7 @@ CT:AddToggle("PC_CounterPunish", { Text = "Cancel + invade when I can afford it"
 CT:AddSlider("PC_KeepHome", { Text = "Always keep % of my troops home", Default = CFG.keepHome * 100, Min = 0, Max = 90, Rounding = 0, Callback = pct("keepHome") })
 CT:AddSlider("PC_KeepCap", { Text = "...and never below % of my cap", Default = CFG.keepCap * 100, Min = 0, Max = 60, Rounding = 0, Callback = pct("keepCap") })
 CT:AddToggle("PC_LastStand", { Text = "Last stand when I can't cancel it", Tooltip = "Nuke the attacker, defense post on that border, reinforce, ask to ally", Default = CFG.lastStand, Callback = set("lastStand") })
-CT:AddDropdown("PC_LastNuke", { Text = "Last stand nuke", Values = { "Atom", "Mega", "Scattershot" }, Default = CFG.lastStandNuke, Callback = set("lastStandNuke") })
+CT:AddDropdown("PC_LastNuke", { Text = "Last stand nuke", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.lastStandNuke, Callback = set("lastStandNuke") })
 CT:AddToggle("PC_LastAlly", { Text = "Last stand: ask the attacker to ally", Default = CFG.lastStandAlly, Callback = set("lastStandAlly") })
 CT:AddLabel("A nuke kills troops in the attacker's running attacks too, and wipes every building in its blast.", true)
 local RV = Tabs.Combat:AddRightGroupbox("Revenge & priorities", "skull")
@@ -1282,7 +1326,7 @@ local buildLabel = BD:AddLabel("-", true)
 -- Weapons
 local WP = Tabs.Weapons:AddLeftGroupbox("Nukes", "radiation")
 WP:AddToggle("PC_Nuke", { Text = "Auto nuke biggest enemy", Default = CFG.nuke, Callback = set("nuke") })
-WP:AddDropdown("PC_NukeKind", { Text = "Nuke type", Values = { "Atom", "Mega", "Scattershot" }, Default = CFG.nukeKind, Callback = set("nukeKind") })
+WP:AddDropdown("PC_NukeKind", { Text = "Nuke type", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.nukeKind, Callback = set("nukeKind") })
 WP:AddSlider("PC_NukeMin", { Text = "Min gold before nuking (K)", Default = 0, Min = 0, Max = 10000, Rounding = 0, Callback = function(v) CFG.nukeMinGold = v * 1000 end })
 WP:AddSlider("PC_NukeCd", { Text = "Seconds between auto nukes", Default = CFG.nukeCooldown, Min = 5, Max = 300, Rounding = 0, Callback = set("nukeCooldown") })
 WP:AddToggle("PC_NukeStronger", { Text = "Also nuke stronger players who aren't attacking me", Tooltip = "Off = don't provoke them", Default = CFG.nukeStronger, Callback = set("nukeStronger") })
@@ -1291,7 +1335,7 @@ WP:AddToggle("PC_AvoidSam", { Text = "Skip targets under an enemy anti-nuke", De
 WP:AddLabel("Aims at their highest-level city; never within blast range of your own border.", true)
 local WR = Tabs.Weapons:AddLeftGroupbox("Revenge nukes", "skull")
 WR:AddToggle("PC_RevNuke", { Text = "Nuke back whoever nukes my land", Tooltip = "Aims at their best city cluster (city Lv = their army cap); holds if none known", Default = CFG.revengeNuke, Callback = set("revengeNuke") })
-WR:AddDropdown("PC_RevNukeKind", { Text = "Revenge nuke type", Values = { "Atom", "Mega", "Scattershot" }, Default = CFG.revengeNukeKind, Callback = set("revengeNukeKind") })
+WR:AddDropdown("PC_RevNukeKind", { Text = "Revenge nuke type", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.revengeNukeKind, Callback = set("revengeNukeKind") })
 WR:AddSlider("PC_RevMinLv", { Text = "Only if the blast hits city levels >=", Default = CFG.revengeMinLv, Min = 1, Max = 30, Rounding = 0, Callback = set("revengeMinLv") })
 WR:AddToggle("PC_RevStrikes", { Text = "Also for airstrikes / railgun hits", Default = CFG.revengeNukeStrikes, Callback = set("revengeNukeStrikes") })
 WR:AddToggle("PC_RevOnce", { Text = "One nuke per offence (off = keep nuking)", Default = CFG.revengeOnce, Callback = set("revengeOnce") })
@@ -1342,6 +1386,23 @@ LB2:AddLabel("Order: Mega Nuke 10K, Barracks 20K, Scattershot 20K, Artillery 25K
 LB2:AddSlider("PC_PassReserve", { Text = "Keep Money (K)", Default = 0, Min = 0, Max = 250, Rounding = 0, Callback = function(v) CFG.passReserve = v * 1000 end })
 local lobbyLabel = LB2:AddLabel("-", true)
 
+-- Passes
+local PS = Tabs.Passes:AddLeftGroupbox("Your passes", "badge-check")
+PS:AddLabel("Each feature only runs when you own its pass. Money passes can be bought here with in-game Money.", true)
+local passLabel = PS:AddLabel("-", true)
+local PS2 = Tabs.Passes:AddRightGroupbox("Buy with Money", "coins")
+local moneyKeys = {}
+for _, p in PASSES do if p.money then moneyKeys[#moneyKeys + 1] = p.key end end
+PS2:AddDropdown("PC_BuyPick", { Text = "Pass", Values = moneyKeys, Default = moneyKeys[1] })
+PS2:AddButton({ Text = "Buy selected (lobby only)", Func = function()
+    local k = Library.Options.PC_BuyPick.Value
+    if role() ~= "lobby" then notify("Passes can only be bought in the lobby"); return end
+    if hasPass(k) then notify("You already own " .. k); return end
+    Shop:FireServer("passmoney", k); log("bought pass " .. k .. " with Money (manual)")
+end })
+PS2:AddToggle("PC_UseFree", { Text = "Use free items from packs (nukes, cities, posts, anti-nukes)", Tooltip = "Free nukes fire even with auto nuke off", Default = CFG.useFree, Callback = set("useFree") })
+PS2:AddLabel("Robux-only passes (VIP, Fast Reload, Host, Advanced) are detected but never bought.", true)
+
 -- Info
 local IN = Tabs.Info:AddLeftGroupbox("Match", "activity")
 local infoLabel = IN:AddLabel("-", true)
@@ -1382,6 +1443,14 @@ task.spawn(function()
             buildLabel:SetText(status.build)
             weaponsLabel:SetText(status.weapons)
             samLabel:SetText(status.samInfo or "-")
+            local pl = {}
+            for _, p in PASSES do
+                pl[#pl + 1] = ("%s %s - %s%s"):format(hasPass(p.key) and "[OWNED]" or "[  -  ]", p.key, p.use,
+                    hasPass(p.key) and "" or (p.money and (" · " .. fmt(p.money) .. " Money") or " · Robux"))
+            end
+            local fr = S.fronts or {}
+            pl[#pl + 1] = ("Free items now: nukes %d · cities %d · posts %d · anti-nukes %d · Money 2x %s"):format(fr.freeNukes or 0, fr.freeCities or 0, fr.freePosts or 0, fr.freeSams or 0, tostring(S.money2x or "?"))
+            passLabel:SetText(table.concat(pl, "\n"))
             diploLabel:SetText(status.diplo)
             lobbyLabel:SetText(("%s\nMoney %s · reward %s"):format(status.lobby, S.lobbyMoney and fmt(S.lobbyMoney) or "?",
                 S.rewardClaimed == nil and "?" or (S.rewardClaimed and "claimed" or "available")))
@@ -1405,5 +1474,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v1.8 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v1.8 ready — RightCtrl toggles the UI.", 5)
+log("loaded v1.9 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v1.9 ready — RightCtrl toggles the UI.", 5)
