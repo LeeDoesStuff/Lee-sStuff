@@ -250,3 +250,4 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - Cash prizes are credited instantly (MoneyPile in Cache is cosmetic). Test open 2026-09-30: Garage5 gave +70K, net -5K, AuctionsOpen 10 -> 11.
   - Open flags reset: 12 of 12 were free again later.
   - Still unseen: how the 40% junk-car prize arrives. The opener logs new Garage entries and the Cache contents to catch it.
+- 2026-09-30: the auction opener has a "Budget counts" dropdown (CFG.aucMode). Total spend (default, strict) passes budget - spent to openOne. Net loss passes budget + run net, so wins extend the run. Either way an open only starts if losing its full 75K fits, and the opens-per-run count and money floor still apply as hard stops.

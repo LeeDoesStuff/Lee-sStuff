@@ -160,7 +160,7 @@ local CFG = {
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
-    homeAfterTp = false, aucCount = 1, aucBudget = 75000, aucFloor = 300000, aucStopRare = true, autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
+    homeAfterTp = false, aucCount = 1, aucBudget = 75000, aucFloor = 300000, aucStopRare = true, aucMode = "Total spend", autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
     driveSpeed = 85, driveExtra = 2, driveNoLimit = false, farmYield = false, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
@@ -1991,7 +1991,10 @@ function AUC.start()
     AUC.running = true
     task.spawn(function()
         local count, budget = math.max(0, math.floor(CFG.aucCount or 1)), math.max(0, CFG.aucBudget or AUC.price)
-        local spent, n = 0, 0
+        -- "Total spend": the budget caps what goes in (wins never refill it). "Net loss": it caps how far down the run
+        -- may get, so wins let it continue. Either way an open only starts if losing its whole 75K stays within budget.
+        local netMode = CFG.aucMode == "Net loss"
+        local spent, net, n = 0, 0, 0
         AUC.runLog = {}
         while running and AUC.running and n < count do
             if STAFF.gated() then AUC.status = "blocked: " .. STAFF.gateMsg break end
@@ -2003,7 +2006,7 @@ function AUC.start()
             end
             busy, busyWhat = true, "opening an auction"
             AUC.status = ("opening %d of %d..."):format(n + 1, count)
-            local okR, r, why = pcall(AUC.openOne, budget - spent)
+            local okR, r, why = pcall(AUC.openOne, netMode and (budget + net) or (budget - spent))
             busy = false
             if not okR then AUC.status = "error: " .. tostring(r); log("auction: " .. tostring(r)) break end
             if not r then AUC.status = "stopped: " .. tostring(why) break end
@@ -2014,6 +2017,7 @@ function AUC.start()
             end
             n += 1; spent += AUC.price
             local prize = r.delta + AUC.price -- money back from this open (0 if the prize was a car)
+            net += prize - AUC.price
             local A = STATE.auction
             A.opened += 1; A.spent += AUC.price; A.won += math.max(0, prize)
             for _, c in ipairs(r.cars) do A.cars[#A.cars + 1] = c end
@@ -2027,7 +2031,8 @@ function AUC.start()
             for _, c in ipairs(r.cars) do if RARE[c] then rare = true end end
             if rare then notify("RARE auction car: " .. table.concat(r.cars, ", ")) end
             if rare and CFG.aucStopRare then AUC.status = "stopped: rare car won!" break end
-            AUC.status = ("done %d of %d · spent %s of %s"):format(n, count, money(spent), money(budget))
+            AUC.status = netMode and ("done %d of %d · run net %s · can lose %s more"):format(n, count, money(net), money(math.max(0, budget + net)))
+                or ("done %d of %d · spent %s of %s · run net %s"):format(n, count, money(spent), money(budget), money(net))
         end
         AUC.running = false
         if CFG.homeAfterTp and running then goHome(true) end
@@ -2041,8 +2046,11 @@ AucBox:AddLabel("Each open costs 75,000€ and the prize is rolled when you buy,
     .. "+ a junk car per €75K: a loss. Only for hunting the rare cars.", true)
 AucBox:AddInput("FIU_AucCount", { Text = "Opens per run", Default = tostring(CFG.aucCount or 1), Numeric = true, Finished = true,
     Callback = function(v) CFG.aucCount = math.max(0, math.floor(tonumber(v) or 1)) end })
+AucBox:AddDropdown("FIU_AucMode", { Text = "Budget counts", Values = { "Total spend", "Net loss" }, Default = CFG.aucMode,
+    Tooltip = "Total spend (strict): every 75K counts, wins never refill it. Net loss: stops once the run is down by the budget, "
+        .. "so wins let it keep going (on average it still loses ~€20K per open).", Callback = set("aucMode") })
 AucBox:AddInput("FIU_AucBudget", { Text = "Budget per run (€)", Default = tostring(CFG.aucBudget or 75000), Numeric = true, Finished = true,
-    Tooltip = "The run stops before any open that would take its spending past this", Callback = function(v) CFG.aucBudget = math.max(0, tonumber(v) or 0) end })
+    Tooltip = "No open starts unless losing its whole 75K stays within this", Callback = function(v) CFG.aucBudget = math.max(0, tonumber(v) or 0) end })
 AucBox:AddInput("FIU_AucFloor", { Text = "Never go below (€)", Default = tostring(CFG.aucFloor or 300000), Numeric = true, Finished = true,
     Tooltip = "No open happens if it would leave you under this (or the Settings reserve, whichever is higher)",
     Callback = function(v) CFG.aucFloor = math.max(0, tonumber(v) or 0) end })
