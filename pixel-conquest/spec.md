@@ -376,3 +376,10 @@ Verified with the spy.
   - Stalemate breaker:
     - Trigger: my tiles within ±1% over 55 s + no open-land contact + main enemy on my border + not SURVIVE.
     - Every 6 s, send (troops - max(cap × breakBand 0.55, their army × keepVs 0.7)) at them, with no edge rule. Troops above the growth band grow nothing; attrition is the only use.
+- **v3.5 (2026-09-30): Nuclear War mode**
+  - Modes.nuclear: SPECIAL.startNukes = 10 → everyone opens with 10 free ATOM bombs (`fronts.freeNukes`).
+  - Bug: "Best owned" treated free as any type and sent Megas it couldn't pay for (37K gold). Free = Atom only; other types cost gold. A free atom's efficiency uses a cost of 0.05M.
+  - Free-nuke doctrine: while freeNukes > freeKeep 3, every freeEvery 8 s, fire an Atom at the rival (humans first, top 8 by land) with the most of THEIR land in the blast (≥ freeMinLand 800).
+  - With free atoms in hand, revenge may hit land (minLv 0): early nuclear games have no cities.
+  - `S.myNukes`: an aim point within (their blast r + half mine) of my own bomb from the last 25 s is skipped. It's still in flight and the map hasn't updated; before this, Niitixxx was hit twice on the same spot.
+  - Live: free atoms every ~8 s, each ~2,827 of their tiles (a full blast), spread over ketrr20 / Niitixxx / kai_grumpy19 / zkr2569.

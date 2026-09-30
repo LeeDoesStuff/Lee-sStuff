@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v3.4  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v3.5  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -60,6 +60,7 @@ local CFG = {
     hitTraitors = true, finish = true, holdWhenHit = true, nukeCooldown = 45, nukeStronger = false,
     revengeNuke = true, revengeNukeKind = "Best owned", revengeMinLv = 1, nukeGrudgeSecs = 300, revengeOnce = true, revengeNukeStrikes = false,
     useFree = true,
+    freeDoctrine = true, freeKeep = 3, freeEvery = 8, freeMinLand = 800,
     nukeUpsize = 1.15, nukeLandPer = 100, -- 100 of their tiles in the blast = 1 point (a city level = 10) -- a bigger nuke must beat the smaller one by 15% value-per-gold
     samAuto = true, samMode = "Prepare", samPrepMin = 6, samPrepCityLv = 20, samMaxLv = 5, samMinCityLv = 5, samMinValue = 20, samUpgrade = true, samPriority = true,
     -- build
@@ -104,7 +105,7 @@ end
 
 -- ============================== state / log ==============================
 local S = { myId = nil, phase = nil, players = {}, byId = {}, names = {}, me = nil, fronts = nil, gold = 0, diplo = nil,
-    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, siegeSkip = {}, hist = {}, askN = {}, udPeak = {}, udEmbargo = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
+    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, siege = nil, siegeSkip = {}, hist = {}, askN = {}, myNukes = {}, udPeak = {}, udEmbargo = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
     board = nil, lobbyMoney = nil, rewardClaimed = nil, scan = nil, readyAt = {}, leaveAt = nil }
 local reqAt, counterAt = {}, {}
 local stats = { sent = 0, attacks = 0, builds = 0, nukes = 0, strikes = 0, allies = 0, joins = 0, denied = 0 }
@@ -1364,7 +1365,11 @@ local function doEconomy(r)
         local cands = table.clone(theirs)
         for _, t in (r.land[who] or {}) do cands[#cands + 1] = t end
         local best, bestScore, bestLv, bestLand = nil, 0, 0, 0
+        local now_ = os.clock()
         for _, c in cands do
+            local covered = false
+            for _, b in S.myNukes do if now_ - b.t < 25 and dist(b.tile, c) < b.r + nk.r * 0.5 then covered = true break end end
+            if covered then continue end
             local land = theirLand(c, 0, nk.r) + (nk.ring and theirLand(c, nk.r, reach) * nk.ring or 0)
             local score, lv = land / CFG.nukeLandPer, 0
             for _, t in theirs do
@@ -1396,12 +1401,13 @@ local function doEconomy(r)
             local bestK, bestEff
             for _, k in { "Atom", "Mega", "Scattershot" } do
                 local n = NUKE[k]
-                if (not n.pass or hasPass(n.pass)) and (free or gold - CFG.reserve >= math.max(n.cost, minGold)) then
+                local freeHere = free and k == "Atom" -- free nukes are atom bombs
+                if (not n.pass or hasPass(n.pass)) and (freeHere or gold - CFG.reserve >= math.max(n.cost, minGold)) then
                     local t, what, score, land = nukeSpot(who, n, allowLand, minLv)
                     if t then
-                        local eff = free and score or score / (n.cost / 1e6)
+                        local eff = score / (freeHere and 0.05 or n.cost / 1e6) -- a free atom is nearly costless
                         if why == "deny win" then -- knocking them under the bar: THEIR land actually wiped per gold (water wasted)
-                            eff = (land or 0) / (free and 1 or n.cost / 1e6)
+                            eff = (land or 0) / (freeHere and 0.05 or n.cost / 1e6)
                         end
                         if not bestEff or eff > bestEff * CFG.nukeUpsize then bestK, bestEff, pre = k, eff, { t, what } end
                     end
@@ -1410,6 +1416,7 @@ local function doEconomy(r)
             kindName = bestK or "Atom"
         end
         local nk = NUKE[kindName]
+        free = free and kindName == "Atom"
         if not nk or (nk.pass and not hasPass(nk.pass)) then return false end
         if not free and gold - CFG.reserve < math.max(nk.cost, minGold) then
             status.weapons = ("%s: saving for %s nuke (%s / %s)"):format(why, kindName, fmt(gold), fmt(nk.cost)); return false
@@ -1419,6 +1426,8 @@ local function doEconomy(r)
         if not target then status.weapons = why .. ": nuke held (no safe spot: their cities unknown, near me, or under an anti-nuke)"; return false end
         if send({ t = "nuke", tile = target, kind = nk.kind }) then
             stats.nukes += 1
+            table.insert(S.myNukes, { tile = target, t = os.clock(), r = nk.reach or nk.r })
+            while #S.myNukes > 20 do table.remove(S.myNukes, 1) end
             status.weapons = ("%s: %s nuke -> %s (%s)"):format(why, kindName, S.names[who] or ("#" .. who), what); log(status.weapons)
             if not free then gold -= nk.cost end
             return true
@@ -1447,6 +1456,24 @@ local function doEconomy(r)
             end
         end
     end
+    -- FREE NUKE DOCTRINE (Nuclear War mode: 10 free atoms each). Early players are small: one atom (~2.8K tiles, troops
+    -- die per tile hit) can gut a rival. Spend down to freeKeep on the biggest land hit per bomb; humans before bots.
+    if CFG.freeDoctrine and (f.freeNukes or 0) > CFG.freeKeep and now - (S.freeAt or -99) >= CFG.freeEvery and not surviving() then
+        local al = allies()
+        local cands = {}
+        for _, v in S.players do
+            if v.alive and v.id ~= S.myId and not friendly(v.id, al) and not (v.isBot and CFG.nukeSkipBots) then cands[#cands + 1] = v end
+        end
+        table.sort(cands, function(a, b) if a.isBot ~= b.isBot then return not a.isBot end return a.tiles > b.tiles end)
+        local best, bestLand
+        for i = 1, math.min(#cands, 8) do
+            local v = cands[i]
+            local t, what, score, land = nukeSpot(v.id, NUKE.Atom, true, 0)
+            if t and land and land >= CFG.freeMinLand and (not bestLand or land > bestLand) then best, bestLand = v.id, land end
+        end
+        S.freeAt = now
+        if best then fireNuke("Atom", best, 0, "free nuke", true) end
+    end
     if S.siegeNukeWanted then
         local who = S.siegeNukeWanted
         S.siegeNukeWanted = nil
@@ -1461,7 +1488,7 @@ local function doEconomy(r)
             local worth = not B or not (B.posture == "SURVIVE" or B.deny) or id == B.main
             if t > now and v and v.alive and worth and not friendly(id, allies()) and t > latest then who, latest = id, t end
         end
-        if who and fireNuke(CFG.revengeNukeKind, who, 0, "revenge", false, CFG.revengeMinLv) and CFG.revengeOnce then S.nukeGrudge[who] = nil end
+        if who and fireNuke(CFG.revengeNukeKind, who, 0, "revenge", (f.freeNukes or 0) > 0, (f.freeNukes or 0) > 0 and 0 or CFG.revengeMinLv) and CFG.revengeOnce then S.nukeGrudge[who] = nil end
     end
     local freeNuke = CFG.useFree and (f.freeNukes or 0) > 0 -- product nukes (starter packs / railgun bundle) cost no gold
     local ud = CFG.udNuke and not surviving() and S.underdog
@@ -1928,7 +1955,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v3.4 · brain · expand · attack · defend · build · weapons",
+    end)(), Footer = "Pixel Conquest · v3.5 · brain · expand · attack · defend · build · weapons",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -2123,6 +2150,10 @@ K(WP, "PC_NukeMin", "Min gold (K)", "nukeMinGold", 10000)
 Nm(WP, "PC_NukeCd", "Seconds between nukes", "nukeCooldown", 5, 300)
 T(WP, "PC_NukeStronger", "Also unprovoked stronger", "nukeStronger", "Off = don't provoke them")
 T(WP, "PC_NukeBots", "Skip bots", "nukeSkipBots")
+T(WP, "PC_FreeDoctrine", "Spend free atoms (Nuclear War)", "freeDoctrine", "Biggest land hit per bomb, humans first")
+Nm(WP, "PC_FreeKeep", "Keep free atoms in reserve", "freeKeep", 0, 10)
+Nm(WP, "PC_FreeEvery", "Seconds between free atoms", "freeEvery", 2, 60)
+Nm(WP, "PC_FreeMinLand", "Min their tiles in blast", "freeMinLand", 100, 3000)
 Nm(WP, "PC_NukeUpsize", "Bigger nuke must be x better", "nukeUpsize", 1, 2, 2, "Best owned: value destroyed per gold; a pricier type must beat a cheaper one by this")
 T(WP, "PC_AvoidSam", "Skip targets under anti-nuke", "avoidSam")
 local WR = Tabs.Weapons:AddLeftGroupbox("Revenge nukes", "skull")
@@ -2254,5 +2285,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v3.4 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v3.4 ready — RightCtrl toggles the UI.", 5)
+log("loaded v3.5 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v3.5 ready — RightCtrl toggles the UI.", 5)
