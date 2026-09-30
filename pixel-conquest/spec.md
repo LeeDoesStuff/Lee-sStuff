@@ -360,3 +360,19 @@ Verified with the spy.
   - Free nuke: most absolute value.
   - "deny win": land wiped per gold (r² + ring). Mega 1440 > Atom 1200 > Scattershot 672.
   - Safety checks (my buildings/border, allies, anti-nukes) use the full reach (64 for Scattershot).
+- **v3.4 (2026-09-30): water-aware nukes + stalemate breaker (1v1 loss vs local_afghani)**
+  - Water:
+    - `Nukes.detonate` conquers only OWNED tiles in the blast (water does nothing), and Scattershot warheads accept water tiles (Nukes ~1567).
+    - nukeSpot now estimates THEIR tiles inside the blast (48 samples of the disc, plus the ring × 0.4) → land/nukeLandPer 100 = points (city Lv = 10).
+    - Aim candidates include 30 sampled tiles of their land (r.land), not just their buildings.
+    - Deny mode = their land actually wiped per gold.
+  - The 1v1 (match e511fcd2), from the CSV:
+    - At the 1v1 start (00:43:55) I had 27.4K tiles vs 19.4K.
+    - My land stayed at 27,066 tiles for 4 min (00:44:26-00:48:06) while my army grew 208K → 550K (HUD units) vs their 442K. Nothing fired:
+      - auto attack needs the attack (33% = 181K) ≥ their whole army;
+      - DOMINATE needs 2× land (I had 1.4×);
+      - underdog is for the loser.
+    - They struck first (nuke + attack at 00:48:12), I lost 125K in 30 s, and they won at 00:50:31.
+  - Stalemate breaker:
+    - Trigger: my tiles within ±1% over 55 s + no open-land contact + main enemy on my border + not SURVIVE.
+    - Every 6 s, send (troops - max(cap × breakBand 0.55, their army × keepVs 0.7)) at them, with no edge rule. Troops above the growth band grow nothing; attrition is the only use.

@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v3.3  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v3.4  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -45,6 +45,7 @@ local CFG = {
     seaPath = true, seaEvery = 8,
     lootWeight = 0.05, lootRadius = 50, cheapFrac = 0.08, askAlly = false, leech = true, leechAny = false, leechMin = 0.3, leechEdge = 0.5,
     boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20, riverDist = 15, riverEdge = 0.6, riverEvery = 4,
+    breakStalemate = true, breakBand = 0.55, keepVs = 0.7,
     brain = true, brainSurvive = 0.25, brainNbrShare = 0.3, pushEdge = 0.5, surviveIn = 1.2, surviveOut = 0.8, postureDwell = 20,
     denyMargin = 0.15, denyReserve = true, holdable = 1.5, record = true,
     underdog = true, udRatio = 1.5, udDanger = 0.15, udDiplo = true, udStrike = true, udOpening = 0.6, udStrikeRatio = 0.5, udEdge = 1.0,
@@ -59,7 +60,7 @@ local CFG = {
     hitTraitors = true, finish = true, holdWhenHit = true, nukeCooldown = 45, nukeStronger = false,
     revengeNuke = true, revengeNukeKind = "Best owned", revengeMinLv = 1, nukeGrudgeSecs = 300, revengeOnce = true, revengeNukeStrikes = false,
     useFree = true,
-    nukeUpsize = 1.15, -- a bigger nuke must beat the smaller one by 15% value-per-gold
+    nukeUpsize = 1.15, nukeLandPer = 100, -- 100 of their tiles in the blast = 1 point (a city level = 10) -- a bigger nuke must beat the smaller one by 15% value-per-gold
     samAuto = true, samMode = "Prepare", samPrepMin = 6, samPrepCityLv = 20, samMaxLv = 5, samMinCityLv = 5, samMinValue = 20, samUpgrade = true, samPriority = true,
     -- build
     build = true, reserve = 0, saveForTop = false,
@@ -310,7 +311,7 @@ local function scanMap()
     local own, ter, me = m.owner, m.terrain, S.myId
     S.map = m -- missile listener checks whether a launch lands on my land
     pcall(syncStructs)
-    local r = { seeds = {}, ecoast = {}, ecoastN = {}, shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
+    local r = { land = {}, seeds = {}, ecoast = {}, ecoastN = {}, shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
     for i = 0, N - 1 do
         local o = readu8(own, i)
         if o == me then
@@ -359,11 +360,17 @@ local function scanMap()
             local l = r.ecoast[o]
             if not l then l = {}; r.ecoast[o] = l end
             if #l < 40 then l[#l + 1] = i elseif math.random(n) <= 40 then l[math.random(40)] = i end
-            if i % 61 == 0 then local c = (r.anyN[o] or 0) + 1; r.anyN[o] = c; if math.random(c) == 1 then r.any[o] = i end end
+            if i % 61 == 0 then
+                local c = (r.anyN[o] or 0) + 1; r.anyN[o] = c; if math.random(c) == 1 then r.any[o] = i end
+                local l = r.land[o]; if not l then l = {}; r.land[o] = l end
+                if #l < 30 then l[#l + 1] = i elseif math.random(c) <= 30 then l[math.random(30)] = i end
+            end
         elseif o ~= 0 and i % 61 == 0 then
             local c = (r.anyN[o] or 0) + 1
             r.anyN[o] = c
             if math.random(c) == 1 then r.any[o] = i end
+            local l = r.land[o]; if not l then l = {}; r.land[o] = l end
+            if #l < 30 then l[#l + 1] = i elseif math.random(c) <= 30 then l[math.random(30)] = i end
         end
         if i % 25000 == 0 then task.wait() end
     end
@@ -660,6 +667,14 @@ local function doBrain(r)
     if prev and prev.main and B.prevT and main ~= prev.main and mainT < B.prevT * 1.3 then main = prev.main end
     B.main = main
     B.deny = main and S.byId[main] and S.byId[main].tiles / pl >= bar - CFG.denyMargin or false
+    local h = S.hist[S.myId]
+    local flat = false
+    if h and #h >= 2 then
+        local old
+        for i = #h, 1, -1 do if now - h[i].t >= 55 then old = h[i] break end end
+        flat = old ~= nil and math.abs(me.tiles - old.tiles) <= old.tiles * 0.01
+    end
+    B.stalemate = flat and not r.sample[0] and main ~= nil and r.contacts[main] ~= nil
 
     -- posture from PRESSURE (what can hit me vs what I have), with hysteresis + minimum dwell
     local pressure = (inc + nbrT * 0.5) / math.max(me.troops, 1)
@@ -669,8 +684,8 @@ local function doBrain(r)
     else want = "CONTEND" end
     if want ~= B.posture and now - (S.postureAt or -99) >= CFG.postureDwell then B.posture = want; S.postureAt = now end
     if B.posture == "DOMINATE" then B.rival = second and second.id end
-    status.brain = ("%s · pressure %.1fx · main enemy %s%s · home needs %s, spare %s · incoming %s"):format(B.posture, pressure,
-        main and (S.names[main] or "?") or "-", B.deny and " (NEAR WIN: deny)" or "", fmtT(B.need), fmtT(B.spare), fmtT(inc))
+    status.brain = ("%s · pressure %.1fx · main enemy %s%s%s · home needs %s, spare %s · incoming %s"):format(B.posture, pressure,
+        main and (S.names[main] or "?") or "-", B.deny and " (NEAR WIN: deny)" or "", B.stalemate and " · STALEMATE: breaking" or "", fmtT(B.need), fmtT(B.spare), fmtT(inc))
     if B.posture ~= S.lastPosture then log("brain: posture " .. tostring(S.lastPosture) .. " -> " .. B.posture .. (" (pressure %.1fx)"):format(pressure)); S.lastPosture = B.posture end
     if main ~= S.lastMain then log("brain: main enemy -> " .. (main and (S.names[main] or "?") or "none")); S.lastMain = main end
 end
@@ -1111,6 +1126,23 @@ local function doFronts(r)
         end
     end
 
+    -- STALEMATE BREAKER: land flat, no open land, main enemy on my border. Troops above the growth band grow nothing,
+    -- so grind the main enemy with the excess (no edge rule: attrition), keeping home >= keepVs x their army.
+    local B = CFG.brain and S.brain
+    if CFG.breakStalemate and B and B.stalemate and B.posture ~= "SURVIVE" and now - (S.breakAt or -99) >= 6 then
+        local v = S.byId[B.main]
+        if v and r.sample[B.main] then
+            local keepT = math.max(cap * CFG.breakBand, v.troops * CFG.keepVs)
+            local sendT = me.troops - keepT
+            if sendT >= me.troops * 0.05 and sendT >= (Config.MIN_ATTACK_TROOPS or 250) then
+                S.breakAt = now
+                strike(B.main, ("break stalemate (%s idle over the growth band)"):format(fmtT(sendT)), math.clamp(sendT / me.troops, Config.MIN_ATTACK_RATIO or 0.05, 1))
+            else
+                status.combat = ("stalemate: holding (need %s home vs their %s)"):format(fmtT(keepT), fmtT(v.troops))
+            end
+        end
+    end
+
     if not CFG.attack then if not status.combat:find("^revenge") then status.combat = "auto attack off" end return end
     if CFG.holdWhenHit then
         for _, v in f.inc or {} do
@@ -1312,9 +1344,29 @@ local function doEconomy(r)
             if CFG.avoidSam then for _, t in sams do if dist(t, c) < 80 then return false end end end
             return true
         end
-        local best, bestScore, bestLv = nil, 0, 0
-        for _, c in theirs do
-            local score, lv = 0, 0
+        -- blasts over water do nothing (Nukes.detonate conquers owned tiles only; Scattershot warheads may land at sea):
+        -- estimate THEIR tiles inside the blast by sampling rings of the disc (and the warhead band)
+        local own = S.map and S.map.owner
+        local function theirLand(c, r0, r1)
+            if not own then return 0 end
+            local cx, cy, hit, n = c % W, c // W, 0, 0
+            for k = 1, 4 do
+                local rr = r0 + (r1 - r0) * (k - 0.5) / 4
+                for a = 0, 11 do
+                    local x = math.floor(cx + rr * math.cos(a * math.pi / 6 + k) + 0.5)
+                    local y = math.floor(cy + rr * math.sin(a * math.pi / 6 + k) + 0.5)
+                    n += 1
+                    if x >= 0 and x < W and y >= 0 and y < H and readu8(own, y * W + x) == who then hit += 1 end
+                end
+            end
+            return hit / n * math.pi * (r1 * r1 - r0 * r0)
+        end
+        local cands = table.clone(theirs)
+        for _, t in (r.land[who] or {}) do cands[#cands + 1] = t end
+        local best, bestScore, bestLv, bestLand = nil, 0, 0, 0
+        for _, c in cands do
+            local land = theirLand(c, 0, nk.r) + (nk.ring and theirLand(c, nk.r, reach) * nk.ring or 0)
+            local score, lv = land / CFG.nukeLandPer, 0
             for _, t in theirs do
                 local d = dist(t, c)
                 local w = d < nk.r and 1 or (nk.ring and d <= reach and nk.ring or 0) -- Scattershot ring counts at its odds
@@ -1326,12 +1378,12 @@ local function doEconomy(r)
                     else score += 2 * w end
                 end
             end
-            if score > bestScore and lv >= (minLv or 0) and safe(c) then best, bestScore, bestLv = c, score, lv end
+            if score > bestScore and lv >= (minLv or 0) and safe(c) then best, bestScore, bestLv, bestLand = c, score, lv, land end
         end
-        if best then return best, ("%.0f city levels"):format(bestLv), bestScore end
+        if best then return best, ("%.0f city levels, ~%d of their tiles"):format(bestLv, bestLand), bestScore, bestLand end
         if allowLand then
             local t = r.any[who] or r.sample[who]
-            if t and safe(t) then return t, "their land (no known cities)", 1 end
+            if t and safe(t) then local land = theirLand(t, 0, nk.r); return t, ("their land, ~%d tiles"):format(land), land / CFG.nukeLandPer, land end
         end
     end
 
@@ -1345,11 +1397,11 @@ local function doEconomy(r)
             for _, k in { "Atom", "Mega", "Scattershot" } do
                 local n = NUKE[k]
                 if (not n.pass or hasPass(n.pass)) and (free or gold - CFG.reserve >= math.max(n.cost, minGold)) then
-                    local t, what, score = nukeSpot(who, n, allowLand, minLv)
+                    local t, what, score, land = nukeSpot(who, n, allowLand, minLv)
                     if t then
                         local eff = free and score or score / (n.cost / 1e6)
-                        if why == "deny win" then -- knocking them under the bar: land wiped per gold (Mega 3.6K r^2 / 2.5M wins)
-                            eff = (n.r ^ 2 + (n.ring and 5 * 18 ^ 2 or 0)) / (free and 1 or n.cost / 1e6)
+                        if why == "deny win" then -- knocking them under the bar: THEIR land actually wiped per gold (water wasted)
+                            eff = (land or 0) / (free and 1 or n.cost / 1e6)
                         end
                         if not bestEff or eff > bestEff * CFG.nukeUpsize then bestK, bestEff, pre = k, eff, { t, what } end
                     end
@@ -1876,7 +1928,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v3.3 · brain · expand · attack · defend · build · weapons",
+    end)(), Footer = "Pixel Conquest · v3.4 · brain · expand · attack · defend · build · weapons",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1952,6 +2004,9 @@ BP:AddLabel("SURVIVE: defend and grab cheap land only. CONTEND: normal. DOMINATE
 local BD_ = Tabs.Brain:AddLeftGroupbox("Deny the winner", "octagon-x")
 P(BD_, "PC_DenyMargin", "Deny within % of win bar", "denyMargin", 2, 40)
 T(BD_, "PC_DenyReserve", "Keep gold for a deny nuke", "denyReserve", "Nukes turn their land open again: knock them under the bar")
+T(BD_, "PC_Break", "Break stalemates", "breakStalemate", "Land flat 60 s, map full: grind the main enemy with troops above the growth band")
+P(BD_, "PC_BreakBand", "Keep home % of cap", "breakBand", 20, 90)
+Nm(BD_, "PC_KeepVs", "...and x their army", "keepVs", 0, 2, 1)
 T(BD_, "PC_Record", "Record match (CSV / 30 s)", "record", "PixelConquest/match_<server>.csv, for reviews")
 local UD = Tabs.Brain:AddRightGroupbox("Underdog", "trending-up")
 T(UD, "PC_Underdog", "Underdog mode", "underdog", "When the main enemy has x your land")
@@ -2199,5 +2254,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v3.3 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v3.3 ready — RightCtrl toggles the UI.", 5)
+log("loaded v3.4 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v3.4 ready — RightCtrl toggles the UI.", 5)
