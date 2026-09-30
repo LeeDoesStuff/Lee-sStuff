@@ -245,3 +245,8 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - The prize table is on Utils.Auctions.Screen.Gui.Scroll (direct Template rows): junkyard car 40%, 65k 30.5%, 70k 15%, 75k 8%, 150k 4%, 200k 2%, Chule El Caminho SS 454 0.44%, Four JF / Missah Silva S15 / Four Mustank Hoonicorn 0.02% each. The Scroll.List rows are the junkyard spawn list, which the "junkyard car" prize presumably rolls from.
   - Cash EV is about 46.3k per 75k open, plus the 40% junk car: roughly a 20k+ loss per open. The in-game sign says auctions are for rare cars, not profit.
   - Events.Medal fires "RareAuction" for rare rolls; Events.Auctions is a BindableFunction; Status.AuctionsOpen counts the player's opens.
+- 2026-09-30 auction opener (Junkyard tab > Auctions, AUC in fiu_main):
+  - MoneyBuy prompt: MaxActivationDistance 10, HoldDuration 1. fireproximityprompt from 2 studs above its attachment buys with NO Confirmation invoke, so the pre-checks are the only guard: prompt ActionText must parse to 75000, the price must fit the remaining run budget, and money minus price must stay at or above max(reserve, aucFloor). These are checked before every open.
+  - Cash prizes are credited instantly (MoneyPile in Cache is cosmetic). Test open 2026-09-30: Garage5 gave +70K, net -5K, AuctionsOpen 10 -> 11.
+  - Open flags reset: 12 of 12 were free again later.
+  - Still unseen: how the 40% junk-car prize arrives. The opener logs new Garage entries and the Cache contents to catch it.

@@ -160,7 +160,7 @@ local CFG = {
     sellCooldown = 0, -- seconds; 0 = learn it from the server's refusal
     bringCar = false, walkSpeed = 16, speedOn = false, antiAfk = true,
     cleanAfter = false, paintAfter = false, paintRandom = false, paintMaterial = "Normal", paintColor = Color3.fromRGB(30, 90, 220),
-    homeAfterTp = false, autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
+    homeAfterTp = false, aucCount = 1, aucBudget = 75000, aucFloor = 300000, aucStopRare = true, autoLock = false, autoLockTier = "A", autoLockModels = {}, autoLockPctOn = false, autoLockPct = 0.5,
     driveSpeed = 85, driveExtra = 2, driveNoLimit = false, farmYield = false, driveRoute = "Highway", swapOld = "Store in inventory",
     playerEsp = false, playerCarTitles = true, playerOutline = false, playerMaxDist = 2000, playerColor = Color3.fromRGB(255, 255, 255),
 }
@@ -1928,6 +1928,142 @@ do
             task.wait(0.5)
         end
     end)
+end
+
+-- ============================== auctions ==============================
+-- 12 garages at Utils.Auctions. Buying one (the "75,000€" MoneyBuy prompt; the RobuxBuy prompt is never touched)
+-- rolls a prize on the server, so nothing predicts it. Not profitable (~€20K average loss per open, the game's own
+-- sign says so): every open is capped by a per-run count, a per-run budget and a money floor, all checked before
+-- EACH open, and the prompt's price must still read 75,000€.
+do
+local AUC = { price = 75000, running = false, status = "idle", runLog = {} }
+STATE.auction = STATE.auction or { opened = 0, spent = 0, won = 0, cars = {} }
+local RARE = { ["Chule El Caminho SS 454"] = true, ["Four JF"] = true, ["Missah Silva S15"] = true, ["Four Mustank Hoonicorn"] = true }
+local function aucFloor() return math.max(CFG.reserve or 0, CFG.aucFloor or 0) end
+function AUC.free()
+    local A = workspace:FindFirstChild("Utils") and workspace.Utils:FindFirstChild("Auctions")
+    if not A then return {} end
+    pcall(function() LP:RequestStreamAroundAsync(A:GetPivot().Position, 5) end)
+    local list = {}
+    for _, g in ipairs(A:FindFirstChild("Garages") and A.Garages:GetChildren() or {}) do
+        local pp = g:FindFirstChild("MoneyBuy", true)
+        if pp and pp:IsA("ProximityPrompt") and not g:GetAttribute("Open") and g:FindFirstChild("Cache") then
+            list[#list + 1] = { g = g, pp = pp }
+        end
+    end
+    return list
+end
+-- one open; returns a result table or nil, reason (nothing spent)
+function AUC.openOne(budgetLeft)
+    local free = AUC.free()
+    if #free == 0 then return nil, "every auction garage is taken right now" end
+    local pick = free[1]
+    local shown = tonumber((pick.pp.ActionText:gsub("[^%d]", "")))
+    if shown ~= AUC.price then return nil, "price reads " .. pick.pp.ActionText .. ", expected 75,000€" end
+    if shown > budgetLeft then return nil, "run budget used up" end
+    if myMoney() - shown < aucFloor() then return nil, ("opening would drop you under %s"):format(money(aucFloor())) end
+    local m0, before = myMoney(), {}
+    for _, e in ipairs(entries()) do before[e] = true end
+    local asked
+    confirmFn = function(text) -- only this garage's price, and only if the floor still holds
+        asked = text
+        local p = tonumber((tostring(text):match("([%d,]+)%s*€") or ""):gsub(",", ""), 10)
+        return p ~= nil and p <= AUC.price and myMoney() - p >= aucFloor()
+    end
+    local t0 = os.clock()
+    tpTo(CFrame.new(pick.pp.Parent.WorldPosition + Vector3.new(0, 2, 0)))
+    task.wait(0.8)
+    fireproximityprompt(pick.pp)
+    repeat task.wait(0.2) until pick.g:GetAttribute("Open") or os.clock() - t0 > 10
+    confirmFn = nil
+    task.wait(2.5) -- the prize lands after the gate opens
+    local cache = {}
+    for _, c in ipairs(pick.g.Cache:GetChildren()) do cache[#cache + 1] = c.Name end
+    local cars = {}
+    for _, e in ipairs(entries()) do if not before[e] then cars[#cars + 1] = entryModel(e) end end
+    return {
+        garage = pick.g.Name, opened = pick.g:GetAttribute("Open") == true, asked = asked,
+        delta = myMoney() - m0, cache = cache, cars = cars, notify = lastNotify.t >= t0 and lastNotify.text or nil,
+    }
+end
+function AUC.start()
+    if AUC.running then return end
+    AUC.running = true
+    task.spawn(function()
+        local count, budget = math.max(0, math.floor(CFG.aucCount or 1)), math.max(0, CFG.aucBudget or AUC.price)
+        local spent, n = 0, 0
+        AUC.runLog = {}
+        while running and AUC.running and n < count do
+            if STAFF.gated() then AUC.status = "blocked: " .. STAFF.gateMsg break end
+            if busy or manualPending then
+                AUC.status = "waiting for " .. tostring(busy and busyWhat or "a button")
+                local t = os.clock()
+                repeat task.wait(0.5) until not (busy or manualPending) or os.clock() - t > 120 or not AUC.running
+                if busy or manualPending or not AUC.running then AUC.status = "stopped: still busy" break end
+            end
+            busy, busyWhat = true, "opening an auction"
+            AUC.status = ("opening %d of %d..."):format(n + 1, count)
+            local okR, r, why = pcall(AUC.openOne, budget - spent)
+            busy = false
+            if not okR then AUC.status = "error: " .. tostring(r); log("auction: " .. tostring(r)) break end
+            if not r then AUC.status = "stopped: " .. tostring(why) break end
+            if not r.opened then
+                AUC.status = "the garage didn't open (nothing bought?): " .. tostring(r.notify or r.asked or "no reply")
+                log("auction: " .. AUC.status)
+                break
+            end
+            n += 1; spent += AUC.price
+            local prize = r.delta + AUC.price -- money back from this open (0 if the prize was a car)
+            local A = STATE.auction
+            A.opened += 1; A.spent += AUC.price; A.won += math.max(0, prize)
+            for _, c in ipairs(r.cars) do A.cars[#A.cars + 1] = c end
+            saveState()
+            local line = ("%s: %s%s%s"):format(r.garage, prize > 0 and ("+" .. money(prize)) or "no cash",
+                #r.cars > 0 and (" · car: " .. table.concat(r.cars, ", ")) or "", #r.cache > 0 and (" · [" .. table.concat(r.cache, ",") .. "]") or "")
+            AUC.runLog[#AUC.runLog + 1] = line
+            log("auction " .. line)
+            lifeLog("auction " .. line .. " | " .. tostring(r.asked) .. " | " .. tostring(r.notify))
+            local rare = false
+            for _, c in ipairs(r.cars) do if RARE[c] then rare = true end end
+            if rare then notify("RARE auction car: " .. table.concat(r.cars, ", ")) end
+            if rare and CFG.aucStopRare then AUC.status = "stopped: rare car won!" break end
+            AUC.status = ("done %d of %d · spent %s of %s"):format(n, count, money(spent), money(budget))
+        end
+        AUC.running = false
+        if CFG.homeAfterTp and running then goHome(true) end
+    end)
+end
+getgenv().FIU_MAIN.auction = AUC -- for scripted tests
+
+local AucBox = Tabs.Junk:AddLeftGroupbox("Auctions", "gavel")
+AucBox:AddLabel("Each open costs 75,000€ and the prize is rolled when you buy, so it can't be predicted. Odds (the game's own list): "
+    .. "junk car 40% · €65K 30.5% · €70K 15% · €75K 8% · €150K 4% · €200K 2% · rare car 0.5%. Average return is about €46K cash "
+    .. "+ a junk car per €75K: a loss. Only for hunting the rare cars.", true)
+AucBox:AddInput("FIU_AucCount", { Text = "Opens per run", Default = tostring(CFG.aucCount or 1), Numeric = true, Finished = true,
+    Callback = function(v) CFG.aucCount = math.max(0, math.floor(tonumber(v) or 1)) end })
+AucBox:AddInput("FIU_AucBudget", { Text = "Budget per run (€)", Default = tostring(CFG.aucBudget or 75000), Numeric = true, Finished = true,
+    Tooltip = "The run stops before any open that would take its spending past this", Callback = function(v) CFG.aucBudget = math.max(0, tonumber(v) or 0) end })
+AucBox:AddInput("FIU_AucFloor", { Text = "Never go below (€)", Default = tostring(CFG.aucFloor or 300000), Numeric = true, Finished = true,
+    Tooltip = "No open happens if it would leave you under this (or the Settings reserve, whichever is higher)",
+    Callback = function(v) CFG.aucFloor = math.max(0, tonumber(v) or 0) end })
+AucBox:AddToggle("FIU_AucStopRare", { Text = "Stop when a rare car hits", Default = CFG.aucStopRare, Callback = set("aucStopRare") })
+AucBox:AddButton({ Text = "Open auctions", DoubleClick = true, Tooltip = "Double-click. Uses the 75,000€ prompt only, never Robux.", Func = function()
+    if STAFF.gated() then notify("Blocked: " .. STAFF.gateMsg) return end
+    AUC.start()
+end })
+AucBox:AddButton({ Text = "Stop", Func = function() AUC.running = false; AUC.status = "stopping after this open" end })
+local aucLabel = AucBox:AddLabel("-", true)
+task.spawn(function()
+    while running do
+        local A = STATE.auction
+        pcall(function()
+            aucLabel:SetText(("%s\n%s\nAll time: %d opened · spent %s · cash back %s · net %s%s"):format(AUC.status,
+                #AUC.runLog > 0 and table.concat(AUC.runLog, "\n") or "no opens this run", A.opened, money(A.spent), money(A.won),
+                money(A.won - A.spent), #A.cars > 0 and ("\nCars won: " .. table.concat(A.cars, ", ")) or ""))
+        end)
+        task.wait(1)
+    end
+end)
 end
 
 -- Auto
