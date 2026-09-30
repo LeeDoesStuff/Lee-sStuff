@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v3.0  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v3.1  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -51,7 +51,7 @@ local CFG = {
     -- combat
     attack = false, attackRatio = 0.33, attackMin = 0.55, edge = 1.2, maxFronts = 3, hitBots = true, hitPlayers = true,
     counterCancel = true, counterPunish = true, keepHome = 0.35, keepCap = 0.1,
-    lastStand = true, lastStandNuke = "Best owned", lastStandAlly = true,
+    lastStand = true, lastStandNuke = "Best owned", lastStandAlly = false,
     revenge = true, revengeRatio = 0.3, revengeMin = 0.5, revengeEdge = 0.6, revengeStronger = 1.3, grudgeSecs = 120,
     hitTraitors = true, finish = true, holdWhenHit = true, nukeCooldown = 45, nukeStronger = false,
     revengeNuke = true, revengeNukeKind = "Best owned", revengeMinLv = 1, nukeGrudgeSecs = 300, revengeOnce = true, revengeNukeStrikes = false,
@@ -66,7 +66,7 @@ local CFG = {
     nuke = false, nukeKind = "Best owned", nukeMinGold = 0, nukeSkipBots = true, avoidSam = true,
     airstrike = true, railgun = true, reinforce = true, reinforceBelow = 0.5,
     -- diplomacy
-    accept = true, renew = true, request = false, requestRatio = 1.5, blockUnally = true, blacklist = "",
+    accept = false, renew = true, request = false, requestRatio = 1.5, blockUnally = true, blacklist = "",
     -- lobby / loop
     queue = false, queueSizes = {}, skipSpecial = false, leave = true, leaveDelay = 4, claimReward = true,
     buyPasses = false, passReserve = 0, reinject = true,
@@ -182,10 +182,11 @@ end
 local blockedAt = {}
 local function send(msg, key)
     if FORBID[msg.t] then return false end
-    if msg.t == "ally" and not CFG.askAlly then
+    if msg.t == "ally" then -- the same intent asks OR accepts: both need the player's explicit switch
         local incoming = false
         for _, v in (S.diplo and S.diplo.inreq or {}) do if tonumber(v) == msg.id then incoming = true end end
-        if not incoming then return false end -- only accepting, never requesting
+        if incoming and not CFG.accept then return false end
+        if not incoming and not CFG.askAlly then return false end
     end
     if HOSTILE[msg.t] and S.map and type(msg.tile) == "number" and msg.tile >= 0 and msg.tile < N then
         local o = readu8(S.map.owner, msg.tile)
@@ -1778,7 +1779,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v3.0 · brain · expand · attack · defend · build · weapons",
+    end)(), Footer = "Pixel Conquest · v3.1 · brain · expand · attack · defend · build · weapons",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -1814,13 +1815,13 @@ T(OS, "PC_Queue", "Auto queue (lobby)", "queue")
 local OP = Tabs.Overview:AddRightGroupbox("Play style", "sliders-horizontal")
 local PRESETS = {
     Balanced = { PC_Attack = true, PC_AttackMin = 55, PC_Edge = 1.2, PC_KeepHome = 35, PC_CounterPunish = true, PC_Nuke = false, PC_BoatAttack = true, PC_Siege = true,
-        PC_SurviveIn = 1.2, PC_UdStrike = true, PC_Request = false, PC_SamMode = "Prepare" },
+        PC_SurviveIn = 1.2, PC_UdStrike = true, PC_SamMode = "Prepare" },
     Aggressive = { PC_Attack = true, PC_AttackMin = 30, PC_Edge = 1.0, PC_KeepHome = 25, PC_CounterPunish = true, PC_Nuke = true, PC_BoatAttack = true, PC_Siege = true,
-        PC_SurviveIn = 1.6, PC_UdStrike = true, PC_Request = false, PC_SamMode = "Once nukes fly" },
+        PC_SurviveIn = 1.6, PC_UdStrike = true, PC_SamMode = "Once nukes fly" },
     Defensive = { PC_Attack = false, PC_AttackMin = 70, PC_Edge = 1.5, PC_KeepHome = 50, PC_CounterPunish = false, PC_Nuke = false, PC_BoatAttack = false, PC_Siege = false,
-        PC_SurviveIn = 0.9, PC_UdStrike = false, PC_Request = true, PC_SamMode = "Prepare" },
+        PC_SurviveIn = 0.9, PC_UdStrike = false, PC_SamMode = "Prepare" },
     ["Money farm (survive long)"] = { PC_Attack = true, PC_AttackMin = 60, PC_Edge = 1.5, PC_KeepHome = 45, PC_CounterPunish = false, PC_Nuke = false, PC_BoatAttack = true,
-        PC_Siege = false, PC_SurviveIn = 1.0, PC_UdStrike = false, PC_Request = true, PC_SamMode = "Prepare" },
+        PC_Siege = false, PC_SurviveIn = 1.0, PC_UdStrike = false, PC_SamMode = "Prepare" },
 }
 local PRESET_TIPS = {
     Balanced = "Default brain play: grow, hit weak targets, deny winners.",
@@ -2099,5 +2100,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v3.0 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v3.0 ready — RightCtrl toggles the UI.", 5)
+log("loaded v3.1 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v3.1 ready — RightCtrl toggles the UI.", 5)

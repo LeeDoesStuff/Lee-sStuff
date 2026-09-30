@@ -339,3 +339,8 @@ Verified with the spy.
     - Contradictory diplomacy spam. **Fix:** askAlly=false; `send()` drops any "ally" intent whose id isn't in diplo.inreq (accepting still works).
   - `armies` State packet (Net.unpackArmies, 17 B each: a u32, attacker u8 @4, target u8 @5, troops u32 @6, ...) = every running attack on the map, parsed into S.armies.
   - LEECH: sum ally troops attacking each enemy I border. If that is ≥ leechMin 30% of their army, strike them too with edge leechEdge 0.5, within the spare budget, every ≥4 s. leechAny = pile onto anyone's victims.
+- **v3.1 (2026-09-30): diplomacy only on the player's say-so**
+  - The "ally" intent both asks and accepts. `send()` lets it through only if (incoming request AND CFG.accept) or (no incoming AND CFG.askAlly).
+  - Before this, any feature that "asked" a player who had a pending request to me would silently ACCEPT them.
+  - Defaults: accept=false, askAlly=false, request=false, lastStandAlly=false; renew=true and blockUnally=true stay.
+  - Presets no longer touch diplomacy.
