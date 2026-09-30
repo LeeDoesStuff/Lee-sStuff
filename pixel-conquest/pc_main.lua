@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v1.9  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v2.0  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -40,6 +40,7 @@ local CFG = {
     -- expand
     spawn = true, spawnCoast = false,
     expand = true, expandRatio = 0.25, bandLow = 0.40, bandHigh = 0.60, reclaim = true, reclaimMin = 0.15, reclaimRatio = 0.1,
+    boatAttack = true, boatMin = 0.4, boatEdge = 1.1, boatEvery = 20,
     islands = true, islandMin = 0.45, islandMinLocked = 0.15, islandEvery = 15, islandMaxDist = 250, islandOnlyLocked = false,
     -- combat
     attack = false, attackRatio = 0.33, attackMin = 0.55, edge = 1.2, maxFronts = 3, hitBots = true, hitPlayers = true,
@@ -92,7 +93,7 @@ end
 
 -- ============================== state / log ==============================
 local S = { myId = nil, phase = nil, players = {}, byId = {}, names = {}, me = nil, fronts = nil, gold = 0, diplo = nil,
-    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
+    structs = {}, grudge = {}, nukeGrudge = {}, nukedAt = -1e9, nukeSeenAt = -1e9, pendingSam = {}, holes = {}, holeSent = {}, islandTargets = {}, boatBad = {}, money = nil, ended = false, lastState = os.clock(), spawnSent = 0, badTile = {}, lastDenied = "-",
     board = nil, lobbyMoney = nil, rewardClaimed = nil, scan = nil, readyAt = {}, leaveAt = nil }
 local reqAt, counterAt = {}, {}
 local stats = { sent = 0, attacks = 0, builds = 0, nukes = 0, strikes = 0, allies = 0, joins = 0, denied = 0 }
@@ -236,7 +237,7 @@ local function scanMap()
     if not m or not S.myId then return nil end
     local own, ter, me = m.owner, m.terrain, S.myId
     S.map = m -- missile listener checks whether a launch lands on my land
-    local r = { shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
+    local r = { ecoast = {}, ecoastN = {}, shoreN = 0, coast = {}, coastN = 0, hole = {}, holeD = {}, region = {}, regions = {}, mine = 0, contacts = {}, sample = {}, borderMine = {}, interior = {}, shore = {}, any = {}, anyN = {}, sumx = 0, sumy = 0 }
     for i = 0, N - 1 do
         local o = readu8(own, i)
         if o == me then
@@ -278,6 +279,13 @@ local function scanMap()
         elseif o == 0 and i % 5 == 0 and btest(readu8(ter, i), 64) and passable(ter, i) then -- open coast anywhere (island targets)
             r.coastN += 1
             if #r.coast < 400 then r.coast[#r.coast + 1] = i elseif math.random(r.coastN) <= 400 then r.coast[math.random(400)] = i end
+        elseif o ~= 0 and i % 5 == 0 and btest(readu8(ter, i), 64) then -- someone else's coast: boat invasion targets
+            local n = (r.ecoastN[o] or 0) + 1
+            r.ecoastN[o] = n
+            local l = r.ecoast[o]
+            if not l then l = {}; r.ecoast[o] = l end
+            if #l < 40 then l[#l + 1] = i elseif math.random(n) <= 40 then l[math.random(40)] = i end
+            if i % 61 == 0 then local c = (r.anyN[o] or 0) + 1; r.anyN[o] = c; if math.random(c) == 1 then r.any[o] = i end end
         elseif o ~= 0 and i % 61 == 0 then
             local c = (r.anyN[o] or 0) + 1
             r.anyN[o] = c
@@ -551,6 +559,50 @@ local function doFronts(r)
         local d = S.lastDenied
         if d == "notadjacent" then S.islandOff = true; log("islands: server won't boat to open land here, island expand off"); S.islandSent = nil
         elseif d == "toomanytransportboats" or d == "busy" then S.islandAt = now0 + 20; S.islandSent = nil end
+    end
+
+    -- BOAT INVASIONS: attack a neighbour across water. A boat carries troops/5 (ratio ignored) and fights the defender's
+    -- WHOLE army (Sim attack loss), so only take on someone that boat can beat. Shares the 3-boat cap with islands.
+    if CFG.boatAttack and S.map and #r.shore > 0 and fill >= CFG.boatMin and now0 >= (S.boatAt or 0) then
+        local boat = me.troops / 5
+        local al2 = allies()
+        local best, bestScore, bestTile, bestD
+        for o, list in r.ecoast do
+            local v = S.byId[o]
+            local grudge = (S.grudge[o] or 0) > now0
+            if v and v.alive and o ~= S.myId and not r.contacts[o] and not friendly(o, al2) and now0 >= (S.boatBad[o] or 0)
+                and ((v.isBot and CFG.hitBots) or (not v.isBot and CFG.hitPlayers)) and not blacklisted(o)
+                and boat >= v.troops * CFG.boatEdge then
+                -- nearest of their coast tiles to my coast
+                local t, d
+                for _, c in list do
+                    for k = 1, 8 do
+                        local dd = dist(r.shore[math.random(#r.shore)], c)
+                        if dd <= CFG.islandMaxDist and (not d or dd < d) then t, d = c, dd end
+                    end
+                end
+                if t then
+                    -- thin armies spread over lots of land are the cheapest to take; grudges and bots first
+                    local score = v.troops / math.max(v.tiles, 1) * (grudge and 0.3 or 1) * (v.isBot and 0.7 or 1) + d * 0.5
+                    if not bestScore or score < bestScore then best, bestScore, bestTile, bestD = o, score, t, d end
+                end
+            end
+        end
+        S.boatAt = now0 + CFG.boatEvery
+        if best then
+            S.lastTile, S.boatSent, S.boatOwner, S.lastDenied = bestTile, now0, best, "-"
+            if send({ t = "attack", tile = bestTile, ratio = ratio(CFG.attackRatio) }, "boat:" .. best) then
+                stats.attacks += 1
+                status.combat = ("boat invasion -> %s (%s troops, %.0f tiles of sea, boat %s)"):format(S.names[best] or ("#" .. best), fmt(S.byId[best].troops), bestD, fmt(boat))
+                log(status.combat)
+            end
+        end
+    end
+    if S.boatSent and now0 - S.boatSent < 3 then
+        local d = S.lastDenied
+        if d == "nobeach" or d == "nosearoute" or d == "nocoast" or d == "immunity" or d == "allied" or d == "ally" then
+            S.boatBad[S.boatOwner] = now0 + 90; S.boatSent = nil -- that coast can't be reached / attacked: try someone else
+        elseif d == "toomanytransportboats" or d == "busy" then S.boatAt = now0 + 20; S.boatSent = nil end
     end
 
     if CFG.expand and fronted[0] and fill >= CFG.bandHigh and #r.regions > 1 and now0 - (S.spreadAt or -99) > 5 then
@@ -1238,7 +1290,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v1.9 · expand · combat · build · weapons · diplomacy · lobby",
+    end)(), Footer = "Pixel Conquest · v2.0 · expand · combat · build · weapons · diplomacy · lobby",
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
 local Tabs = {
@@ -1295,6 +1347,12 @@ CT:AddToggle("PC_LastStand", { Text = "Last stand when I can't cancel it", Toolt
 CT:AddDropdown("PC_LastNuke", { Text = "Last stand nuke", Values = { "Best owned", "Atom", "Mega", "Scattershot" }, Default = CFG.lastStandNuke, Callback = set("lastStandNuke") })
 CT:AddToggle("PC_LastAlly", { Text = "Last stand: ask the attacker to ally", Default = CFG.lastStandAlly, Callback = set("lastStandAlly") })
 CT:AddLabel("A nuke kills troops in the attacker's running attacks too, and wipes every building in its blast.", true)
+local BT = Tabs.Combat:AddLeftGroupbox("Across water (boat invasions)", "ship")
+BT:AddToggle("PC_BoatAttack", { Text = "Invade neighbours across water", Default = CFG.boatAttack, Callback = set("boatAttack") })
+BT:AddSlider("PC_BoatMin", { Text = "Only above % of cap", Default = CFG.boatMin * 100, Min = 10, Max = 95, Rounding = 0, Callback = pct("boatMin") })
+BT:AddSlider("PC_BoatEdge", { Text = "Boat must be x their army", Default = CFG.boatEdge, Min = 0.3, Max = 3, Rounding = 1, Callback = set("boatEdge") })
+BT:AddSlider("PC_BoatEvery", { Text = "Seconds between invasions", Default = CFG.boatEvery, Min = 5, Max = 120, Rounding = 0, Callback = set("boatEvery") })
+BT:AddLabel("A boat carries 1/5 of your troops and fights their whole army. Thin armies, bots and grudges first. Uses the target filters above; max sea distance is on the Expand tab.", true)
 local RV = Tabs.Combat:AddRightGroupbox("Revenge & priorities", "skull")
 RV:AddToggle("PC_Revenge", { Text = "Revenge: hit back whoever attacks me", Tooltip = "Works even with auto attack off", Default = CFG.revenge, Callback = set("revenge") })
 RV:AddSlider("PC_RevRatio", { Text = "Revenge troops sent %", Default = CFG.revengeRatio * 100, Min = 5, Max = 100, Rounding = 0, Callback = pct("revengeRatio") })
@@ -1474,5 +1532,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v1.9 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v1.9 ready — RightCtrl toggles the UI.", 5)
+log("loaded v2.0 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v2.0 ready — RightCtrl toggles the UI.", 5)

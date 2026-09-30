@@ -223,3 +223,9 @@ Verified with the spy.
     - Before this, the target was the nearest building.
   - Passes tab: owned list, what each one unlocks, a manual "buy with Money" button (lobby only), free items, Money 2x.
   - Private-room payout is server-side and unknown, so HOST/ADVANCED are detected only.
+- **v2.0 (2026-09-29): boat invasions across water**
+  - The scan collects each enemy's coast tiles (every 5th tile, reservoir of 40 per owner).
+  - Targets: owners NOT land-adjacent with a coast within islandMaxDist of my coast, where boat (troops/5) ≥ their army × boatEdge (1.1). A boat fights the whole army.
+  - Score: troops per tile (×0.3 grudge, ×0.7 bot) + sea distance × 0.5. Lowest wins; it lands on their coast tile nearest my coast.
+  - A `nobeach`/`nosearoute`/`nocoast`/`immunity`/`ally` denial right after the send → that owner is skipped 90 s. `toomanytransportboats`/`busy` → wait 20 s. Shares the 3-boat cap with island expand.
+  - Live: 3 invasions in ~45 s (THEmonkey's leftover islands ×2, Canada 292K vs a 992K boat), 0 denials.
