@@ -1,5 +1,5 @@
 --[[
-    Pixel Conquest farm v3.2  (place 138110382920220, OpenFront.io port)
+    Pixel Conquest farm v3.3  (place 138110382920220, OpenFront.io port)
     UI: Obsidian. Config folder: PixelConquest. Log: PixelConquest/log.txt
     Server-authoritative game: every action is ConquestNet.Intent:FireServer({t=...}) exactly as the game's client sends it
     (decompiled ConquestClient / DiplomacyClient / LobbyClient, confirmed with the spy). Spec: pixel-conquest-spec.md
@@ -29,8 +29,10 @@ local readu8, btest = buffer.readu8, bit32.btest
 local MIN_DIST = (Config.STRUCTURE_MIN_DIST or 15) + 1
 
 local KIND = { city = 1, port = 2, defense = 3, sam = 5, artillery = 18, airfield = 19, railgun = 21 }
-local NUKE = { Atom = { kind = 13, cost = 750000, r = 30 }, Mega = { kind = 17, cost = Config.MEGA_NUKE_COST or 2500000, r = 60, pass = "MEGANUKE" },
-    Scattershot = { kind = 20, cost = Config.SCATTERSHOT_COST or 3750000, r = 45, pass = "SCATTERSHOT" } }
+-- r = outer blast radius (Nukes.lua), reach = how far anything can land (safety), ring = Scattershot's random warhead band
+local NUKE = { Atom = { kind = 13, cost = Config.ATOM_BOMB_COST or 750000, r = 30 }, Mega = { kind = 17, cost = Config.MEGA_NUKE_COST or 2500000, r = 60, pass = "MEGANUKE" },
+    Scattershot = { kind = 20, cost = Config.SCATTERSHOT_COST or 3750000, r = 30, reach = (Config.SCATTERSHOT_SPREAD_MAX or 46) + 18,
+        ring = 0.4, pass = "SCATTERSHOT" } } -- 4-6 warheads x ~1K tiles over a ~12.5K-tile ring: ~40% of it gets hit
 local BUILD_PASS = { artillery = "ARTILLERY", airfield = "AIRSTRIKE", railgun = "RAILGUN" }
 local PASS_PRICE = { MEGANUKE = 10000, BARRACKS = 20000, SCATTERSHOT = 20000, ARTILLERY = 25000, AIRSTRIKE = 100000, RAILGUN = 250000 }
 local PASS_ORDER = { "MEGANUKE", "BARRACKS", "SCATTERSHOT", "ARTILLERY", "AIRSTRIKE", "RAILGUN" }
@@ -57,6 +59,7 @@ local CFG = {
     hitTraitors = true, finish = true, holdWhenHit = true, nukeCooldown = 45, nukeStronger = false,
     revengeNuke = true, revengeNukeKind = "Best owned", revengeMinLv = 1, nukeGrudgeSecs = 300, revengeOnce = true, revengeNukeStrikes = false,
     useFree = true,
+    nukeUpsize = 1.15, -- a bigger nuke must beat the smaller one by 15% value-per-gold
     samAuto = true, samMode = "Prepare", samPrepMin = 6, samPrepCityLv = 20, samMaxLv = 5, samMinCityLv = 5, samMinValue = 20, samUpgrade = true, samPriority = true,
     -- build
     build = true, reserve = 0, saveForTop = false,
@@ -1284,6 +1287,7 @@ local function doEconomy(r)
     -- Nukes.lua:1153 removes EVERY structure inside the outer radius, and kills troops per tile hit (their home army and
     -- all their running attacks). Best spot = their structures covering the most city levels (city Lv = 250K of their cap).
     local function nukeSpot(who, nk, allowLand, minLv)
+        local reach = nk.reach or nk.r
         local theirs, mine, sams = {}, {}, {}
         for t, s in S.structs do
             if s.ownerId == who then theirs[#theirs + 1] = t end
@@ -1292,11 +1296,11 @@ local function doEconomy(r)
         end
         local own = S.map and S.map.owner
         local function safe(c)
-            for _, t in mine do if dist(t, c) < nk.r + 2 then return false end end
-            for t, st in S.structs do if isFriend(st.ownerId) and dist(t, c) < nk.r + 2 then return false end end
+            for _, t in mine do if dist(t, c) < reach + 2 then return false end end
+            for t, st in S.structs do if isFriend(st.ownerId) and dist(t, c) < reach + 2 then return false end end
             if own then -- sample the blast disc for allied land
                 local cx, cy = c % W, c // W
-                for _, rr in { nk.r, nk.r * 0.6, nk.r * 0.3 } do
+                for _, rr in { reach, nk.r, nk.r * 0.6, nk.r * 0.3 } do
                     for a = 0, 15 do
                         local x = math.floor(cx + rr * math.cos(a * math.pi / 8) + 0.5)
                         local y = math.floor(cy + rr * math.sin(a * math.pi / 8) + 0.5)
@@ -1304,7 +1308,7 @@ local function doEconomy(r)
                     end
                 end
             end
-            for _, list in r.borderMine do for _, t in list do if dist(t, c) < nk.r + 5 then return false end end end
+            for _, list in r.borderMine do for _, t in list do if dist(t, c) < reach + 5 then return false end end end
             if CFG.avoidSam then for _, t in sams do if dist(t, c) < 80 then return false end end end
             return true
         end
@@ -1312,38 +1316,54 @@ local function doEconomy(r)
         for _, c in theirs do
             local score, lv = 0, 0
             for _, t in theirs do
-                if dist(t, c) < nk.r then
+                local d = dist(t, c)
+                local w = d < nk.r and 1 or (nk.ring and d <= reach and nk.ring or 0) -- Scattershot ring counts at its odds
+                if w > 0 then
                     local s = S.structs[t]
                     local k = s.kind or 1
-                    if k == KIND.city then score += 10 * (s.level or 1); lv += s.level or 1
-                    elseif k == KIND.sam or k == KIND.railgun or k == KIND.airfield then score += 8
-                    else score += 2 end
+                    if k == KIND.city then score += 10 * (s.level or 1) * w; lv += (s.level or 1) * w
+                    elseif k == KIND.sam or k == KIND.railgun or k == KIND.airfield then score += 8 * w
+                    else score += 2 * w end
                 end
             end
             if score > bestScore and lv >= (minLv or 0) and safe(c) then best, bestScore, bestLv = c, score, lv end
         end
-        if best then return best, ("%d city levels"):format(bestLv) end
+        if best then return best, ("%.0f city levels"):format(bestLv), bestScore end
         if allowLand then
             local t = r.any[who] or r.sample[who]
-            if t and safe(t) then return t, "their land (no known cities)" end
+            if t and safe(t) then return t, "their land (no known cities)", 1 end
         end
     end
 
     local function fireNuke(kindName, who, minGold, why, allowLand, minLv)
         local free = (f.freeNukes or 0) > 0
-        if kindName == "Best owned" then -- strongest nuke I own and can pay for (a free nuke takes the strongest owned)
-            kindName = "Atom"
-            for _, k in { "Scattershot", "Mega" } do
+        local pre
+        if kindName == "Best owned" then
+            -- size the bomb to the target: tight cluster -> Atom covers it cheaply; spread cities -> Mega's 60 radius;
+            -- clusters around a centre -> Scattershot's ring. Pick the most value destroyed per gold (a free nuke: most value).
+            local bestK, bestEff
+            for _, k in { "Atom", "Mega", "Scattershot" } do
                 local n = NUKE[k]
-                if hasPass(n.pass) and (free or gold - CFG.reserve >= math.max(n.cost, minGold)) then kindName = k break end
+                if (not n.pass or hasPass(n.pass)) and (free or gold - CFG.reserve >= math.max(n.cost, minGold)) then
+                    local t, what, score = nukeSpot(who, n, allowLand, minLv)
+                    if t then
+                        local eff = free and score or score / (n.cost / 1e6)
+                        if why == "deny win" then -- knocking them under the bar: land wiped per gold (Mega 3.6K r^2 / 2.5M wins)
+                            eff = (n.r ^ 2 + (n.ring and 5 * 18 ^ 2 or 0)) / (free and 1 or n.cost / 1e6)
+                        end
+                        if not bestEff or eff > bestEff * CFG.nukeUpsize then bestK, bestEff, pre = k, eff, { t, what } end
+                    end
+                end
             end
+            kindName = bestK or "Atom"
         end
         local nk = NUKE[kindName]
         if not nk or (nk.pass and not hasPass(nk.pass)) then return false end
         if not free and gold - CFG.reserve < math.max(nk.cost, minGold) then
             status.weapons = ("%s: saving for %s nuke (%s / %s)"):format(why, kindName, fmt(gold), fmt(nk.cost)); return false
         end
-        local target, what = nukeSpot(who, nk, allowLand, minLv)
+        local target, what
+        if pre then target, what = pre[1], pre[2] else target, what = nukeSpot(who, nk, allowLand, minLv) end
         if not target then status.weapons = why .. ": nuke held (no safe spot: their cities unknown, near me, or under an anti-nuke)"; return false end
         if send({ t = "nuke", tile = target, kind = nk.kind }) then
             stats.nukes += 1
@@ -1856,7 +1876,7 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Pixel Conquest · v3.2 · brain · expand · attack · defend · build · weapons",
+    end)(), Footer = "Pixel Conquest · v3.3 · brain · expand · attack · defend · build · weapons",
     Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
@@ -2048,6 +2068,7 @@ K(WP, "PC_NukeMin", "Min gold (K)", "nukeMinGold", 10000)
 Nm(WP, "PC_NukeCd", "Seconds between nukes", "nukeCooldown", 5, 300)
 T(WP, "PC_NukeStronger", "Also unprovoked stronger", "nukeStronger", "Off = don't provoke them")
 T(WP, "PC_NukeBots", "Skip bots", "nukeSkipBots")
+Nm(WP, "PC_NukeUpsize", "Bigger nuke must be x better", "nukeUpsize", 1, 2, 2, "Best owned: value destroyed per gold; a pricier type must beat a cheaper one by this")
 T(WP, "PC_AvoidSam", "Skip targets under anti-nuke", "avoidSam")
 local WR = Tabs.Weapons:AddLeftGroupbox("Revenge nukes", "skull")
 T(WR, "PC_RevNuke", "Nuke back nukers", "revengeNuke", "Their best city cluster")
@@ -2178,5 +2199,5 @@ task.spawn(function()
     end
 end)
 
-log("loaded v3.2 on " .. tostring(role()) .. " server")
-Library:Notify("Pixel Conquest v3.2 ready — RightCtrl toggles the UI.", 5)
+log("loaded v3.3 on " .. tostring(role()) .. " server")
+Library:Notify("Pixel Conquest v3.3 ready — RightCtrl toggles the UI.", 5)

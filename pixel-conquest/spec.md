@@ -351,3 +351,12 @@ Verified with the spy.
   - `seaD(tile)` = best water neighbour; nil = not reachable by sea from my coast.
   - `crossing()` and island picks use it when fresh (<30 s), else fall back to straight line.
   - Live: 311K water cells in ~2.5 s. Diagonal moves count as 1 step, so on open water it reads slightly under the straight line (Peru 89 vs 94); around land it's the true detour.
+- **v3.3 (2026-09-30): nuke sized to the target**
+  - Blast data:
+    - Atom: outer 30, 750K.
+    - Mega: outer 60, 2.5M.
+    - Scattershot: core outer 30 + SCATTERSHOT_WARHEADS 4-6 warheads (MIRV_WARHEAD outer 18) at SCATTERSHOT_SPREAD 28-46 from the aim point, so it reaches ~64. ~5×1K tiles over a ~12.5K-tile ring ≈ 40% ring coverage. 3.75M.
+  - "Best owned" now evaluates EACH owned and affordable type at its own best spot: nukeSpot scores buildings within r, plus the Scattershot ring at 0.4 weight. It picks the most value destroyed per 1M gold; a pricier type must beat the cheaper one by nukeUpsize 1.15×.
+  - Free nuke: most absolute value.
+  - "deny win": land wiped per gold (r² + ring). Mega 1440 > Atom 1200 > Scattershot 672.
+  - Safety checks (my buildings/border, allies, anti-nukes) use the full reach (64 for Scattershot).
