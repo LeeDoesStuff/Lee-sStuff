@@ -1,6 +1,6 @@
 # Pixel Conquest Project
 
-> Pixel Conquest (OpenFront.io port) — recon done, pc_main.lua v1 farm running (build verified); lobby loop + combat untested
+> Pixel Conquest (OpenFront.io port) — recon done, pc_main.lua v1.7 published (Lee-sStuff/pixel-conquest + LuaLoader games.json 10764297006)
 
 
 Recon done 2026-09-29. Spec with the full protocol, economy, Money payout and feature plan: rblx/pixel-conquest-spec.md. Decompiled modules are in Potassium/workspace/pc_recon/mod/.

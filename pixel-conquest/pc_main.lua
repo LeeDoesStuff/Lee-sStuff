@@ -60,7 +60,7 @@ local CFG = {
     -- diplomacy
     accept = true, renew = true, request = false, requestRatio = 1.5, blockUnally = true, blacklist = "",
     -- lobby / loop
-    queue = true, queueSizes = {}, skipSpecial = false, leave = true, leaveDelay = 4, claimReward = true,
+    queue = false, queueSizes = {}, skipSpecial = false, leave = true, leaveDelay = 4, claimReward = true,
     buyPasses = false, passReserve = 0, reinject = true,
     -- safety
     blockPrompts = true, gap = 0.12, scanEvery = 2, useHudRatio = true,
