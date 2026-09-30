@@ -1011,8 +1011,16 @@ local function scanJunk()
             junk[m] = j
             makeEsp(j)
             CONTEST.lastSpawn = os.clock() -- a refresh swaps the 10 cars one every ~2 s: auto buy waits for the wave
+            -- spawn log, to test "do fuller servers spawn rarer cars?" (skips the cars already there when the script loads)
+            if CONTEST.scanned then pcall(function()
+                local f = DIR .. "/spawns.csv"
+                if not isfile(f) then writefile(f, "time,server,type,players,car,chance,tier\n") end
+                appendfile(f, ("%d,%s,%s,%d,%s,%s,%s\n"):format(os.time(), game.JobId:sub(1, 8), tostring(RS:GetAttribute("ServerType")),
+                    #Players:GetPlayers(), (j.name:gsub(",", " ")), tostring(j.sc), j.tier))
+            end) end
         end
     end
+    CONTEST.scanned = true -- from the second scan on, new junk cars are real spawns
     local cp = camPos()
     for m, j in pairs(junk) do
         j.dist = (m:GetPivot().Position - cp).Magnitude
