@@ -1346,3 +1346,5 @@ Inventory safety while a trade is open is §8.2 (*Trading, mail & gifting*). The
 - `writefile` partial output after each section, so a hang still leaves data and shows which section stalled.
 
 - **Forward-declared helpers become nil globals.** In Luau a `local f` declared below a function that calls it compiles fine, but that call reads the global `f` (nil) and only crashes at runtime, often on a rare path. Fix It Up 2026-09-30: `notify` was declared under buyJunk, so every rare auto-locked buy crashed and froze the auto loop. Declare shared helpers (notify, log) near the top as `local x = function() end` and reassign later. Also clear busy flags when a guarded step errors.
+
+- **Obsidian SaveManager:** call LoadAutoloadConfig() only after EVERY tab and element exists (at the end of the script). Elements created later silently start on defaults, and an autosave then overwrites the saved values. Snapshot the autosave baseline right after the load, not after a delay.

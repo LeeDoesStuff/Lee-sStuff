@@ -3114,28 +3114,8 @@ ThemeManager:SetFolder(DIR)
 ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" })
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings, "palette")
-SaveManager:LoadAutoloadConfig()
--- autosave: settings changes go into your autoload config within ~5 s, so nothing needs a manual "Save config"
--- (no autoload set = an "autosave" config is made and set as autoload). Polls the encoded config instead of hooking
--- OnChanged, which in Obsidian replaces an element's one callback.
-task.spawn(function()
-    task.wait(5) -- let the autoload apply first
-    local last
-    while running do
-        local name = SaveManager.AutoloadConfig
-        if type(name) ~= "string" or name == "" or name == "none" then name = nil end
-        local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, name or "autosave")
-        if ok and good then
-            data = data:gsub('"timestamp":"[^"]*",?', "")
-            if last and data ~= last then
-                SaveManager:Save(name or "autosave")
-                if not name then SaveManager:SaveAutoloadConfig("autosave") end
-            end
-            last = data
-        end
-        task.wait(5)
-    end
-end)
+-- the autoload config is applied at the very END of the script (see "config load"): tabs built after this point
+-- (Players, Gold, Drive, Server hop) used to miss it and start on defaults, and autosave then wrote those defaults back
 
 -- ============================== selected car tag ==============================
 -- floating tag over the car picked in the Garage tab: name, condition, and how long until it can be sold
@@ -3865,6 +3845,38 @@ task.spawn(function()
         if running and not hopping then pcall(checkServer) end
     end
 end)
+
+-- ============================== config load ==============================
+-- Last, so every tab's settings exist when the autoload config is applied (buy filters, flip loop, drive, ESP...).
+SaveManager:LoadAutoloadConfig()
+-- autosave: settings changes go into your autoload config within ~5 s, so nothing needs a manual "Save config"
+-- (no autoload set = an "autosave" config is made and set as autoload). Polls the encoded config instead of hooking
+-- OnChanged, which in Obsidian replaces an element's one callback.
+do
+    local function snapshot(name)
+        local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, name or "autosave")
+        return ok and good and (data:gsub('"timestamp":"[^"]*",?', "")) or nil
+    end
+    local function current()
+        local name = SaveManager.AutoloadConfig
+        return (type(name) == "string" and name ~= "" and name ~= "none") and name or nil
+    end
+    -- baseline = the settings exactly as just loaded, so a change in the first seconds is still a change
+    -- (the old baseline was taken 5 s later and swallowed early changes)
+    local last = snapshot(current())
+    task.spawn(function()
+        while running do
+            task.wait(3)
+            local name = current()
+            local data = snapshot(name)
+            if data and data ~= last then
+                SaveManager:Save(name or "autosave")
+                if not name then SaveManager:SaveAutoloadConfig("autosave") end
+                last = data
+            end
+        end
+    end)
+end
 
 lifeLog("ready")
 Library:Notify("Fix It Up ready — RightCtrl toggles the UI. Only script-bought cars are ever sold.", 5)
