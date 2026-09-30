@@ -266,3 +266,4 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - A partial buy stores what was bought and never touches the car.
   - The rim/tyre menu list streams the tyre shop only to fill empty lists (a client at critical memory crashed right after a live test that streamed several far areas).
   - Live buy+fit NOT yet verified end to end.
+- 2026-09-30 VERIFIED live: X.newBrakes on a Toyoda Yapp (4 drums -> Small Plain Disc + Small Caliper, 1800, about 80 s, 0 loose parts, wheels back on). Flow: buy 4 discs + 4 size-matched calipers ("plates"), then one lift session: wheels off, RemoveBrake x4, discs on, calipers on, wheels back on, lift down. Car-to-car brakes run the same brakeJob per car. Wheels (rim + tyre via the tyre changer) are still not verified live.

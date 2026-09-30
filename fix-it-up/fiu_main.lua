@@ -2857,7 +2857,7 @@ do
     -- ============ brakes (decompiled PartsHandler.Modules.Brakes + PartMoverClient, measured 2026-09-30) ============
     -- Values.Brakes[corner] = "Brakes|<disc>|<size>", Values.Calipers[corner] = "Calipers|<Small|Medium|Large>Caliper|..".
     -- Off: PartsEvent("RemoveBrake", corner) needs OnLift and drops the disc + its caliper, named after the corner.
-    -- On: no lift. RenamePart(part, corner) then ReapplyPart(part); a disc must go on before its caliper, a caliper must
+    -- On: RenamePart(part, corner) then ReapplyPart(part); a disc must go on before its caliper, a caliper (plate) must
     -- match the disc's size class, and drum brakes take no caliper. Bought discs/calipers have NoCleanup (never deleted).
     X.BRAKES = workspace.PartsStore.BrakeZone.Brakes
     function X.sizeClass(disc) return disc:match("^Small") or disc:match("^Medium") or disc:match("^Large") end
@@ -2866,45 +2866,76 @@ do
         local cls = X.sizeClass(disc)
         return d, cls and X.BRAKES.Calipers:FindFirstChild(cls .. "Caliper") or nil
     end
-    function X.pullBrakes(e) -- lift, all four brakes off; returns discs, calipers (loose, named by corner)
+    -- One lift session per car, the same way the wheels are done: lift, wheels off, old brakes off (disc + its
+    -- caliper/"plate"), new discs on then their calipers, wheels back on, lift down. Brake off needs OnLift; the wheel
+    -- is off first so nothing blocks the disc. Any corner whose new disc won't go on gets its old one back.
+    function X.brakeJob(e, discs, cals, takeOld)
         local car, lift = X.liftCar(e)
         if not car then return nil, lift end
-        local before = myParts()
+        local function grab(before, test)
+            local got = {}
+            for p in pairs(myParts()) do if not before[p] and test(p) then got[#got + 1] = p; X.held[p] = true end end
+            return got
+        end
+        -- 1) wheels off, remembered by corner
+        local wheels = {}
         for _, corner in ipairs(X.CORNERS) do
-            local v = car.Values.Brakes:FindFirstChild(corner)
-            if v and v.Value ~= "" and v.Value ~= "None" then fireParts(e, "RemoveBrake", corner); task.wait(0.4) end
+            local v = car.Values.Wheels:FindFirstChild(corner)
+            if v and v.Value ~= "" then
+                local before = myParts()
+                fireParts(e, "RemovePart", corner)
+                local t = os.clock()
+                repeat task.wait(0.1); local g = grab(before, function(p) return p:GetAttribute("IsWheel") end); wheels[corner] = g[1] until wheels[corner] or os.clock() - t > 3
+            end
         end
-        task.wait(1)
-        local discs, cals = {}, {}
-        for p in pairs(myParts()) do
-            if not before[p] and p:GetAttribute("IsBrake") then
-                X.held[p] = true
+        -- 2) old brakes off (each drops its disc and caliper, named after the corner)
+        local oldD, oldC = {}, {}
+        if takeOld then
+            local before = myParts()
+            for _, corner in ipairs(X.CORNERS) do
+                local v = car.Values.Brakes:FindFirstChild(corner)
+                if v and v.Value ~= "" and v.Value ~= "None" then fireParts(e, "RemoveBrake", corner); task.wait(0.4) end
+            end
+            task.wait(1)
+            for _, p in ipairs(grab(before, function(p) return p:GetAttribute("IsBrake") end)) do
                 local cat = (p:GetAttribute("Category") or ""):match("^[^|]+")
-                if cat == "Calipers" or cat == "Caliper" then cals[#cals + 1] = p else discs[#discs + 1] = p end
+                if cat == "Calipers" or cat == "Caliper" then oldC[#oldC + 1] = p else oldD[#oldD + 1] = p end
             end
         end
-        X.lowerLift(lift)
-        return discs, cals
-    end
-    function X.fitBrakes(e, discs, cals) -- returns how many parts didn't go on
-        tpTo(liftCF() * CFrame.new(0, 0, 12))
-        local car = spawnCar(e, liftCF())
-        if not car then return #discs + #cals end
-        for pass = 1, 2 do
-            for _, list in ipairs({ discs, cals }) do -- discs first: a caliper needs its disc
-                for n, p in ipairs(list) do
-                    local corner = table.find(X.CORNERS, p.Name) and p.Name or X.CORNERS[n]
-                    if corner and p.Parent == MoveParts then
-                        fireParts(e, "RenamePart", p, corner); task.wait(0.2)
-                        fireParts(e, "ReapplyPart", p); task.wait(0.3)
-                    end
+        -- 3) new brakes on: discs first (a caliper needs its disc), two passes
+        local function fit(list)
+            for n, p in ipairs(list) do
+                local corner = table.find(X.CORNERS, p.Name) and p.Name or X.CORNERS[n]
+                if corner and p.Parent == MoveParts then
+                    fireParts(e, "RenamePart", p, corner); task.wait(0.2)
+                    fireParts(e, "ReapplyPart", p); task.wait(0.3)
                 end
-                task.wait(0.6)
             end
+            task.wait(0.6)
         end
-        local left = 0
+        for _ = 1, 2 do fit(discs); fit(cals) end
+        -- a corner still without a disc gets its old brake back
+        local back = {}
+        for _, p in ipairs(oldD) do
+            local v = car.Values.Brakes:FindFirstChild(p.Name)
+            if v and (v.Value == "" or v.Value == "None") then back[#back + 1] = p end
+        end
+        if #back > 0 then fit(back); fit(oldC) end
+        -- 4) wheels back on
+        for _ = 1, 2 do
+            for corner, p in pairs(wheels) do
+                if p.Parent == MoveParts then
+                    fireParts(e, "RenamePart", p, corner); task.wait(0.2)
+                    fireParts(e, "ReapplyPart", p); task.wait(0.3)
+                end
+            end
+            task.wait(0.8)
+        end
+        local left, noWheel = 0, 0
         for _, list in ipairs({ discs, cals }) do for _, p in ipairs(list) do if p.Parent == MoveParts then left += 1 end end end
-        return left
+        for _, p in pairs(wheels) do if p.Parent == MoveParts then noWheel += 1 end end
+        X.lowerLift(lift)
+        return oldD, oldC, left, noWheel
     end
     -- the store ignores rapid re-buys of the same item (disc 3 of 4 got no confirm, 2026-09-30): retry with a pause
     function X.buyOne(model)
@@ -2924,44 +2955,43 @@ do
         X.holdParts(true)
         local ok, res = pcall(function()
             local discs, cals = {}, {}
-            for i = 1, 4 do -- 1) buy everything first: a failed buy never leaves the car without brakes
+            for i = 1, 4 do -- 1) buy all 4 discs + their matching calipers first: a failed buy never touches the car
                 local p, why = X.buyOne(d)
-                if not p then dealWithOld(discs); return "couldn't buy disc " .. i .. " (" .. tostring(why) .. ")" end
+                if not p then dealWithOld(discs); return "couldn't buy disc " .. i .. " (" .. tostring(why) .. "); bought parts kept" end
                 discs[i] = p; X.held[p] = true
             end
             if cal then
                 for i = 1, 4 do
                     local p, why = X.buyOne(cal)
-                    if not p then dealWithOld(discs); dealWithOld(cals); return "couldn't buy caliper " .. i .. " (" .. tostring(why) .. ")" end
+                    if not p then dealWithOld(discs); dealWithOld(cals); return "couldn't buy caliper " .. i .. " (" .. tostring(why) .. "); bought parts kept" end
                     cals[i] = p; X.held[p] = true
                 end
             end
-            local oldD, oldC = X.pullBrakes(e) -- 2) old ones off (lift)
-            if not oldD then dealWithOld(discs); dealWithOld(cals); return "old brakes stayed on: " .. tostring(oldC) .. " (new ones went to " .. (CFG.swapOld == "Delete" and "the bin" or "your inventory") .. ")" end
-            local left = X.fitBrakes(e, discs, cals) -- 3) new ones on
-            if left > 0 then -- put the old ones back on the corners that are still empty
-                local car = carOf(e)
-                local backD, backC = {}, {}
-                for _, p in ipairs(oldD) do if car and car.Values.Brakes:FindFirstChild(p.Name) and car.Values.Brakes[p.Name].Value == "None" then backD[#backD + 1] = p end end
-                for _, p in ipairs(oldC) do backC[#backC + 1] = p end
-                X.fitBrakes(e, backD, backC)
-            end
-            local old = {}
-            for _, list in ipairs({ oldD, oldC, discs, cals }) do for _, p in ipairs(list) do if p.Parent == MoveParts then old[#old + 1] = p end end end
-            dealWithOld(old)
-            return ("fitted %s%s on %s for %s%s"):format(d:GetAttribute("Label") or disc, cal and (" + " .. cal.Name) or "", entryModel(e), money(cost),
-                left > 0 and (" · %d part(s) didn't go on (old ones put back)"):format(left) or "")
+            local oldD, oldC, left, noWheel = X.brakeJob(e, discs, cals, true) -- 2) one lift session
+            if not oldD then dealWithOld(discs); dealWithOld(cals); return "the car wasn't touched: " .. tostring(oldC) end
+            local spare = {}
+            for _, list in ipairs({ oldD, oldC, discs, cals }) do for _, p in ipairs(list) do if p.Parent == MoveParts then spare[#spare + 1] = p end end end
+            dealWithOld(spare)
+            return ("fitted %s%s on %s for %s%s%s"):format(d:GetAttribute("Label") or disc, cal and (" + " .. cal.Name) or "", entryModel(e), money(cost),
+                left > 0 and (" · %d new part(s) didn't go on (old ones put back)"):format(left) or "",
+                noWheel > 0 and (" · WARNING: %d wheel(s) didn't go back on"):format(noWheel) or "")
         end)
         X.holdParts(false)
         return ok, ok and res or ("error: " .. tostring(res))
     end
+    -- car to car: A's brakes off, B's off + A's on, then (Swap) B's on A. Same lift routine each time.
     function X.brakeTransfer(eFrom, eTo, mode)
-        local aD, aC = X.pullBrakes(eFrom)
+        local aD, aC = X.brakeJob(eFrom, {}, {}, true)
         if not aD then return aC end
-        local bD, bC = X.pullBrakes(eTo)
-        if not bD then X.fitBrakes(eFrom, aD, aC); return tostring(bC) .. " (the first car's brakes were put back)" end
-        local left = X.fitBrakes(eTo, aD, aC)
-        if mode == "Swap" then left += X.fitBrakes(eFrom, bD, bC) else dealWithOld(bD); dealWithOld(bC) end
+        local bD, bC, leftB = X.brakeJob(eTo, aD, aC, true)
+        if not bD then X.brakeJob(eFrom, aD, aC, false); return tostring(bC) .. " (the first car's brakes were put back)" end
+        local left = leftB or 0
+        if mode == "Swap" then
+            local _, _, leftA = X.brakeJob(eFrom, bD, bC, false)
+            left += leftA or 0
+        else
+            dealWithOld(bD); dealWithOld(bC)
+        end
         return nil, left
     end
 
