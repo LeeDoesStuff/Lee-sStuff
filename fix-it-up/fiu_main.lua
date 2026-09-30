@@ -2854,6 +2854,240 @@ do
         return n, leftA + leftB
     end
 
+    -- ============ brakes (decompiled PartsHandler.Modules.Brakes + PartMoverClient, measured 2026-09-30) ============
+    -- Values.Brakes[corner] = "Brakes|<disc>|<size>", Values.Calipers[corner] = "Calipers|<Small|Medium|Large>Caliper|..".
+    -- Off: PartsEvent("RemoveBrake", corner) needs OnLift and drops the disc + its caliper, named after the corner.
+    -- On: no lift. RenamePart(part, corner) then ReapplyPart(part); a disc must go on before its caliper, a caliper must
+    -- match the disc's size class, and drum brakes take no caliper. Bought discs/calipers have NoCleanup (never deleted).
+    X.BRAKES = workspace.PartsStore.BrakeZone.Brakes
+    function X.sizeClass(disc) return disc:match("^Small") or disc:match("^Medium") or disc:match("^Large") end
+    function X.brakeKit(disc) -- the store models for one corner
+        local d = X.BRAKES.Brakes:FindFirstChild(disc)
+        local cls = X.sizeClass(disc)
+        return d, cls and X.BRAKES.Calipers:FindFirstChild(cls .. "Caliper") or nil
+    end
+    function X.pullBrakes(e) -- lift, all four brakes off; returns discs, calipers (loose, named by corner)
+        local car, lift = X.liftCar(e)
+        if not car then return nil, lift end
+        local before = myParts()
+        for _, corner in ipairs(X.CORNERS) do
+            local v = car.Values.Brakes:FindFirstChild(corner)
+            if v and v.Value ~= "" and v.Value ~= "None" then fireParts(e, "RemoveBrake", corner); task.wait(0.4) end
+        end
+        task.wait(1)
+        local discs, cals = {}, {}
+        for p in pairs(myParts()) do
+            if not before[p] and p:GetAttribute("IsBrake") then
+                X.held[p] = true
+                local cat = (p:GetAttribute("Category") or ""):match("^[^|]+")
+                if cat == "Calipers" or cat == "Caliper" then cals[#cals + 1] = p else discs[#discs + 1] = p end
+            end
+        end
+        X.lowerLift(lift)
+        return discs, cals
+    end
+    function X.fitBrakes(e, discs, cals) -- returns how many parts didn't go on
+        tpTo(liftCF() * CFrame.new(0, 0, 12))
+        local car = spawnCar(e, liftCF())
+        if not car then return #discs + #cals end
+        for pass = 1, 2 do
+            for _, list in ipairs({ discs, cals }) do -- discs first: a caliper needs its disc
+                for n, p in ipairs(list) do
+                    local corner = table.find(X.CORNERS, p.Name) and p.Name or X.CORNERS[n]
+                    if corner and p.Parent == MoveParts then
+                        fireParts(e, "RenamePart", p, corner); task.wait(0.2)
+                        fireParts(e, "ReapplyPart", p); task.wait(0.3)
+                    end
+                end
+                task.wait(0.6)
+            end
+        end
+        local left = 0
+        for _, list in ipairs({ discs, cals }) do for _, p in ipairs(list) do if p.Parent == MoveParts then left += 1 end end end
+        return left
+    end
+    -- the store ignores rapid re-buys of the same item (disc 3 of 4 got no confirm, 2026-09-30): retry with a pause
+    function X.buyOne(model)
+        local p, why
+        for try = 1, 4 do
+            p, why = buyStore(model)
+            if p then return p end
+            task.wait(1.5 * try)
+        end
+        return nil, why
+    end
+    function X.newBrakes(e, disc)
+        local d, cal = X.brakeKit(disc)
+        if not d then return false, "that disc isn't in the brake shop" end
+        local cost = 4 * ((tonumber(d:GetAttribute("Price")) or 0) + (cal and tonumber(cal:GetAttribute("Price")) or 0))
+        if myMoney() - cost < CFG.reserve then return false, ("brakes cost %s: not enough above your reserve"):format(money(cost)) end
+        X.holdParts(true)
+        local ok, res = pcall(function()
+            local discs, cals = {}, {}
+            for i = 1, 4 do -- 1) buy everything first: a failed buy never leaves the car without brakes
+                local p, why = X.buyOne(d)
+                if not p then dealWithOld(discs); return "couldn't buy disc " .. i .. " (" .. tostring(why) .. ")" end
+                discs[i] = p; X.held[p] = true
+            end
+            if cal then
+                for i = 1, 4 do
+                    local p, why = X.buyOne(cal)
+                    if not p then dealWithOld(discs); dealWithOld(cals); return "couldn't buy caliper " .. i .. " (" .. tostring(why) .. ")" end
+                    cals[i] = p; X.held[p] = true
+                end
+            end
+            local oldD, oldC = X.pullBrakes(e) -- 2) old ones off (lift)
+            if not oldD then dealWithOld(discs); dealWithOld(cals); return "old brakes stayed on: " .. tostring(oldC) .. " (new ones went to " .. (CFG.swapOld == "Delete" and "the bin" or "your inventory") .. ")" end
+            local left = X.fitBrakes(e, discs, cals) -- 3) new ones on
+            if left > 0 then -- put the old ones back on the corners that are still empty
+                local car = carOf(e)
+                local backD, backC = {}, {}
+                for _, p in ipairs(oldD) do if car and car.Values.Brakes:FindFirstChild(p.Name) and car.Values.Brakes[p.Name].Value == "None" then backD[#backD + 1] = p end end
+                for _, p in ipairs(oldC) do backC[#backC + 1] = p end
+                X.fitBrakes(e, backD, backC)
+            end
+            local old = {}
+            for _, list in ipairs({ oldD, oldC, discs, cals }) do for _, p in ipairs(list) do if p.Parent == MoveParts then old[#old + 1] = p end end end
+            dealWithOld(old)
+            return ("fitted %s%s on %s for %s%s"):format(d:GetAttribute("Label") or disc, cal and (" + " .. cal.Name) or "", entryModel(e), money(cost),
+                left > 0 and (" · %d part(s) didn't go on (old ones put back)"):format(left) or "")
+        end)
+        X.holdParts(false)
+        return ok, ok and res or ("error: " .. tostring(res))
+    end
+    function X.brakeTransfer(eFrom, eTo, mode)
+        local aD, aC = X.pullBrakes(eFrom)
+        if not aD then return aC end
+        local bD, bC = X.pullBrakes(eTo)
+        if not bD then X.fitBrakes(eFrom, aD, aC); return tostring(bC) .. " (the first car's brakes were put back)" end
+        local left = X.fitBrakes(eTo, aD, aC)
+        if mode == "Swap" then left += X.fitBrakes(eFrom, bD, bC) else dealWithOld(bD); dealWithOld(bC) end
+        return nil, left
+    end
+
+    -- ============ wheels: rims and tyres are bought separately (measured 2026-09-30) ============
+    -- Clicking a PitWheels rim/tyre makes the server invoke HUD.WheelBuy(label, factor); the client answers
+    -- (diameter, width, x4). Price = factor x diameter x width per wheel. A tyre arrives as "None|<tyre>|None|d|w" and a
+    -- rim as "<rim>|None|None|d|w": neither fits a car ("Can't install a wheel without the rim"). The tyre changer at the
+    -- tyre shop merges them: hold the rim in its Detector, press Button, hold the tyre there, press again ->
+    -- "<rim>|<tyre>||d|w", a normal wheel.
+    X.PIT = workspace.PartsStore["PitWheels WEST"]
+    function X.wheelStock(noStream)
+        -- PitWheels WEST is a Folder (no pivot) and its shelves stream out: stream the shop, then read the shelves.
+        -- noStream: just read what's loaded (the menu list refresh must not keep pulling map areas into memory;
+        -- a client already at critical memory crashed 2026-09-30)
+        local any = X.PIT:FindFirstChildWhichIsA("BasePart", true)
+        if noStream then -- nothing
+        elseif any then streamAt(any.Position, 5)
+        else streamAt(Vector3.new(-1380.8, 5, -1552.5), 5); streamAt(Vector3.new(-720.2, 5, -411.2), 5) end
+        local rims, tires = {}, {}
+        for _, m in ipairs(X.PIT.Wheels.Rims:GetChildren()) do if m:FindFirstChild("ClickDetector") then rims[m.Name] = m end end
+        for _, m in ipairs(X.PIT.Wheels.Tires:GetChildren()) do if m:FindFirstChild("ClickDetector") then tires[m.Name] = m end end
+        return rims, tires
+    end
+    function X.buyWheelItem(item, diam, width) -- 4 of one rim/tyre model at this size; returns the new loose parts
+        local WB = Events.HUD.WheelBuy
+        local orig = getcallbackvalue(WB, "OnClientInvoke")
+        local want = 4
+        local got, before = {}, myParts()
+        local function collect() for p in pairs(myParts()) do if not before[p] and p:GetAttribute("IsWheel") then before[p] = true; got[#got + 1] = p; X.held[p] = true end end end
+        for _ = 1, 4 do -- x4 first; if the server only gave one, top up one at a time
+            local asked = false
+            WB.OnClientInvoke = function() asked = true; return diam, width, #got == 0 end
+            fireclickdetector(item.ClickDetector)
+            local t = os.clock()
+            repeat task.wait(0.1) until asked or os.clock() - t > 2
+            if not asked then -- out of click range: step over and retry
+                local back = hrp() and hrp().CFrame
+                tpTo(CFrame.new(item:GetPivot().Position + Vector3.new(0, 2, 5))); task.wait(0.4)
+                fireclickdetector(item.ClickDetector)
+                t = os.clock()
+                repeat task.wait(0.1) until asked or os.clock() - t > 3
+                if back then tpTo(back) end
+            end
+            t = os.clock()
+            repeat task.wait(0.2); collect() until #got >= want or os.clock() - t > 3
+            if #got >= want or not asked then break end
+        end
+        WB.OnClientInvoke = orig
+        return got
+    end
+    function X.mergeWheels(rims, tires) -- at the tyre changer; returns finished wheels
+        local tc = workspace.Map.Model["jantes pneus"].TireShop.TireChanger
+        streamAt(tc:GetPivot().Position, 5)
+        local det, cd = tc.Detector, tc.Button.ClickDetector
+        tpTo(CFrame.new(det.Position + Vector3.new(0, 3, 4)))
+        task.wait(0.6)
+        local held
+        local pin = RunService.Heartbeat:Connect(function() if held and held.Parent then held:PivotTo(det.CFrame + Vector3.new(0, 0.6, 0)) end end)
+        local done = {}
+        for i = 1, math.min(#rims, #tires) do
+            local before = myParts()
+            held = rims[i]; task.wait(0.8); fireclickdetector(cd); task.wait(1.2)
+            held = tires[i]; task.wait(0.8); fireclickdetector(cd)
+            local t, wheel = os.clock(), nil
+            repeat
+                task.wait(0.2)
+                for p in pairs(myParts()) do
+                    local c = p:GetAttribute("Category") or ""
+                    local ours = p == rims[i] or p == tires[i] or not before[p] -- never a finished wheel that was already lying around
+                    if ours and p:GetAttribute("IsWheel") and not c:find("^None|") and not c:find("^[^|]+|None|") and not table.find(done, p) then wheel = p end
+                end
+            until wheel or os.clock() - t > 4
+            held = nil
+            if wheel then done[#done + 1] = wheel; X.held[wheel] = true; wheel:PivotTo(det.CFrame + Vector3.new(4 + i * 2, 1, 0)) end
+        end
+        pin:Disconnect()
+        return done
+    end
+    function X.newWheels(e, rimName, tireName, diam, width)
+        local rims, tires = X.wheelStock()
+        local rim, tire = rims[rimName], tires[tireName]
+        if not (rim and tire) then return false, "rim or tyre not found in the shop" end
+        local each = ((tonumber(rim:GetAttribute("Price")) or 0) + (tonumber(tire:GetAttribute("Price")) or 0)) * diam * width
+        local cost = math.ceil(each * 4)
+        if myMoney() - cost < CFG.reserve then return false, ("4 wheels cost about %s: not enough above your reserve"):format(money(cost)) end
+        X.holdParts(true)
+        local ok, res = pcall(function()
+            -- 1) build all four wheels before touching the car
+            local r = X.buyWheelItem(rim, diam, width)
+            local t = X.buyWheelItem(tire, diam, width)
+            if #r < 4 or #t < 4 then
+                local spare = {}
+                for _, p in ipairs(r) do spare[#spare + 1] = p end
+                for _, p in ipairs(t) do spare[#spare + 1] = p end
+                dealWithOld(spare)
+                return ("only got %d rims and %d tyres (kept in %s)"):format(#r, #t, CFG.swapOld == "Delete" and "the bin" or "your inventory")
+            end
+            local wheels = X.mergeWheels(r, t)
+            if #wheels < 4 then
+                local spare = {}
+                for _, list in ipairs({ wheels, r, t }) do for _, p in ipairs(list) do if p.Parent == MoveParts then spare[#spare + 1] = p end end end
+                dealWithOld(spare)
+                return ("the tyre changer made %d of 4 wheels; the car wasn't touched"):format(#wheels)
+            end
+            -- 2) old wheels off (lift), 3) new ones on; any corner the new one won't take gets its old wheel back
+            local old, why = X.pullWheels(e)
+            if not old then dealWithOld(wheels); return "old wheels stayed on: " .. tostring(why) end
+            local byCorner = {}
+            for i, corner in ipairs(X.CORNERS) do byCorner[corner] = wheels[i] end
+            X.fitWheels(e, byCorner)
+            local back = {}
+            for corner, p in pairs(byCorner) do if p.Parent == MoveParts and old[corner] then back[corner] = old[corner] end end
+            if next(back) then X.fitWheels(e, back) end
+            local left = {}
+            for _, p in pairs(old) do if p.Parent == MoveParts then left[#left + 1] = p end end
+            for _, p in pairs(byCorner) do if p.Parent == MoveParts then left[#left + 1] = p end end
+            local failed = 0
+            for _ in pairs(back) do failed += 1 end
+            dealWithOld(left)
+            return ("fitted %s + %s (%d\" x %s) on %s for ~%s%s"):format(rimName, tireName, diam, tostring(width), entryModel(e), money(cost),
+                failed > 0 and (" · %d corner(s) kept the old wheel"):format(failed) or "")
+        end)
+        X.holdParts(false)
+        return ok, ok and res or ("error: " .. tostring(res))
+    end
+
     function X.transfer(eFrom, eTo, what, mode)
         if eFrom == eTo then return false, "pick two different cars" end
         -- engine sizes: read both tunes (each car has to be out once to read it)
@@ -2874,6 +3108,11 @@ do
                 local n, left, why = X.tireTransfer(eFrom, eTo, mode)
                 if why then return "tyres: " .. why end
                 notes[#notes + 1] = ("%s %d wheel(s)%s"):format(mode == "Swap" and "swapped" or "moved", n, left > 0 and (" (%d didn't go on)"):format(left) or "")
+            end
+            if what.Brakes then
+                local why, left = X.brakeTransfer(eFrom, eTo, mode)
+                if why then return "brakes: " .. why end
+                notes[#notes + 1] = ("%s brakes%s"):format(mode == "Swap" and "swapped" or "moved", left > 0 and (" (%d part(s) didn't go on)"):format(left) or "")
             end
             if not (what.Engine or what.Gearbox or what.Battery or what.Radiator) then
                 return ("%s: %s"):format(entryModel(eFrom) .. (mode == "Swap" and " <-> " or " -> ") .. entryModel(eTo), table.concat(notes, " · "))
@@ -2905,6 +3144,76 @@ do
         X.holdParts(false)
         return ok, ok and res or ("error: " .. tostring(res))
     end
+
+    -- Wheels & brakes: buy + fit all four corners on the car picked in the Garage tab
+    X.wb = Tabs.Shop:AddLeftGroupbox("Wheels & brakes", "disc")
+    X.wb:AddLabel("Works on the car picked in the Garage tab. Everything is bought (and wheels built at the tyre changer) before the car is touched; old parts go to your inventory or the bin per Old parts.", true)
+    function X.buildDiscs() -- in its own function: this section is at Luau's 200-register limit
+        local discs = {}
+        for _, m in ipairs(X.BRAKES.Brakes:GetChildren()) do discs[#discs + 1] = m end
+        table.sort(discs, function(a, b) return (a:GetAttribute("Price") or 0) < (b:GetAttribute("Price") or 0) end)
+        X.discByLabel, X.discLabels = {}, {}
+        for _, m in ipairs(discs) do
+            local _, cal = X.brakeKit(m.Name)
+            local l = ("%s · force %d · %s%s"):format(m:GetAttribute("Label") or m.Name, math.floor(m:GetAttribute("BrakeForce") or 0),
+                money(m:GetAttribute("Price") or 0), cal and (" + " .. money(cal:GetAttribute("Price") or 0) .. " caliper") or " (no caliper)")
+            X.discLabels[#X.discLabels + 1] = l; X.discByLabel[l] = m.Name
+        end
+    end
+    X.buildDiscs()
+    X.discDrop = X.wb:AddDropdown("FIU_BrakeDisc", { Text = "Brake disc (all 4 corners)", Values = X.discLabels, AllowNull = true,
+        Tooltip = "Price is per corner. Disc brakes come with a matching caliper; drum brakes take none." })
+    X.wb:AddButton({ Text = "Buy + fit brakes", DoubleClick = true, Tooltip = "Double-click. Uses the Dealership lift to take the old brakes off.", Func = function()
+        local e, disc = selectedCar, X.discByLabel[X.discDrop.Value or ""]
+        if not e then notify("Pick a car in the Garage tab first") return end
+        if not disc then notify("Pick a brake disc") return end
+        if isFav(e) then notify("That car is locked (favorite): unlock it to change its brakes") return end
+        queued("fitting brakes", function() local _, msg = X.newBrakes(e, disc); log(msg); notify(msg) end)
+    end })
+    X.rimDrop = X.wb:AddDropdown("FIU_WheelRim", { Text = "Rim", Values = {}, AllowNull = true, Searchable = true })
+    X.tireDrop = X.wb:AddDropdown("FIU_WheelTire", { Text = "Tyre", Values = {}, AllowNull = true,
+        Tooltip = "Higher friction = more grip" })
+    X.diam = X.wb:AddSlider("FIU_WheelDiam", { Text = "Diameter", Default = 17, Min = 12, Max = 24, Rounding = 0, Suffix = "\"" })
+    X.width = X.wb:AddSlider("FIU_WheelWidth", { Text = "Width", Default = 1.3, Min = 0.5, Max = 2, Rounding = 1 })
+    X.wb:AddButton({ Text = "Match the car's current size", Func = function()
+        local car = selectedCar and carOf(selectedCar)
+        local fl = car and car.Values.Wheels:FindFirstChild("FL")
+        local parts = fl and string.split(fl.Value, "|")
+        if not (parts and tonumber(parts[4])) then notify("Spawn the picked car first (its wheel size is read from it)") return end
+        X.diam:SetValue(tonumber(parts[4])); X.width:SetValue(tonumber(parts[5]) or 1.3)
+    end })
+    X.wheelInfo = X.wb:AddLabel("-", true)
+    X.wb:AddButton({ Text = "Buy + fit wheels", DoubleClick = true, Tooltip = "Double-click. Buys 4 rims + 4 tyres, builds them at the tyre changer, then swaps them on at the Dealership lift.", Func = function()
+        local e, rim, tire = selectedCar, X.rimDrop.Value, X.tireDrop.Value and X.tireDrop.Value:match("^(%S+)")
+        rim = rim and rim:match("^(%S+)")
+        if not e then notify("Pick a car in the Garage tab first") return end
+        if not (rim and tire) then notify("Pick a rim and a tyre") return end
+        if isFav(e) then notify("That car is locked (favorite): unlock it to change its wheels") return end
+        local d, w = X.diam.Value, X.width.Value
+        queued("fitting wheels", function() local _, msg = X.newWheels(e, rim, tire, d, w); log(msg); notify(msg) end)
+    end })
+    task.spawn(function() -- rim/tyre lists (the shop streams in) + a price preview
+        local lastKey = ""
+        while running do
+            pcall(function()
+                -- stream the shop once to fill the lists, then only re-read what's already loaded
+                if not X.stock or os.clock() - X.stockAt > 60 then X.stock = { X.wheelStock(X.stock ~= nil and next(X.stock[1]) ~= nil) }; X.stockAt = os.clock() end
+                local rims, tires = X.stock[1], X.stock[2]
+                local rl, tl = {}, {}
+                for n, m in pairs(rims) do rl[#rl + 1] = ("%s · %s/unit"):format(n, tostring(m:GetAttribute("Price"))) end
+                for n, m in pairs(tires) do tl[#tl + 1] = ("%s · grip %s · %s/unit"):format(n, tostring(m:GetAttribute("Friction")), tostring(m:GetAttribute("Price"))) end
+                table.sort(rl); table.sort(tl)
+                local key = table.concat(rl, "|") .. table.concat(tl, "|")
+                if key ~= lastKey and #rl > 0 then lastKey = key; X.rimDrop:SetValues(rl); X.tireDrop:SetValues(tl) end
+                local r = X.rimDrop.Value and rims[X.rimDrop.Value:match("^(%S+)")]
+                local t = X.tireDrop.Value and tires[X.tireDrop.Value:match("^(%S+)")]
+                local each = ((r and tonumber(r:GetAttribute("Price")) or 0) + (t and tonumber(t:GetAttribute("Price")) or 0)) * X.diam.Value * X.width.Value
+                X.wheelInfo:SetText((r and t) and ("4 wheels: about %s (%s each)"):format(money(math.ceil(each * 4)), money(math.ceil(each))) or "Pick a rim and a tyre")
+            end)
+            task.wait(3)
+        end
+    end)
+    getgenv().FIU_MAIN.wheelsBrakes = X -- for scripted tests
 
     local SwapBox = Tabs.Shop:AddRightGroupbox("Spec swap", "arrow-left-right")
     SwapBox:AddLabel("Works on the car picked in the Garage tab. The car goes to the repair shop; new parts are bought first, then the old ones come out and the new ones go in.", true)
@@ -2951,7 +3260,7 @@ do
     X.box:AddLabel("Takes parts out of one of your cars and puts them in another. Swap = the two cars trade; Move = the first car's parts replace the second's (its old parts go to your inventory or the bin, per Old parts above).", true)
     X.from = X.box:AddDropdown("FIU_XFrom", { Text = "From car", Values = {}, AllowNull = true })
     X.to = X.box:AddDropdown("FIU_XTo", { Text = "To car", Values = {}, AllowNull = true })
-    X.what = X.box:AddDropdown("FIU_XWhat", { Text = "Parts", Values = { "Engine", "Gearbox", "Battery", "Radiator", "Tires" }, Multi = true,
+    X.what = X.box:AddDropdown("FIU_XWhat", { Text = "Parts", Values = { "Engine", "Gearbox", "Battery", "Radiator", "Tires", "Brakes" }, Multi = true,
         Default = { "Engine" } })
     X.mode = X.box:AddDropdown("FIU_XMode", { Text = "Mode", Values = { "Swap", "Move" }, Default = "Swap" })
     X.box:AddButton({ Text = "Transfer parts", DoubleClick = true, Tooltip = "Double-click", Func = function()
@@ -3107,7 +3416,7 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_HopGate", "FIU_HopLeave", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_StaffBoard", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar" })
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_HopGate", "FIU_HopLeave", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_StaffBoard", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar", "FIU_WheelRim", "FIU_WheelTire" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 -- CruelHub look: near-black with a crimson accent (still switchable under Settings > Themes)

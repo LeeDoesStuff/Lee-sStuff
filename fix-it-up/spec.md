@@ -261,3 +261,8 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - SaveManager:LoadAutoloadConfig() ran mid-script, before the Players, Gold, Drive and Server hop tabs were built. Their elements never got saved values, and autosave then wrote their defaults back over the file. The load and autosave now run at the very end of the script.
   - Autosave took its baseline 5 s after load, so changes made in those first seconds were swallowed. The baseline is now snapshotted right after the load, polled every 3 s.
   - Verified by reload: buy filters (pct), drive (extra/speed/yield) and flip loop (clean after repair) all persist.
+- 2026-09-30 wheels & brakes (Parts tab > Wheels & brakes; X.newBrakes / X.newWheels / X.brakeTransfer, Car to car "Brakes"). The protocol is in the brake/wheel notes above plus:
+  - The brake store ignores rapid re-buys of the same item (disc 3 of 4: no confirm), so X.buyOne retries with 1.5 s x try backoff.
+  - A partial buy stores what was bought and never touches the car.
+  - The rim/tyre menu list streams the tyre shop only to fill empty lists (a client at critical memory crashed right after a live test that streamed several far areas).
+  - Live buy+fit NOT yet verified end to end.
