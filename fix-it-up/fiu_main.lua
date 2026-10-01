@@ -3450,9 +3450,9 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
--- only one-off picks, learned values and on/off ACTIONS stay out of configs (loading one must never start a hop, the
--- farm or a gold contract); every preference, hop/anti-mod/gold/km settings included, is saved and loaded
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_GvPlayer", "FIU_GoldOn", "FIU_DriveFarm", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar", "FIU_WheelRim", "FIU_WheelTire" })
+-- a config is the WHOLE menu: every toggle (distance farm, auto hop, gold contract included), slider, dropdown, input
+-- and color is saved and loaded. Nothing is excluded (user, 2026-10-01: "the configs will save the configuration of the menu").
+SaveManager:SetIgnoreIndexes({})
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 -- CruelHub look: near-black with a crimson accent (still switchable under Settings > Themes)
