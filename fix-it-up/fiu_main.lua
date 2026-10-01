@@ -4193,17 +4193,21 @@ end)
 
 -- ============================== config load ==============================
 -- Last, so every tab's settings exist when the autoload config is applied (buy filters, flip loop, drive, ESP...).
--- Named configs are presets: they change ONLY when you press Save / Overwrite. Autosave keeps your running settings in
--- one config, "AUTO", so nothing is lost on a crash or hop without ever touching a preset. (2026-10-01: autosaving into
--- the last-loaded config made two presets for different jobs end up identical.)
+-- Named configs (AUTO included: it is one of the user's presets) change ONLY when you press Save / Overwrite.
+-- Autosave keeps your running settings in its own config, "autosave", so nothing is lost on a crash or hop without ever
+-- touching a preset. (2026-10-01: autosaving into the last-loaded config, then into AUTO, overwrote the user's presets.)
 SaveManager:LoadAutoloadConfig()
 getgenv().FIU_MAIN.saveManager = SaveManager -- for scripted tests
 -- autosave: polls the encoded settings every 3 s instead of hooking OnChanged (in Obsidian that replaces an
--- element's one callback). No autoload chosen = AUTO becomes the autoload, so the running setup comes back next time.
+-- element's one callback). No autoload chosen = "autosave" becomes the autoload, so the running setup comes back.
 do
     local function snapshot()
-        local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, "AUTO")
-        return ok and good and (data:gsub('"timestamp":"[^"]*",?', "")) or nil
+        -- never save an empty menu: while an old copy unloads its settings are already gone, and saving then wrote a
+        -- 0-setting config over the user's AUTO preset (2026-10-01)
+        if not running or getgenv().FIU_TOKEN ~= HOOK.token then return nil end
+        local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, "autosave")
+        if not (ok and good) or not data:find('"idx":"FIU_', 1, true) then return nil end
+        return (data:gsub('"timestamp":"[^"]*",?', ""))
     end
     -- baseline = the settings exactly as just loaded, so a change in the first seconds is still a change
     local last = snapshot()
@@ -4212,9 +4216,9 @@ do
             task.wait(3)
             local data = snapshot()
             if data and data ~= last then
-                SaveManager:Save("AUTO")
+                SaveManager:Save("autosave")
                 local auto = SaveManager.AutoloadConfig
-                if type(auto) ~= "string" or auto == "" or auto == "none" then SaveManager:SaveAutoloadConfig("AUTO") end
+                if type(auto) ~= "string" or auto == "" or auto == "none" then SaveManager:SaveAutoloadConfig("autosave") end
                 last = data
             end
         end
