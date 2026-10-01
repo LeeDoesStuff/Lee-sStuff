@@ -1349,4 +1349,4 @@ Inventory safety while a trade is open is §8.2 (*Trading, mail & gifting*). The
 
 - **Obsidian SaveManager:** call LoadAutoloadConfig() only after EVERY tab and element exists (at the end of the script). Elements created later silently start on defaults, and an autosave then overwrites the saved values. Snapshot the autosave baseline right after the load, not after a delay.
 
-- **Obsidian SaveManager, multiple configs:** autosave must write to the config the user last loaded or saved (wrap SaveManager.Load/Save to track it), not always the autoload config, or edits made after loading another config look unsaved. Re-save right after a load so older configs gain new settings. Keep SetIgnoreIndexes to one-off picks and action toggles only.
+- **Obsidian SaveManager, multiple configs:** named configs are presets for different jobs. Never autosave into them, or switching jobs overwrites a preset. Autosave the running state into one dedicated config (e.g. "AUTO"), and keep SetIgnoreIndexes to one-off picks and action toggles only.

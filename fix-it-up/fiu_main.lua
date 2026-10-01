@@ -4193,47 +4193,28 @@ end)
 
 -- ============================== config load ==============================
 -- Last, so every tab's settings exist when the autoload config is applied (buy filters, flip loop, drive, ESP...).
--- The menu is always "on" one config: the last one loaded or saved (autoload at start). Autosave writes changes
--- THERE. It used to write only to the autoload config, so after loading "1" or "2" your changes went elsewhere and
--- looked unsaved. Loading a config also re-saves it at once, which fills in settings an older config never had.
-do
-    local origLoad, origSave = SaveManager.Load, SaveManager.Save
-    function SaveManager:Load(name, ...)
-        local ok, err = origLoad(self, name, ...)
-        if ok then HOOK.cfg, HOOK.cfgFresh = name, true end
-        return ok, err
-    end
-    function SaveManager:Save(name, ...)
-        local ok, err = origSave(self, name, ...)
-        if ok and name ~= "autosave" then HOOK.cfg = name end
-        return ok, err
-    end
-end
+-- Named configs are presets: they change ONLY when you press Save / Overwrite. Autosave keeps your running settings in
+-- one config, "AUTO", so nothing is lost on a crash or hop without ever touching a preset. (2026-10-01: autosaving into
+-- the last-loaded config made two presets for different jobs end up identical.)
 SaveManager:LoadAutoloadConfig()
 getgenv().FIU_MAIN.saveManager = SaveManager -- for scripted tests
 -- autosave: polls the encoded settings every 3 s instead of hooking OnChanged (in Obsidian that replaces an
--- element's one callback). No config yet = an "autosave" config is made and set as autoload.
+-- element's one callback). No autoload chosen = AUTO becomes the autoload, so the running setup comes back next time.
 do
-    local function snapshot(name)
-        local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, name or "autosave")
+    local function snapshot()
+        local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, "AUTO")
         return ok and good and (data:gsub('"timestamp":"[^"]*",?', "")) or nil
     end
-    local function current()
-        if HOOK.cfg then return HOOK.cfg end
-        local name = SaveManager.AutoloadConfig
-        return (type(name) == "string" and name ~= "" and name ~= "none") and name or nil
-    end
     -- baseline = the settings exactly as just loaded, so a change in the first seconds is still a change
-    local last = snapshot(current())
+    local last = snapshot()
     task.spawn(function()
         while running do
             task.wait(3)
-            local name = current()
-            local data = snapshot(name)
-            if data and (data ~= last or HOOK.cfgFresh) then
-                HOOK.cfgFresh = false
-                SaveManager:Save(name or "autosave")
-                if not name then SaveManager:SaveAutoloadConfig("autosave"); HOOK.cfg = "autosave" end
+            local data = snapshot()
+            if data and data ~= last then
+                SaveManager:Save("AUTO")
+                local auto = SaveManager.AutoloadConfig
+                if type(auto) ~= "string" or auto == "" or auto == "none" then SaveManager:SaveAutoloadConfig("AUTO") end
                 last = data
             end
         end
