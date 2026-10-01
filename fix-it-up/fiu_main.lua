@@ -3450,7 +3450,9 @@ Library:OnUnload(unload)
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_HopMax", "FIU_HopOver", "FIU_HopMaxP", "FIU_HopHard", "FIU_HopHardMax", "FIU_HopGate", "FIU_HopLeave", "FIU_AntiMod", "FIU_ModRank", "FIU_ModAction", "FIU_StaffBoard", "FIU_GvPlayer", "FIU_GoldMode", "FIU_GoldAmount", "FIU_GoldBudget", "FIU_GoldMax", "FIU_GoldOn", "FIU_DriveFarm", "FIU_KmPerCar", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar", "FIU_WheelRim", "FIU_WheelTire" })
+-- only one-off picks, learned values and on/off ACTIONS stay out of configs (loading one must never start a hop, the
+-- farm or a gold contract); every preference, hop/anti-mod/gold/km settings included, is saved and loaded
+SaveManager:SetIgnoreIndexes({ "FIU_JunkPick", "FIU_CarPick", "FIU_ShopCat", "FIU_ShopPart", "FIU_Tool", "FIU_Place", "FIU_GaragePlace", "FIU_Player", "FIU_SellCd", "FIU_HopAuto", "FIU_GvPlayer", "FIU_GoldOn", "FIU_DriveFarm", "FIU_Lookup", "FIU_SwapEngine", "FIU_SwapTrans", "FIU_XFrom", "FIU_XTo", "FIU_LookEngine", "FIU_LookSize", "FIU_DriveCar", "FIU_WheelRim", "FIU_WheelTire" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 -- CruelHub look: near-black with a crimson accent (still switchable under Settings > Themes)
@@ -4191,30 +4193,47 @@ end)
 
 -- ============================== config load ==============================
 -- Last, so every tab's settings exist when the autoload config is applied (buy filters, flip loop, drive, ESP...).
+-- The menu is always "on" one config: the last one loaded or saved (autoload at start). Autosave writes changes
+-- THERE. It used to write only to the autoload config, so after loading "1" or "2" your changes went elsewhere and
+-- looked unsaved. Loading a config also re-saves it at once, which fills in settings an older config never had.
+do
+    local origLoad, origSave = SaveManager.Load, SaveManager.Save
+    function SaveManager:Load(name, ...)
+        local ok, err = origLoad(self, name, ...)
+        if ok then HOOK.cfg, HOOK.cfgFresh = name, true end
+        return ok, err
+    end
+    function SaveManager:Save(name, ...)
+        local ok, err = origSave(self, name, ...)
+        if ok and name ~= "autosave" then HOOK.cfg = name end
+        return ok, err
+    end
+end
 SaveManager:LoadAutoloadConfig()
--- autosave: settings changes go into your autoload config within ~5 s, so nothing needs a manual "Save config"
--- (no autoload set = an "autosave" config is made and set as autoload). Polls the encoded config instead of hooking
--- OnChanged, which in Obsidian replaces an element's one callback.
+getgenv().FIU_MAIN.saveManager = SaveManager -- for scripted tests
+-- autosave: polls the encoded settings every 3 s instead of hooking OnChanged (in Obsidian that replaces an
+-- element's one callback). No config yet = an "autosave" config is made and set as autoload.
 do
     local function snapshot(name)
         local ok, data, good = pcall(SaveManager.SaveJSON, SaveManager, name or "autosave")
         return ok and good and (data:gsub('"timestamp":"[^"]*",?', "")) or nil
     end
     local function current()
+        if HOOK.cfg then return HOOK.cfg end
         local name = SaveManager.AutoloadConfig
         return (type(name) == "string" and name ~= "" and name ~= "none") and name or nil
     end
     -- baseline = the settings exactly as just loaded, so a change in the first seconds is still a change
-    -- (the old baseline was taken 5 s later and swallowed early changes)
     local last = snapshot(current())
     task.spawn(function()
         while running do
             task.wait(3)
             local name = current()
             local data = snapshot(name)
-            if data and data ~= last then
+            if data and (data ~= last or HOOK.cfgFresh) then
+                HOOK.cfgFresh = false
                 SaveManager:Save(name or "autosave")
-                if not name then SaveManager:SaveAutoloadConfig("autosave") end
+                if not name then SaveManager:SaveAutoloadConfig("autosave"); HOOK.cfg = "autosave" end
                 last = data
             end
         end
