@@ -169,6 +169,7 @@ local function activeAbilities()
 end
 
 local function click(btn)
+	if not getconnections then return false end -- executor without getconnections (e.g. Xeno)
 	for _, name in ipairs({ "Activated", "MouseButton1Click" }) do
 		local cs = getconnections(btn[name])
 		if #cs > 0 then

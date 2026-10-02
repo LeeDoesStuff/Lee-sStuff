@@ -34,6 +34,7 @@ end
 -- Computed once at CollectibleVisualClient startup, so setting Config.CollectRadius alone does nothing.
 local radiusTbl, radiusOrig
 local function scanMagnet()
+  if not (getgc and getupvalues) then return 0 end -- executor has no memory scan (e.g. Xeno): magnet stays off
   local Config = require(RS.MogOrDie.Config)
   local names = {}
   for k in pairs(Config.Collectibles) do names[k] = true end

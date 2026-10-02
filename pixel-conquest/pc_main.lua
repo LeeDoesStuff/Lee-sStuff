@@ -225,6 +225,7 @@ end
 
 -- ============================== game map (the client's own TileMap) ==============================
 local function stateUpvalues()
+    if not (getconnections and islclosure) then return end -- executor can't read the client's map (e.g. Xeno)
     for _, c in getconnections(State.OnClientEvent) do
         local f = c.Function
         if f and islclosure(f) then
@@ -276,6 +277,7 @@ end
 -- my own "structs" listener misses the full list after a mid-match reload, so mirror the client's list each scan
 local function syncStructs()
     local byTile
+    if not (getconnections and islclosure) then return false end
     for _, c in getconnections(State.OnClientEvent) do
         local f = c.Function
         if f and islclosure(f) then
@@ -488,8 +490,9 @@ table.insert(conns, Lobby.OnClientEvent:Connect(function(k, p, p2)
 end))
 
 -- ============================== guard hook (Robux prompts, alliance breaks) ==============================
+-- needs hookmetamethod + friends: without them (e.g. Xeno) this used to crash at load; now the guard is just off
 local oldNC
-oldNC = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then oldNC = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     if running and not checkcaller() and getnamecallmethod() == "FireServer" then
         if self == Shop and CFG.blockPrompts then
             local a = ...
@@ -500,7 +503,7 @@ oldNC = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
         end
     end
     return oldNC(self, ...)
-end))
+end)) end
 
 -- ============================== helpers ==============================
 local function troopCap()

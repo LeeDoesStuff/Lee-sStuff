@@ -464,7 +464,7 @@ local function hookBubbles() -- the game's own pop handler: BubbleEvent + 1 s of
     table.insert(conns, frame.ChildAdded:Connect(function(b)
         if not (CFG.bubbles and b:IsA("GuiButton")) then return end
         task.delay(0.15, function()
-            if running and CFG.bubbles and b.Parent and b.ImageTransparency ~= 1 then
+            if running and CFG.bubbles and firesignal and b.Parent and b.ImageTransparency ~= 1 then
                 task.spawn(firesignal, b.Activated) -- own thread: running game code lowers that thread's capabilities
                 bubbles.popped += 1
             end
