@@ -327,8 +327,9 @@ local function modelTier(model)
     if sc <= 0.1 then return "S" elseif sc <= 1 then return "A" elseif sc <= 5 then return "B" elseif sc <= 15 then return "C" end
     return "D"
 end
+-- any car in the garage, however it got there: the script's buys and the ones you buy yourself (2026-10-02)
 local function maybeAutoLock(e)
-    if not (CFG.autoLock or CFG.autoLockPctOn) or FAV[e.Name] or not OWNED[e.Name] then return false end
+    if not (CFG.autoLock or CFG.autoLockPctOn) or FAV[e.Name] then return false end
     local mv = e:FindFirstChild("Model")
     local model = mv and mv.Value
     if not model then return false end
@@ -346,6 +347,23 @@ local function maybeAutoLock(e)
     return false
 end
 local function isFlip(e) return OWNED[e.Name] ~= nil and not isFav(e) end
+
+-- garage watch: a new car (bought by you or the script) is checked for auto-lock straight away, even with auto off;
+-- a car that leaves the garage (sold, scrapped) leaves your favorites too.
+on(Garage.ChildAdded, function(e)
+    if not e:FindFirstChild("Model") then e:WaitForChild("Model", 5) end
+    task.wait(0.5)
+    if maybeAutoLock(e) then notify(("Auto-locked %s: rare, it will not be sold"):format(entryModel(e))) end
+end)
+on(Garage.ChildRemoved, function(e)
+    if FAV[e.Name] then log("unfavorited " .. tostring(FAV[e.Name]) .. " (left the garage)"); FAV[e.Name] = nil; saveFav() end
+end)
+task.delay(10, function() -- favorites of cars already gone before this ran (only once the garage has loaded)
+    if not running or #Garage:GetChildren() == 0 then return end
+    local gone = 0
+    for guid in pairs(FAV) do if not Garage:FindFirstChild(guid) then FAV[guid] = nil; gone += 1 end end
+    if gone > 0 then saveFav(); log(("removed %d favorite(s) of cars no longer in the garage"):format(gone)) end
+end)
 
 local function condition(car)
     local eng = car and car:FindFirstChild("Values") and car.Values:FindFirstChild("Engine")
@@ -366,6 +384,18 @@ local function spawnCar(e, cf)
     local function ready(c)
         return c and c:FindFirstChild("PartsEvent") and c:FindFirstChild("Values") and c.Values:FindFirstChild("Engine")
     end
+    -- a tall car (Skami Truk) spawned by its pivot sinks its wheels into the floor and falls through the map, and the
+    -- next tp to its hood dropped the player into the void too (2026-10-02). Lift it so its bottom sits on the ground.
+    -- how far the car's bottom sits below the ground under the spawn spot (0 = fine). The server owns a fresh car's
+    -- physics, so moving it locally doesn't help: a sunk car is spawned again by the server this much higher.
+    local function sunk(c)
+        local box, size = c:GetBoundingBox()
+        local bottom = box.Position.Y - size.Y / 2
+        rayParams.FilterDescendantsInstances = { c, char(), MoveParts }
+        local hit = workspace:Raycast(Vector3.new(cf.X, cf.Y + 3, cf.Z), Vector3.new(0, -40, 0), rayParams)
+        return hit and math.max(0, hit.Position.Y - bottom) or 0
+    end
+    local raised = false
     streamAt(cf.Position, 5) -- a car spawned out of streaming range arrives empty
     for try = 1, 3 do
         local ok, err = pcall(function() Events.Vehicles.RemoteLoad:InvokeServer(e, cf) end)
@@ -373,7 +403,23 @@ local function spawnCar(e, cf)
         local t = os.clock()
         repeat
             local c = carOf(e)
-            if ready(c) and (c:GetPivot().Position - cf.Position).Magnitude < 40 then task.wait(0.5); return c end
+            if ready(c) and (c:GetPivot().Position - cf.Position).Magnitude < 40 then
+                local okS, depth = pcall(sunk, c)
+                if okS and depth > 0.3 and not raised then
+                    raised = true
+                    log(("%s spawned %.1f studs into the floor: respawning it higher"):format(entryModel(e), depth))
+                    cf = cf + Vector3.new(0, depth + 1, 0)
+                    pcall(function() Events.Vehicles.RemoteLoad:InvokeServer(e, cf) end)
+                    task.wait(1) -- let the respawned car replace the sunk one
+                    t = os.clock()
+                else
+                    task.wait(1)
+                    c = carOf(e) or c
+                    if c.Parent and c:GetPivot().Position.Y > cf.Y - 15 then return c end -- not falling through the map
+                    log(("%s fell through the floor at the spawn spot"):format(entryModel(e)))
+                    return nil
+                end
+            end
             task.wait(0.2)
         until os.clock() - t > 4
         task.wait(1.5 * try)
@@ -570,7 +616,8 @@ local function repairCar(e)
             if not hoodOpen() and os.clock() - t > 3 then tpTo(hoodSpot(car)) end -- re-stand in case the car shifted
         until hoodOpen() or os.clock() - t > 10
     end
-    if not hoodOpen() then return false, "couldn't open the hood" end
+    -- some cars have no hood at all (the Skami Truk's Misc is empty): their engine is reachable without one
+    if cd and not hoodOpen() then return false, "couldn't open the hood" end
 
     -- slots to pull: installed, worn, and either repairable or replaceable
     local bay = car.Body:FindFirstChild("EngineBay")
@@ -1004,6 +1051,14 @@ local function makeEsp(j)
 end
 
 local function hex(c) return ("#%02x%02x%02x"):format(c.R * 255, c.G * 255, c.B * 255) end
+-- "[A] Model 0.2%" in the tier color, the junkyard list's style (used by the garage list and favorites)
+function CONTEST.carTag(model)
+    local tier = modelTier(model)
+    local cat = RS.Cache.CarList:FindFirstChild(tostring(model))
+    local sc = cat and cat:GetAttribute("SpawnChance")
+    return ('<font color="%s"><b>[%s]</b> %s</font> <font color="#aaaaaa">%s</font>'):format(hex(CFG.color[tier] or Color3.new(1, 1, 1)), tier, tostring(model),
+        sc and sc > 0 and chanceText(sc) or "exclusive"), (sc and sc > 0) and sc or 0, tier
+end
 local function camPos() local c = workspace.CurrentCamera; return c and c.CFrame.Position or Vector3.zero end
 
 local function scanJunk()
@@ -1427,7 +1482,7 @@ local TeleportService = game:GetService("TeleportService")
 local req = request or http_request or (syn and syn.request)
 local HOP_FILE, VISIT_TTL = "fiu_hop.json", 3600
 local HOP = readJSON(HOP_FILE, {})
-for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500, gate = false, leaveOnFail = false,
+for k, v in pairs({ auto = false, max = 50, over = 0, maxp = 8, hops = 0, visited = {}, hard = false, hardMax = 1500, gate = false, leaveOnFail = false, chatBlock = true, chatSpam = false, chatSpamN = 20,
     antiMod = true, modRank = 2, modAction = "Leave game", staffBoard = true }) do if HOP[k] == nil then HOP[k] = v end end
 local function saveHop() writeJSON(HOP_FILE, HOP) end
 do
@@ -1587,8 +1642,11 @@ local function judge(values, c)
         if v >= c.max then over += 1 end
         if c.hard and v ~= math.huge and v >= c.hardMax then hard += 1 end
     end
-    return #values >= 1 and over <= c.over and hard == 0, over, hard
+    -- c.maxp ("Max other players") applies to the server you're in too, not only to picking the next one: a server with
+    -- 2 others passed as FOUND with the max at 1 (2026-10-02)
+    return #values >= 1 and #values <= (c.maxp or math.huge) and over <= c.over and hard == 0, over, hard
 end
+assert(judge({ 10 }, { max = 50, over = 0, maxp = 1 }) and not judge({ 10, 20 }, { max = 50, over = 0, maxp = 1 }), "maxp self-check")
 assert(judge({ 10, 49 }, { max = 50, over = 0 }) and not judge({ 10, 50 }, { max = 50, over = 0 })
     and judge({ 10, 900 }, { max = 50, over = 1 }) and not judge({}, { max = 50, over = 0 })
     and not judge({ 10, 1500 }, { max = 50, over = 1, hard = true, hardMax = 1500 })
@@ -1620,18 +1678,90 @@ local function scanServer() -- waits up to 8 s for everyone's leaderstats
     return others
 end
 
+-- ============================== chatters ==============================
+-- Roblox's own chat window has Here / Global / Friends tabs. Global messages (other servers) never pass through the
+-- game's TextChannels (only RBXGeneral/RBXSystem exist; MessageReceived saw none, 2026-10-01): they only appear as
+-- labels in CoreGui.ExperienceChat ('<font color="#..">Name:</font> text'). So: Here messages via MessageReceived, plus
+-- every new line drawn in the chat window (whatever tab is open), deduped by name+text for 2 min. Kept across hops in
+-- FixItUp/chatters.json, keyed by the name chat shows. Server rules can fail a server that has a player you blocked here
+-- or a frequent chatter (traders spamming "SELLING ..." are the usual competition for rare cars).
+STAFF.chat = readJSON(DIR .. "/chatters.json", {})
+STAFF.chat.users = STAFF.chat.users or {}
+STAFF.chatRecent, STAFF.chatLines = {}, setmetatable({}, { __mode = "k" })
+function STAFF.saveChat() writeJSON(DIR .. "/chatters.json", STAFF.chat) end
+function STAFF.noteChat(name, text, where)
+    if not name or name == "" or name == LP.Name or name == LP.DisplayName then return end
+    text = tostring(text or ""):gsub("<[^>]+>", ""):gsub("^%s+", ""):sub(1, 80)
+    local key, now = name .. "|" .. text, os.clock()
+    if STAFF.chatRecent[key] and now - STAFF.chatRecent[key] < 120 then return end -- same line seen both ways
+    STAFF.chatRecent[key] = now
+    local u = STAFF.chat.users[name] or { count = 0 }
+    u.count += 1
+    u.last, u.lastAt, u.where = text, os.time(), where
+    STAFF.chat.users[name] = u
+    STAFF.chatDirty = true
+end
+on(game:GetService("TextChatService").MessageReceived, function(m)
+    local src = m.TextSource
+    if not src or src.UserId == LP.UserId then return end
+    local p = Players:GetPlayerByUserId(src.UserId)
+    STAFF.noteChat(p and p.DisplayName or src.Name, m.Text, "here")
+end)
+function STAFF.scanChatWindow()
+    local ec = game:GetService("CoreGui"):FindFirstChild("ExperienceChat")
+    if not ec then return end
+    for _, d in ipairs(ec:GetDescendants()) do
+        if d:IsA("TextLabel") and not STAFF.chatLines[d] then
+            local t = d.Text
+            local name = t:match('<font color="#%x+">([^<]-):</font>')
+            -- the message is what follows the LAST closing tag (a full line nests: ...Name:</font></stroke></font> msg);
+            -- the bare name-prefix label has nothing after it
+            local msg = name and t:match(".*</font>%s*(.-)%s*$")
+            if msg and msg ~= "" then
+                STAFF.chatLines[d] = true
+                -- first pass after loading only marks what's already on screen: a reload would otherwise count it again
+                if STAFF.chatPrimed then STAFF.noteChat(name, msg, "chat") end
+            end
+        end
+    end
+    STAFF.chatPrimed = true
+end
+function STAFF.chatFails() -- players in this server the chat rules fail on (matched by username or display name)
+    local bad = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        local u = p ~= LP and (STAFF.chat.users[p.DisplayName] or STAFF.chat.users[p.Name])
+        if u and ((HOP.chatBlock and u.blocked) or (HOP.chatSpam and u.count >= (HOP.chatSpamN or 20))) then bad[#bad + 1] = p.Name end
+    end
+    return bad
+end
+task.spawn(function()
+    while running do
+        pcall(STAFF.scanChatWindow)
+        task.wait(2)
+    end
+end)
+task.spawn(function() -- save at most every 10 s
+    while running do
+        task.wait(10)
+        if STAFF.chatDirty then STAFF.chatDirty = false; STAFF.saveChat() end
+    end
+end)
+
 local function checkServer()
     local vals = scanServer()
     local ok, over, hard = judge(vals, HOP)
+    local chatBad = STAFF.chatFails()
+    if #chatBad > 0 then ok = false end
     -- the action gate: an empty server is fine to farm in (judge() wants >= 1 other player only for hop hunting)
     STAFF.gateOk = #vals == 0 or ok
     if HOP.leaveOnFail and not STAFF.gateOk and not STAFF.leaving and not HOP.auto then task.spawn(STAFF.leave) end
     local shown = {}
     for i, v in ipairs(vals) do shown[i] = v == math.huge and "?" or tostring(v) end
-    hopServer = ("%d others · %d at/over %d%s\nlowest %s · highest %s\n%s%s"):format(#vals, over, HOP.max,
+    hopServer = ("%d others · %d at/over %d%s\nlowest %s · highest %s\n%s%s%s"):format(#vals, over, HOP.max,
         HOP.hard and (" · %d hard-blocked (%d+)"):format(hard, HOP.hardMax) or "",
         shown[1] or "-", shown[#shown] or "-", ok and "PASSES" or "fails",
-        HOP.gate and (STAFF.gateOk and " · actions allowed" or " · ACTIONS BLOCKED") or "")
+        HOP.gate and (STAFF.gateOk and " · actions allowed" or " · ACTIONS BLOCKED") or "",
+        #chatBad > 0 and ("\nchat rule: " .. table.concat(chatBad, ", ")) or "")
     return ok, #vals, over
 end
 -- "Block actions in failing servers": nothing acts until this server has been checked and passes
@@ -1797,7 +1927,10 @@ task.spawn(function()
             -- clear it, or one crash leaves auto frozen on "busy" for the rest of the session
             if not guard("auto", autoStep) then busy, confirmFn = false, nil end
         else autoStatus = "off" end
-        task.wait(2)
+        -- every 2 s, or at once when the distance farm hands over (CONTEST.wake)
+        local t = os.clock()
+        repeat task.wait(0.1) until CONTEST.wake or os.clock() - t > 2
+        CONTEST.wake = false
     end
 end)
 
@@ -1845,6 +1978,7 @@ local Tabs = {
     Gold     = Window:AddTab("Gold", "coins"),
     Drive    = Window:AddTab("Drive", "gauge"),
     Hop      = Window:AddTab("Server hop", "server"),
+    Chat     = Window:AddTab("Chat", "message-circle"),
     Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(key) return function(v) CFG[key] = v end end
@@ -2217,6 +2351,54 @@ CarBox:AddButton({ Text = "Open / close hood", Func = run("hood", function()
 end) })
 local carInfo = CarBox:AddLabel("-", true)
 
+-- every garage car as a clickable row, like "Junk cars now": rarest first, click = pick that car above
+do
+    local box = Tabs.Car:AddLeftGroupbox("Garage cars", "list")
+    local summary = box:AddLabel("-", true)
+    local rows = {}
+    for i = 1, 30 do
+        local row = {}
+        row.btn = box:AddButton({ Text = "", Func = function()
+            if not (row.entry and row.entry.Parent) then return end
+            for l, e2 in pairs(carByLabel) do if e2 == row.entry then carDrop:SetValue(l) end end
+        end })
+        row.btn.Base.RichText = true
+        row.btn.Base.TextXAlignment = Enum.TextXAlignment.Left
+        row.btn.Base.TextTruncate = Enum.TextTruncate.AtEnd
+        row.btn:SetVisible(false)
+        rows[i] = row
+    end
+    task.spawn(function()
+        while running do
+            pcall(function()
+                local list = {}
+                for _, e in ipairs(entries()) do
+                    local tag, sc = CONTEST.carTag(entryModel(e))
+                    list[#list + 1] = { e = e, tag = tag, sc = sc }
+                end
+                table.sort(list, function(a, b) return a.sc < b.sc end) -- exclusives (0) first, then rarest
+                summary:SetText(("%d car%s · click one to pick it"):format(#list, #list == 1 and "" or "s"))
+                for i, row in ipairs(rows) do
+                    local it = list[i]
+                    if it then
+                        local e = it.e
+                        local text = ("%s%s%s%s"):format(selectedCar == e and "▶ " or "",
+                            isFav(e) and '<font color="#ffd24a">★ </font>' or isFlip(e) and '<font color="#5ee07a">FLIP </font>' or "", it.tag,
+                            carOf(e) and '  <font color="#7fb8ff">out</font>' or "")
+                        row.entry = e
+                        if row.text ~= text then row.text = text; row.btn:SetText(text) end
+                        if not row.shown then row.shown = true; row.btn:SetVisible(true) end
+                    else
+                        row.entry = nil
+                        if row.shown then row.shown = false; row.btn:SetVisible(false) end
+                    end
+                end
+            end)
+            task.wait(1)
+        end
+    end)
+end
+
 local FavBox = Tabs.Car:AddRightGroupbox("Favorites / collection", "star")
 FavBox:AddLabel("Locked cars are never sold, and the auto loop never touches them. Pick a car above, then lock it.", true)
 FavBox:AddButton({ Text = "★ Lock selected car", Func = function()
@@ -2226,7 +2408,7 @@ FavBox:AddButton({ Text = "Unlock selected car", DoubleClick = true, Func = func
     if selectedCar and FAV[selectedCar.Name] then FAV[selectedCar.Name] = nil; saveFav(); log("unlocked " .. entryModel(selectedCar)) end
 end })
 FavBox:AddToggle("FIU_AutoLock", { Text = "Auto lock tier", Default = CFG.autoLock,
-    Tooltip = "Cars the script buys at this tier or rarer (or the models below) are locked right away and never sold",
+    Tooltip = "Any car you get at this tier or rarer (or the models below), bought by the script or by you, is locked right away and never sold",
     Callback = function(v)
         CFG.autoLock = v
         if v then for _, e in ipairs(entries()) do maybeAutoLock(e) end end
@@ -2237,7 +2419,7 @@ FavBox:AddDropdown("FIU_AutoLockTier", { Text = "Lock tier and rarer", Values = 
 FavBox:AddDropdown("FIU_AutoLockModels", { Text = "Also lock these models", Values = CAT_NAMES, Multi = true, Default = {},
     Callback = function(v) CFG.autoLockModels = v; for _, e in ipairs(entries()) do maybeAutoLock(e) end end })
 FavBox:AddToggle("FIU_AutoLockPctOn", { Text = "Auto lock by spawn chance", Default = CFG.autoLockPctOn,
-    Tooltip = "Separate from the tier lock: cars the script buys at or under this spawn % are locked right away",
+    Tooltip = "Separate from the tier lock: any car you get at or under this spawn % (script-bought or not) is locked right away",
     Callback = function(v)
         CFG.autoLockPctOn = v
         if v then for _, e in ipairs(entries()) do maybeAutoLock(e) end end
@@ -3567,9 +3749,15 @@ task.spawn(function()
                 put(carInfo, "Pick a car")
             end
 
+            -- favorites: same colored tier + spawn % as the junkyard list, rarest first (plain text, not clickable)
+            local favs = {}
+            for guid, model in pairs(FAV) do
+                local tag, sc = CONTEST.carTag(model)
+                favs[#favs + 1] = { sc = sc, line = '<font color="#ffd24a">★</font> ' .. tag .. (Garage:FindFirstChild(guid) and "" or ' <font color="#ff6b6b">(not in garage)</font>') }
+            end
+            table.sort(favs, function(a, b) return a.sc < b.sc end)
             local fl = {}
-            for guid, model in pairs(FAV) do fl[#fl + 1] = ("★ %s [%s]%s"):format(model, guid:sub(1, 4), Garage:FindFirstChild(guid) and "" or " (not in garage)") end
-            table.sort(fl)
+            for i, f in ipairs(favs) do fl[i] = f.line end
             put(favLabel, #fl > 0 and table.concat(fl, "\n") or "No locked cars")
 
             put(autoLabel, ("%s\nGarage %d/%d · money %s · reserve %s\nSold by script: %d cars · %s in sales\nProfit: %s over the last %d sale%s (buy price and parts taken off)\nSell timer: %s"):format(
@@ -3888,7 +4076,12 @@ do
                     and sellCooldownLeft(e) <= 0 then return true end
             end
         end
-        return CFG.autoBuy and #entries() < garageSlots() and wantedJunk() ~= nil
+        local j = CFG.autoBuy and #entries() < garageSlots() and wantedJunk()
+        if not j then return false end
+        -- a refresh is still spawning (one car / ~2 s): auto buy won't choose until it settles, so keep driving instead of
+        -- parking for ~20 s (2026-10-02). S tier or rarer is bought on sight, so stop for that at once.
+        if os.clock() - (CONTEST.lastSpawn or 0) < CFG.buySettle and TIER_RANK[j.tier] > TIER_RANK.S then return false end
+        return true
     end
 
     local function farmRun()
@@ -3927,6 +4120,15 @@ do
         for _, w in ipairs(car:FindFirstChild("Wheels") and car.Wheels:GetChildren() or {}) do
             if w:IsA("BasePart") then wheels[#wheels + 1] = { part = w, r = math.max(0.5, math.max(w.Size.X, w.Size.Y, w.Size.Z) / 2) } end
         end
+        -- ghost the body through traffic: the farm moves the car frame by frame, so anything in the lane got rear-ended
+        -- (2026-10-02 clip). Only the wheels keep colliding: they hold the road and their turning is what counts.
+        local ghost = {}
+        for _, p in ipairs(car:GetDescendants()) do
+            if p:IsA("BasePart") and p.CanCollide and not (car:FindFirstChild("Wheels") and p:IsDescendantOf(car.Wheels)) then
+                ghost[#ghost + 1] = p; p.CanCollide = false
+            end
+        end
+        farm.ghost = ghost
         farm.startKm = tonumber(Status.KMs.Value) or 0
         farm.moved = 0
         local i = 2
@@ -3958,7 +4160,7 @@ do
             if farm.chosen and farm.car ~= e then farm.yielded = true; farm.status = "switching car"; break end -- picked another car mid-run
             if manualPending then farm.yielded = true; farm.status = "paused for a button"; break end
             if STAFF.gated() then farm.yielded = true; farm.status = "blocked: " .. STAFF.gateMsg; break end
-            if CFG.farmYield and os.clock() - (farm.lastCheck or 0) > 1 then
+            if CFG.farmYield and os.clock() - (farm.lastCheck or 0) > 0.5 then
                 farm.lastCheck = os.clock()
                 if farm.pending() then farm.yielded = true; farm.status = "paused: auto flip has work"; break end
             end
@@ -3966,6 +4168,8 @@ do
                 CFG.driveNoLimit and "no limit" or ("%.2f km to go"):format(math.max(0, owed + CFG.driveExtra)))
         end
         pcall(function() seat.AssemblyLinearVelocity = Vector3.zero end)
+        for _, p in ipairs(farm.ghost or {}) do if p.Parent then p.CanCollide = true end end -- solid again off the farm
+        farm.ghost = nil
         if not farm.yielded then farm.on = false end
     end
 
@@ -3999,6 +4203,7 @@ do
                         farm.yielded = false
                         local ok, err = pcall(farmRun)
                         busy = false
+                        if farm.yielded then CONTEST.wake = true end -- hand over to the auto loop now, not on its next 2 s tick
                         if not ok then farm.status = "error: " .. tostring(err); log("drive farm: " .. tostring(err)); break end
                         if not (farm.yielded and farm.on) then break end
                         -- the auto loop buys / repairs / sells now (it runs every 2 s once busy is free); drive again after
@@ -4055,8 +4260,9 @@ do
     end)
     FarmBox:AddDropdown("FIU_DriveRoute", { Text = "Route", Values = { "Highway", "City road" }, Default = CFG.driveRoute,
         Tooltip = "Highway: back and forth on the long straight stretch north of town. City road: the longest straight road in town.", Callback = set("driveRoute") })
-    FarmBox:AddSlider("FIU_DriveSpeed", { Text = "Speed", Default = CFG.driveSpeed, Min = 20, Max = 150, Rounding = 0, Suffix = " studs/s",
-        Tooltip = "3937 studs = 1 km. Faster finishes sooner but looks less like real driving.", Callback = set("driveSpeed") })
+    FarmBox:AddSlider("FIU_DriveSpeed", { Text = "Speed", Default = CFG.driveSpeed, Min = 20, Max = 210, Rounding = 0, Suffix = " studs/s",
+        Tooltip = "About km/h on the speedometer. Measured 2026-10-02: 150 credited ~0.9-1.0 km/min, 210 only ~0.1-0.5 (the game stops counting most of it).",
+        Callback = set("driveSpeed") })
     FarmBox:AddSlider("FIU_DriveExtra", { Text = "Keep driving past the debt", Default = CFG.driveExtra, Min = 0, Max = 50, Rounding = 0, Suffix = " km",
         Callback = set("driveExtra") })
     FarmBox:AddToggle("FIU_DriveNoLimit", { Text = "No limit", Default = CFG.driveNoLimit,
@@ -4188,6 +4394,66 @@ task.spawn(function()
     while running do
         task.wait(15)
         if running and not hopping then pcall(checkServer) end
+    end
+end)
+
+-- ============================== Chat tab ==============================
+-- everyone seen talking (Here + Global), with block + the server-rule filters. UI refs live on STAFF (200-local limit).
+STAFF.ui = {}
+STAFF.ui.list = Tabs.Chat:AddLeftGroupbox("Chatters", "message-circle")
+STAFF.ui.list:AddLabel("Everyone seen talking in Here or Global chat, remembered across hops. Newest first.", true)
+STAFF.ui.pick = STAFF.ui.list:AddDropdown("FIU_ChatPick", { Text = "Player", Values = {}, AllowNull = true, Searchable = true })
+STAFF.ui.list:AddButton({ Text = "Block in server rules", Func = function()
+    local name = STAFF.ui.pick.Value and (STAFF.ui.pick.Value:gsub("^★ ", ""))
+    local u = name and STAFF.chat.users[name]
+    if not u then notify("Pick a player") return end
+    u.blocked = true; STAFF.saveChat(); notify(name .. " blocked: servers with them fail your rules"); task.spawn(checkServer)
+end })
+STAFF.ui.list:AddButton({ Text = "Unblock", Func = function()
+    local name = STAFF.ui.pick.Value and (STAFF.ui.pick.Value:gsub("^★ ", ""))
+    local u = name and STAFF.chat.users[name]
+    if not u then notify("Pick a player") return end
+    u.blocked = nil; STAFF.saveChat(); notify(name .. " unblocked"); task.spawn(checkServer)
+end })
+STAFF.ui.text = STAFF.ui.list:AddLabel("-", true)
+STAFF.ui.rules = Tabs.Chat:AddRightGroupbox("Server rules", "filter")
+STAFF.ui.rules:AddLabel("Added to the Server hop rules: a server with one of these players fails, so Block actions / Hop away / Auto hop act on it too.", true)
+STAFF.ui.rules:AddToggle("FIU_ChatBlockRule", { Text = "Fail servers with a blocked chatter", Default = HOP.chatBlock,
+    Callback = function(v) HOP.chatBlock = v; saveHop(); task.spawn(checkServer) end })
+STAFF.ui.rules:AddToggle("FIU_ChatSpamRule", { Text = "Fail servers with frequent chatters", Default = HOP.chatSpam,
+    Tooltip = "Traders spamming SELLING/BUYING are usually racing you for the rare cars",
+    Callback = function(v) HOP.chatSpam = v; saveHop(); task.spawn(checkServer) end })
+STAFF.ui.rules:AddSlider("FIU_ChatSpamN", { Text = "Frequent = messages seen", Default = HOP.chatSpamN, Min = 3, Max = 100, Rounding = 0,
+    Callback = function(v) HOP.chatSpamN = v; saveHop() end })
+STAFF.ui.rules:AddButton({ Text = "Forget chat history", DoubleClick = true, Tooltip = "Double-click. Blocked players are kept.", Func = function()
+    for name, u in pairs(STAFF.chat.users) do if not u.blocked then STAFF.chat.users[name] = nil end end
+    STAFF.saveChat(); notify("Chat history cleared (blocks kept)")
+end })
+task.spawn(function()
+    local lastKey = ""
+    while running do
+        pcall(function()
+            local here = {}
+            for _, p in ipairs(Players:GetPlayers()) do here[p.Name] = true; here[p.DisplayName] = true end
+            local list = {}
+            for name, u in pairs(STAFF.chat.users) do list[#list + 1] = { name = name, u = u } end
+            table.sort(list, function(a, b) return (a.u.lastAt or 0) > (b.u.lastAt or 0) end)
+            local lines, vals = {}, {}
+            for i, it in ipairs(list) do
+                local u = it.u
+                local ago = os.time() - (u.lastAt or 0)
+                local agoText = ago < 60 and (ago .. "s") or ago < 3600 and (ago // 60 .. "m") or (ago // 3600 .. "h")
+                if i <= 40 then
+                    lines[#lines + 1] = ('%s%s%s · %d msg · %s ago · <font color="#aaaaaa">%s</font>'):format(u.blocked and '<font color="#ff6b6b">⛔ </font>' or "",
+                        here[it.name] and '<font color="#5ee07a">' .. it.name .. "</font>" or it.name, here[it.name] and " (here)" or "", u.count, agoText, tostring(u.last or ""))
+                end
+                vals[#vals + 1] = (u.blocked and "★ " or "") .. it.name
+            end
+            STAFF.ui.text:SetText(#lines > 0 and table.concat(lines, "\n") or "No one seen talking yet")
+            local key = table.concat(vals, "|")
+            if key ~= lastKey then lastKey = key; STAFF.ui.pick:SetValues(vals) end
+        end)
+        task.wait(3)
     end
 end)
 
