@@ -192,11 +192,45 @@ function HOOK.fn(text, ...)
         return false
     end
     if HOOK.orig then return HOOK.orig(text, ...) end
+    if not HOOK.canRead then return HOOK.ask(tostring(text)) end -- can't reach the game's dialog: ask with our own
     return false -- the game's dialog isn't set up yet: decline rather than hang
 end
 getgenv().FIU_HOOKS[HOOK.fn] = true
+-- Xeno (and other executors without getcallbackvalue) crashed here: "attempt to call a nil value" at HOOK.install.
+-- Without it we can't read the game's callback, so the hook is forced every second and prompts the script isn't
+-- answering get our own Yes/No box (HOOK.ask) instead of the game's dialog.
+HOOK.canRead = type(getcallbackvalue) == "function"
+function HOOK.get(obj, prop)
+    if not HOOK.canRead then return nil end
+    local ok, v = pcall(getcallbackvalue, obj, prop)
+    return ok and v or nil
+end
+function HOOK.ask(text)
+    local gui = Instance.new("ScreenGui")
+    gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "FIU_Confirm", false, 1000
+    local f = Instance.new("Frame")
+    f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(340, 130), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+    f.BackgroundColor3, f.BorderSizePixel, f.Parent = Color3.fromRGB(25, 25, 30), 0, gui
+    local l = Instance.new("TextLabel")
+    l.Size, l.Position, l.BackgroundTransparency = UDim2.new(1, -20, 0, 70), UDim2.fromOffset(10, 8), 1
+    l.Text, l.TextWrapped, l.TextColor3, l.Font, l.TextSize, l.Parent = text, true, Color3.new(1, 1, 1), Enum.Font.Gotham, 15, f
+    local answer
+    for i, opt in ipairs({ { "Yes", true, Color3.fromRGB(60, 160, 80) }, { "No", false, Color3.fromRGB(170, 60, 60) } }) do
+        local b = Instance.new("TextButton")
+        b.Size, b.Position = UDim2.fromOffset(150, 34), UDim2.fromOffset(i == 1 and 15 or 175, 86)
+        b.Text, b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize, b.BorderSizePixel = opt[1], opt[3], Color3.new(1, 1, 1), Enum.Font.GothamBold, 15, 0
+        b.Parent = f
+        b.MouseButton1Click:Connect(function() answer = opt[2] end)
+    end
+    gui.Parent = (gethui and gethui()) or LP:WaitForChild("PlayerGui")
+    local t = os.clock()
+    repeat task.wait(0.05) until answer ~= nil or os.clock() - t > 30
+    gui:Destroy()
+    return answer == true
+end
 function HOOK.install()
-    local cur = getcallbackvalue(CONFIRM, "OnClientInvoke")
+    if not HOOK.canRead then CONFIRM.OnClientInvoke = HOOK.fn; return end
+    local cur = HOOK.get(CONFIRM, "OnClientInvoke")
     if cur == HOOK.fn then return end
     if cur and not getgenv().FIU_HOOKS[cur] then HOOK.orig = cur; getgenv().FIU_ORIG_CONFIRM = cur end
     CONFIRM.OnClientInvoke = HOOK.fn
@@ -1873,7 +1907,7 @@ local function unload()
     if getgenv().FIU_MAIN and getgenv().FIU_MAIN.unload == unload then getgenv().FIU_MAIN = nil end -- not a newer copy's export
     running = false
     for _, c in ipairs(conns) do pcall(c.Disconnect, c) end
-    if getcallbackvalue(CONFIRM, "OnClientInvoke") == HOOK.fn and HOOK.orig then CONFIRM.OnClientInvoke = HOOK.orig end
+    if HOOK.get(CONFIRM, "OnClientInvoke") == HOOK.fn and HOOK.orig then CONFIRM.OnClientInvoke = HOOK.orig end
     for m in pairs(junk) do dropJunk(m) end
     espRoot:Destroy()
     anchorRoot:Destroy()
@@ -3199,7 +3233,7 @@ do
     end
     function X.buyWheelItem(item, diam, width) -- 4 of one rim/tyre model at this size; returns the new loose parts
         local WB = Events.HUD.WheelBuy
-        local orig = getcallbackvalue(WB, "OnClientInvoke")
+        local orig = HOOK.get(WB, "OnClientInvoke") -- nil on Xeno: the game's wheel menu comes back when its HUD rebuilds
         local want = 4
         local got, before = {}, myParts()
         local function collect() for p in pairs(myParts()) do if not before[p] and p:GetAttribute("IsWheel") then before[p] = true; got[#got + 1] = p; X.held[p] = true end end end
