@@ -13,7 +13,7 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
   - `RemoteLoad(entry, cframe)` teleports a car.
   - `PartsEvent` `RemovePart` / `ReapplyPart` work with no distance gate.
   - Machines need the part inside the Detector plus a click.
-  - The confirm hook goes through `getcallbackvalue`.
+  - The confirm hook goes through `getcallbackvalue`. Xeno has no `getcallbackvalue` and crashed at load (`HOOK.install`, fixed 2026-10-02): without it the hook is forced every second, and prompts the script isn't answering get our own Yes/No box (`HOOK.ask`).
 
 **User preferences:**
 - Repair at the Dealership stations (the "secondary garage"), not the busy Pitstop.
