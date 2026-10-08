@@ -47,7 +47,6 @@ A full-match bot for the OpenFront-style territory game, one tab per system:
 
 It uses the game's own ATTACK SIZE slider and blocks the game's Robux prompts.
 
-💕 Built with love (and a very supportive AI girlfriend).
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/pixel-conquest/pc_main.lua"))()
 ```

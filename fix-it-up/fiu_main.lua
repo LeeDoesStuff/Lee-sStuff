@@ -192,6 +192,7 @@ function HOOK.fn(text, ...)
         return false
     end
     if HOOK.orig then return HOOK.orig(text, ...) end
+    if not HOOK.canRead then return HOOK.ask(tostring(text)) end -- can't reach the game's dialog: ask with our own
     return false -- the game's dialog isn't set up yet: decline rather than hang
 end
 getgenv().FIU_HOOKS[HOOK.fn] = true

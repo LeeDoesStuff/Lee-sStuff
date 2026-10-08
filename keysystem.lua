@@ -31,7 +31,9 @@ loadVault()
 if not getgenv().__chv then return end
 
 local okLib, src = pcall(game.HttpGet, game, "https://secure.pandauth.com/pv4/lib")
-local PUSL = okLib and src and loadstring(src)()
+local libFn = okLib and type(src) == "string" and loadstring(src) -- nil on a bad download: don't call it
+local okRun, PUSL = pcall(function() return libFn and libFn() end)
+PUSL = okRun and PUSL or nil
 if not PUSL or type(PUSL.configure) ~= "function" then
     return warn("[CruelHub] key library failed to load")
 end
