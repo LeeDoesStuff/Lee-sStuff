@@ -260,7 +260,7 @@ assert(parsePrice(("buy %s for %s€"):format("Sparkplugs", tostring(40))) == 40
 -- mouse click on that spot. Callers already retry until the click's effect shows. Other executors are untouched.
 do
     local exe = identifyexecutor and tostring((identifyexecutor())):lower() or ""
-    HOOK.realClicks = not fireclickdetector or exe:find("xeno") ~= nil or exe:find("solara") ~= nil
+    HOOK.realClicks = getgenv().FIU_REALCLICKS ~= nil or not fireclickdetector or exe:find("xeno") ~= nil or exe:find("solara") ~= nil -- flag: test this route on any executor ("vu" = skip VirtualInputManager)
 end
 if not fireproximityprompt then -- ponytail: stock route for executors without it; needs the prompt in range (callers stand there)
     fireproximityprompt = function(pp) pcall(function() pp.HoldDuration = 0; pp:InputHoldBegin(); task.wait(); pp:InputHoldEnd() end) end
@@ -280,12 +280,16 @@ function HOOK.click(cd)
     local side = Vector3.new(root.Position.X - pos.X, 0, root.Position.Z - pos.Z)
     side = side.Magnitude > 0.1 and side.Unit or Vector3.new(0, 0, 1)
     local eye
-    for _, dir in ipairs({ side + Vector3.new(0, 0.6, 0), Vector3.new(0, 1, 0), side, side + Vector3.new(0, 1.5, 0),
-        -side + Vector3.new(0, 0.6, 0), side:Cross(Vector3.yAxis) + Vector3.new(0, 0.6, 0), -side:Cross(Vector3.yAxis) + Vector3.new(0, 0.6, 0) }) do
-        local from = pos + dir.Unit * 3 -- close: inside every click range, in front of anything farther out
-        local hit = workspace:Raycast(from, (pos - from) * 1.3)
-        if hit and (hit.Instance == target or hit.Instance:IsDescendantOf(target)) then eye = from break end
-    end
+    local t0 = os.clock()
+    repeat -- right after a teleport the target may still be streaming in (store shelf): give it up to 2 s
+        for _, dir in ipairs({ side + Vector3.new(0, 0.6, 0), Vector3.new(0, 1, 0), side, side + Vector3.new(0, 1.5, 0),
+            -side + Vector3.new(0, 0.6, 0), side:Cross(Vector3.yAxis) + Vector3.new(0, 0.6, 0), -side:Cross(Vector3.yAxis) + Vector3.new(0, 0.6, 0) }) do
+            local from = pos + dir.Unit * 3 -- close: inside every click range, in front of anything farther out
+            local hit = workspace:Raycast(from, (pos - from) * 1.3)
+            if hit and (hit.Instance == target or hit.Instance:IsDescendantOf(target)) then eye = from break end
+        end
+        if not eye then task.wait(0.25) end
+    until eye or os.clock() - t0 > 2
     if not eye then return HOOK.fakeClick(cd) end
     local gui = select(2, pcall(function() return getgenv().FIU_MAIN.lib().ScreenGui end))
     local guiOn = typeof(gui) == "Instance" and gui.Enabled
@@ -294,14 +298,24 @@ function HOOK.click(cd)
     cam.CFrame = CFrame.lookAt(eye, pos)
     if guiOn then gui.Enabled = false end -- the menu would eat the click
     task.wait()
-    local ok = pcall(function() -- an executor without VirtualInputManager access falls back to its own click
-        local p = cam:WorldToViewportPoint(pos)
+    local p = cam:WorldToViewportPoint(pos)
+    -- VirtualInputManager first; where the executor may not touch it, VirtualUser (allowed everywhere: anti-AFK uses
+    -- it) clicks the same spot. Xeno's own fake clicks screen (20, 20), on Roblox's menu button, so it's the last resort.
+    local ok = getgenv().FIU_REALCLICKS ~= "vu" and pcall(function()
         local vim = game:GetService("VirtualInputManager")
+        vim:SendMouseMoveEvent(p.X, p.Y, game) -- the click is hit-tested where the cursor is: put it on the target first
+        task.wait()
         vim:SendMouseButtonEvent(p.X, p.Y, 0, true, game, 0)
         task.wait(0.05)
         vim:SendMouseButtonEvent(p.X, p.Y, 0, false, game, 0)
-        task.wait(0.05)
     end)
+    if not ok then
+        ok = pcall(function()
+            local vu = game:GetService("VirtualUser") -- no CaptureController: real clicks right after it were all lost
+            vu:ClickButton1(Vector2.new(p.X, p.Y), cam.CFrame)
+        end)
+    end
+    task.wait(0.05)
     if guiOn then gui.Enabled = true end
     cam.CameraType = oldType
     if not ok then HOOK.fakeClick(cd) end
@@ -2237,7 +2251,7 @@ local function aucFloor() return math.max(CFG.reserve or 0, CFG.aucFloor or 0) e
 function AUC.free()
     local A = workspace:FindFirstChild("Utils") and workspace.Utils:FindFirstChild("Auctions")
     if not A then return {} end
-    pcall(function() LP:RequestStreamAroundAsync(A:GetPivot().Position, 5) end)
+    streamAt(A:GetPivot().Position, 5) -- the raw call hangs forever once streaming jams: froze the farmer mid-run
     local list = {}
     for _, g in ipairs(A:FindFirstChild("Garages") and A.Garages:GetChildren() or {}) do
         local pp = g:FindFirstChild("MoneyBuy", true)

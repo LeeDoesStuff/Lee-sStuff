@@ -304,3 +304,16 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
   - The fake was used 0 times.
 - Xeno also lacks `getcallbackvalue`, which crashed the script at load before 2026-10-02. The hooks then read the game's callbacks from `getrenv()._G`, falling back to our own Yes/No box (`HOOK.ask`), and re-assign ours every second.
 - `fireproximityprompt` gets a stock fallback (`HoldDuration = 0` plus `InputHoldBegin`/`InputHoldEnd`) if it's missing. `decompile` uses are already pcall'd.
+
+### Real clicks: what broke them (measured 2026-10-08 on Potassium, Xeno route forced)
+
+- **Aim from 3 studs.** At 5 studs the store shelf sat between the camera and the spark plug box (raycast hit "Shelf"); at 3 studs it hit the item. Store items are tiny models (1.4 × 0.25 × 0.37).
+- **Cursor:** the click is hit-tested where the cursor is, so `HOOK.click` moves the virtual cursor onto the target (`SendMouseMoveEvent`) before pressing. Runs of misses happened while the real cursor was elsewhere; with it on the target, 5 of 5 landed.
+- **`VirtualUser:CaptureController()`:** every real click after it was lost for a while, so the VirtualUser fallback skips it. VirtualUser is only the fallback for executors that refuse VirtualInputManager. Xeno's own fake clicks screen (20, 20), Roblox's menu button, so it's the last resort.
+- **End to end:** a full `repairCar` with the route forced charged the battery to 0 (charger), and the grinder parts finished. Two spark plug buys from the repair lift went through. The fake was never used.
+
+## Auctions (2026-10-08)
+
+- **The MoneyBuy prompt has NO confirm.** Firing it buys the garage. A "decline at the prompt" spy test isn't possible; one accidental €75K open (Garage3) gave a €75K MoneyPile back, so it came out even.
+- The structure is unchanged after the update. All 12 garages have MoneyBuy on `RootPos.Attachment` (MaxActivationDistance 10, hold 1 s), `Open` is set once bought and clears again within about a minute, and the prize lands in `Cache`.
+- Bug that could freeze multi-open runs: `AUC.free()` called `RequestStreamAroundAsync` directly before every open, and that call hangs forever once streaming jams. It now uses `streamAt`.
