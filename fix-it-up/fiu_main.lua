@@ -2245,6 +2245,7 @@ end
 -- EACH open, and the prompt's price must still read 75,000€.
 do
 local AUC = { price = 75000, running = false, status = "idle", runLog = {} }
+getgenv().FIU_MAIN.auc = AUC -- for scripted tests
 STATE.auction = STATE.auction or { opened = 0, spent = 0, won = 0, cars = {} }
 local RARE = { ["Chule El Caminho SS 454"] = true, ["Four JF"] = true, ["Missah Silva S15"] = true, ["Four Mustank Hoonicorn"] = true }
 local function aucFloor() return math.max(CFG.reserve or 0, CFG.aucFloor or 0) end
@@ -2279,10 +2280,21 @@ function AUC.openOne(budgetLeft)
         return p ~= nil and p <= AUC.price and myMoney() - p >= aucFloor()
     end
     local t0 = os.clock()
-    tpTo(CFrame.new(pick.pp.Parent.WorldPosition + Vector3.new(0, 2, 0)))
-    task.wait(0.8)
-    fireproximityprompt(pick.pp)
-    repeat task.wait(0.2) until pick.g:GetAttribute("Open") or os.clock() - t0 > 10
+    -- game update 2026-10-08: an open 3.5 s after the last one is silently ignored (no charge, no notify); they used to
+    -- work 3-4 s apart. Keep pressing the same garage while nothing was charged, up to 40 s.
+    -- ponytail: the cooldown's length wasn't measured; the run log shows how long each open waited
+    repeat
+        tpTo(CFrame.new(pick.pp.Parent.WorldPosition + Vector3.new(0, 2, 0)))
+        task.wait(0.8)
+        if not pick.pp.Enabled or pick.g:GetAttribute("Open") then break end
+        fireproximityprompt(pick.pp)
+        local t1 = os.clock()
+        repeat task.wait(0.2) until pick.g:GetAttribute("Open") or myMoney() < m0 - 1 or os.clock() - t1 > 4
+    until pick.g:GetAttribute("Open") or myMoney() < m0 - 1 or not AUC.running or os.clock() - t0 > 40
+    if not pick.g:GetAttribute("Open") and myMoney() < m0 - 1 then -- charged: the gate is coming, give it the old 10 s
+        local t2 = os.clock()
+        repeat task.wait(0.2) until pick.g:GetAttribute("Open") or os.clock() - t2 > 10
+    end
     confirmFn = nil
     task.wait(2.5) -- the prize lands after the gate opens
     local cache = {}
@@ -2290,7 +2302,7 @@ function AUC.openOne(budgetLeft)
     local cars = {}
     for _, e in ipairs(entries()) do if not before[e] then cars[#cars + 1] = entryModel(e) end end
     return {
-        garage = pick.g.Name, opened = pick.g:GetAttribute("Open") == true, asked = asked,
+        garage = pick.g.Name, opened = pick.g:GetAttribute("Open") == true, asked = asked, waited = math.floor(os.clock() - t0),
         delta = myMoney() - m0, cache = cache, cars = cars, notify = lastNotify.t >= t0 and lastNotify.text or nil,
     }
 end
@@ -2330,7 +2342,7 @@ function AUC.start()
             A.opened += 1; A.spent += AUC.price; A.won += math.max(0, prize)
             for _, c in ipairs(r.cars) do A.cars[#A.cars + 1] = c end
             saveState()
-            local line = ("%s: %s%s%s"):format(r.garage, prize > 0 and ("+" .. money(prize)) or "no cash",
+            local line = ("%s%s: %s%s%s"):format(r.garage, r.waited > 6 and (" (waited %d s)"):format(r.waited) or "", prize > 0 and ("+" .. money(prize)) or "no cash",
                 #r.cars > 0 and (" · car: " .. table.concat(r.cars, ", ")) or "", #r.cache > 0 and (" · [" .. table.concat(r.cache, ",") .. "]") or "")
             AUC.runLog[#AUC.runLog + 1] = line
             log("auction " .. line)

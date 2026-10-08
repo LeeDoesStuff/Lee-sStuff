@@ -57,4 +57,6 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 
 **Game update 2026-10-08:** store buys now confirm via `HUD.StoreConfirmation` (returns a quantity) and store clicks only reach 32 studs. **Xeno users:** fireclickdetector is emulated there, so `HOOK.click` alternates in real VirtualInputManager clicks (gated on identifyexecutor). Xeno also lacks `getcallbackvalue` (crashed at load before a 2026-10-02 cloud fix): the hooks read the game's own callbacks from `getrenv()._G` instead, then fall back to `HOOK.ask` (our own Yes/No box). Details in fix-it-up-spec.md.
 
+**NEVER fire an auction MoneyBuy prompt in a test:** it has no confirm, so firing it spends €75K. On 2026-10-08 a "spy and decline" probe opened Garage3; the €75K MoneyPile came back, so it was net zero by luck. Any test that fires a purchase prompt spends real in-game money: ask first.
+
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md).
