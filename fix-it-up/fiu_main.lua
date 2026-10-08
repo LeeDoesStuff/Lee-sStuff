@@ -195,13 +195,76 @@ function HOOK.fn(text, ...)
     return false -- the game's dialog isn't set up yet: decline rather than hang
 end
 getgenv().FIU_HOOKS[HOOK.fn] = true
+-- game update 2026-10-08: store items (parts, tools) confirm through HUD.StoreConfirmation(name, price, maxQty, timeout),
+-- which returns how many to buy (0 = cancel). Script buys go through the same confirmFn; always 1 unit.
+HOOK.store = Events.HUD:FindFirstChild("StoreConfirmation")
+HOOK.sorig = getgenv().FIU_ORIG_STORE
+function HOOK.storeFn(name, price, ...)
+    lastConfirm = { t = os.clock(), text = tostring(name) }
+    if confirmFn then return confirmFn(("buy %s for %s€"):format(tostring(name), tostring(price))) == true and 1 or 0 end
+    if HOOK.sorig then return HOOK.sorig(name, price, ...) end
+    return 0
+end
+getgenv().FIU_HOOKS[HOOK.storeFn] = true
+-- Xeno has no reliable getcallbackvalue: the HUD scripts publish both callbacks in the game's _G (measured 2026-10-08),
+-- so read them there and re-assign ours blindly every second.
+-- ponytail: with neither getcallbackvalue nor getrenv the pass-through is nil, so the player's own buys are declined while it runs
+function HOOK.current(rf, gname)
+    if getcallbackvalue then local ok, f = pcall(getcallbackvalue, rf, "OnClientInvoke"); if ok then return f, true end end
+    local ok, g = pcall(function() return getrenv()._G end)
+    return ok and g and g[gname] or nil, false
+end
+function HOOK.set(rf, gname, fn, field, gkey)
+    local cur, exact = HOOK.current(rf, gname)
+    if exact and cur == fn then return end
+    if cur and not getgenv().FIU_HOOKS[cur] then HOOK[field] = cur; getgenv()[gkey] = cur end
+    rf.OnClientInvoke = fn
+end
 function HOOK.install()
-    local cur = getcallbackvalue(CONFIRM, "OnClientInvoke")
-    if cur == HOOK.fn then return end
-    if cur and not getgenv().FIU_HOOKS[cur] then HOOK.orig = cur; getgenv().FIU_ORIG_CONFIRM = cur end
-    CONFIRM.OnClientInvoke = HOOK.fn
+    HOOK.set(CONFIRM, "Confirmation", HOOK.fn, "orig", "FIU_ORIG_CONFIRM")
+    if HOOK.store then HOOK.set(HOOK.store, "StoreConfirmation", HOOK.storeFn, "sorig", "FIU_ORIG_STORE") end
 end
 HOOK.install()
+assert(parsePrice(("buy %s for %s€"):format("Sparkplugs", tostring(40))) == 40, "store confirm text self-check")
+
+-- Xeno/Solara emulate fireclickdetector client-side, and it often never reaches the server (hood never opened, junk
+-- buys missed, 2026-10-08). There, every second click on the same detector is a real one: aim the camera at it and
+-- send a VirtualInputManager mouse click. Callers already retry until the click's effect shows.
+do
+    local exe = identifyexecutor and tostring((identifyexecutor())):lower() or ""
+    HOOK.realClicks = not fireclickdetector or exe:find("xeno") ~= nil or exe:find("solara") ~= nil
+end
+HOOK.clicks = setmetatable({}, { __mode = "k" })
+function HOOK.click(cd)
+    local n = (HOOK.clicks[cd] or 0) + 1
+    HOOK.clicks[cd] = n
+    if fireclickdetector and (not HOOK.realClicks or n % 2 == 1) then return fireclickdetector(cd) end
+    local target = cd.Parent
+    local pos = target and (target:IsA("BasePart") and target.Position or target:IsA("Model") and target:GetBoundingBox().Position)
+    local cam, root = workspace.CurrentCamera, LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not pos or not cam then return end
+    local from = root and root.Position + Vector3.new(0, 3, 0) or cam.CFrame.Position
+    local away = from - pos
+    away = away.Magnitude > 0.1 and away.Unit or Vector3.new(0, 1, 0)
+    local gui = select(2, pcall(function() return getgenv().FIU_MAIN.lib().ScreenGui end))
+    local guiOn = typeof(gui) == "Instance" and gui.Enabled
+    local oldType = cam.CameraType
+    cam.CameraType = Enum.CameraType.Scriptable
+    cam.CFrame = CFrame.lookAt(pos + away * 5, pos) -- between you and it: nothing in the way, inside click range
+    if guiOn then gui.Enabled = false end -- the menu would eat the click
+    task.wait()
+    local ok = pcall(function() -- an executor without VirtualInputManager access falls back to its own click
+        local p = cam:WorldToViewportPoint(pos)
+        local vim = game:GetService("VirtualInputManager")
+        vim:SendMouseButtonEvent(p.X, p.Y, 0, true, game, 0)
+        task.wait(0.05)
+        vim:SendMouseButtonEvent(p.X, p.Y, 0, false, game, 0)
+        task.wait(0.05)
+    end)
+    if guiOn then gui.Enabled = true end
+    cam.CameraType = oldType
+    if not ok and fireclickdetector then fireclickdetector(cd) end
+end
 
 -- declared up here: buyJunk (auto-lock message) calls it long before the UI section sets it to Library:Notify.
 -- It used to be declared below buyJunk, so a rare auto-locked buy crashed on a nil global (errors.txt ":931").
@@ -560,19 +623,18 @@ local function buyStore(model, isTool)
     local before = myParts()
     local asked = false
     confirmFn = function(text) asked = true; local p = parsePrice(text); return p ~= nil and myMoney() - p >= CFG.reserve end
-    -- store clicks work from anywhere (measured 450 studs); only hop over if the server doesn't answer
-    fireclickdetector(model.ClickDetector)
-    local t0 = os.clock()
-    repeat task.wait(0.05) until asked or os.clock() - t0 > 1.5
-    if not asked then
-        local back = hrp() and hrp().CFrame
-        tpTo(CFrame.new(model:GetPivot().Position + Vector3.new(0, 2, 5)))
-        task.wait(0.2)
-        fireclickdetector(model.ClickDetector)
-        t0 = os.clock()
+    -- game update 2026-10-08: store clicks only reach 32 studs (they used to work from 450+), no settle needed after
+    -- the teleport (answered 0.1 s later). Stand next to the item; the second try is a real click on Xeno.
+    local back = hrp() and hrp().CFrame
+    local near = back and (back.Position - model:GetPivot().Position).Magnitude < 25
+    if not near then tpTo(CFrame.new(model:GetPivot().Position + Vector3.new(0, 2, 5))); task.wait(0.15) end
+    for _ = 1, 2 do
+        HOOK.click(model.ClickDetector)
+        local t0 = os.clock()
         repeat task.wait(0.05) until asked or os.clock() - t0 > 2
-        if back then tpTo(back) end
+        if asked then break end
     end
+    if back and not near then tpTo(back) end
     local found, t = nil, os.clock()
     repeat
         task.wait(0.1)
@@ -611,7 +673,7 @@ local function repairCar(e)
         tpTo(hoodSpot(car))
         local t = os.clock()
         repeat
-            fireclickdetector(cd)
+            HOOK.click(cd)
             task.wait(0.5)
             if not hoodOpen() and os.clock() - t > 3 then tpTo(hoodSpot(car)) end -- re-stand in case the car shifted
         until hoodOpen() or os.clock() - t > 10
@@ -691,7 +753,7 @@ local function repairCar(e)
         for _, j in ipairs(batch) do -- click range is 10-14 studs: stand at each machine
             tpTo(CFrame.new(j.m.cd.Parent:GetPivot().Position + Vector3.new(0, 2, 0)) * CFrame.new(0, 0, 3))
             task.wait(0.25)
-            fireclickdetector(j.m.cd)
+            HOOK.click(j.m.cd)
         end
         local t, reclicked = os.clock(), false
         repeat
@@ -703,7 +765,7 @@ local function repairCar(e)
             if not reclicked and os.clock() - t > 22 then
                 reclicked = true
                 for _, j in ipairs(batch) do
-                    if (j.part:GetAttribute("Wear") or 0) > 0 then tpTo(CFrame.new(j.m.cd.Parent:GetPivot().Position + Vector3.new(0, 2, 3))); task.wait(0.2); fireclickdetector(j.m.cd) end
+                    if (j.part:GetAttribute("Wear") or 0) > 0 then tpTo(CFrame.new(j.m.cd.Parent:GetPivot().Position + Vector3.new(0, 2, 3))); task.wait(0.2); HOOK.click(j.m.cd) end
                 end
             end
         until os.clock() - t > 45
@@ -958,7 +1020,7 @@ local function buyJunk(info, opts)
             end
             sniped = near > 0
         end
-        fireclickdetector(m.ClickDetector)
+        HOOK.click(m.ClickDetector)
         local t = os.clock()
         repeat task.wait(0.1) until asked or os.clock() - t > 2.5
         if asked then break end
@@ -1051,6 +1113,12 @@ local function makeEsp(j)
 end
 
 local function hex(c) return ("#%02x%02x%02x"):format(c.R * 255, c.G * 255, c.B * 255) end
+-- car dropdown order: alphabetical by car name, ignoring the "★ " / "FLIP " tag in front
+function CONTEST.byCarName(a, b)
+    local na, nb = a:gsub("^★ ", ""):gsub("^FLIP ", ""):lower(), b:gsub("^★ ", ""):gsub("^FLIP ", ""):lower()
+    if na ~= nb then return na < nb end
+    return a < b
+end
 -- "[A] Model 0.2%" in the tier color, the junkyard list's style (used by the garage list and favorites)
 function CONTEST.carTag(model)
     local tier = modelTier(model)
@@ -1873,7 +1941,12 @@ local function unload()
     if getgenv().FIU_MAIN and getgenv().FIU_MAIN.unload == unload then getgenv().FIU_MAIN = nil end -- not a newer copy's export
     running = false
     for _, c in ipairs(conns) do pcall(c.Disconnect, c) end
-    if getcallbackvalue(CONFIRM, "OnClientInvoke") == HOOK.fn and HOOK.orig then CONFIRM.OnClientInvoke = HOOK.orig end
+    for _, h in ipairs({ { CONFIRM, "Confirmation", HOOK.fn, HOOK.orig }, { HOOK.store, "StoreConfirmation", HOOK.storeFn, HOOK.sorig } }) do
+        if h[1] and h[4] then
+            local cur, exact = HOOK.current(h[1], h[2])
+            if not exact or cur == h[3] then h[1].OnClientInvoke = h[4] end
+        end
+    end
     for m in pairs(junk) do dropJunk(m) end
     espRoot:Destroy()
     anchorRoot:Destroy()
@@ -2347,7 +2420,7 @@ end) })
 CarBox:AddButton({ Text = "Open / close hood", Func = run("hood", function()
     local c = selectedCar and carOf(selectedCar)
     local cd = c and c:FindFirstChild("Misc") and c.Misc:FindFirstChild("Hood") and c.Misc.Hood:FindFirstChild("ClickDetector", true)
-    if cd then tpTo(hoodSpot(c)); task.wait(0.3); fireclickdetector(cd) end
+    if cd then tpTo(hoodSpot(c)); task.wait(0.3); HOOK.click(cd) end
 end) })
 local carInfo = CarBox:AddLabel("-", true)
 
@@ -2773,7 +2846,7 @@ do
         if not cd then return false end
         tpTo(hoodSpot(car))
         local t = os.clock()
-        repeat fireclickdetector(cd); task.wait(0.5) until isOpen() or os.clock() - t > 10 -- a fresh spawn ignores the hood ~4.5 s
+        repeat HOOK.click(cd); task.wait(0.5) until isOpen() or os.clock() - t > 10 -- a fresh spawn ignores the hood ~4.5 s
         return isOpen()
     end
 
@@ -2949,7 +3022,7 @@ do
         tpTo(button)
         local y = X.waitStill(lift, 5)
         if y and y > 3.1 and down then -- left up from before: bring it down (low ~2.35, high ~3.85)
-            fireclickdetector(down)
+            HOOK.click(down)
             task.wait(0.5)
             X.waitStill(lift, 6)
         end
@@ -2958,7 +3031,7 @@ do
         tpTo(button)
         task.wait(0.6)
         for _ = 1, 2 do
-            fireclickdetector(up)
+            HOOK.click(up)
             local t = os.clock()
             repeat task.wait(0.3) until car:GetAttribute("OnLift") or os.clock() - t > 6
             if car:GetAttribute("OnLift") then break end
@@ -2972,7 +3045,7 @@ do
         local down = lift and lift:FindFirstChild("Down") and lift.Down:FindFirstChildWhichIsA("ClickDetector")
         if not down then return end
         X.waitStill(lift, 5)
-        fireclickdetector(down)
+        HOOK.click(down)
         task.wait(0.5)
         X.waitStill(lift, 6)
     end
@@ -3199,20 +3272,20 @@ do
     end
     function X.buyWheelItem(item, diam, width) -- 4 of one rim/tyre model at this size; returns the new loose parts
         local WB = Events.HUD.WheelBuy
-        local orig = getcallbackvalue(WB, "OnClientInvoke")
+        local orig = HOOK.current(WB, "WheelBuy") -- nil where it can't be read: ours stays until the HUD re-sets it
         local want = 4
         local got, before = {}, myParts()
         local function collect() for p in pairs(myParts()) do if not before[p] and p:GetAttribute("IsWheel") then before[p] = true; got[#got + 1] = p; X.held[p] = true end end end
         for _ = 1, 4 do -- x4 first; if the server only gave one, top up one at a time
             local asked = false
             WB.OnClientInvoke = function() asked = true; return diam, width, #got == 0 end
-            fireclickdetector(item.ClickDetector)
+            HOOK.click(item.ClickDetector)
             local t = os.clock()
             repeat task.wait(0.1) until asked or os.clock() - t > 2
             if not asked then -- out of click range: step over and retry
                 local back = hrp() and hrp().CFrame
                 tpTo(CFrame.new(item:GetPivot().Position + Vector3.new(0, 2, 5))); task.wait(0.4)
-                fireclickdetector(item.ClickDetector)
+                HOOK.click(item.ClickDetector)
                 t = os.clock()
                 repeat task.wait(0.1) until asked or os.clock() - t > 3
                 if back then tpTo(back) end
@@ -3221,7 +3294,7 @@ do
             repeat task.wait(0.2); collect() until #got >= want or os.clock() - t > 3
             if #got >= want or not asked then break end
         end
-        WB.OnClientInvoke = orig
+        if orig then WB.OnClientInvoke = orig end
         return got
     end
     function X.mergeWheels(rims, tires) -- at the tyre changer; returns finished wheels
@@ -3237,8 +3310,8 @@ do
             local before = myParts()
             local wheel
             for try = 1, 3 do -- a pair sometimes doesn't take (1 of 4 on 2026-09-30): press again, slower
-                held = rims[i]; task.wait(0.8 + 0.4 * try); fireclickdetector(cd); task.wait(1.2 + 0.4 * try)
-                held = tires[i]; task.wait(0.8 + 0.4 * try); fireclickdetector(cd)
+                held = rims[i]; task.wait(0.8 + 0.4 * try); HOOK.click(cd); task.wait(1.2 + 0.4 * try)
+                held = tires[i]; task.wait(0.8 + 0.4 * try); HOOK.click(cd)
                 local t = os.clock()
                 repeat
                     task.wait(0.2)
@@ -3494,7 +3567,7 @@ do
         while running do
             local labels = {}
             for l in pairs(carByLabel) do labels[#labels + 1] = l end
-            table.sort(labels)
+            table.sort(labels, CONTEST.byCarName)
             local key = table.concat(labels, "|")
             if key ~= lastKey then
                 lastKey = key
@@ -3704,6 +3777,7 @@ task.spawn(function()
                 local l = ("%s%s [%s]"):format(isFav(e) and "★ " or isFlip(e) and "FLIP " or "", entryModel(e), e.Name:sub(1, 4))
                 cvals[#cvals + 1] = l; carByLabel[l] = e
             end
+            table.sort(cvals, CONTEST.byCarName)
             local ckey = table.concat(cvals, "|")
             if ckey ~= lastCarVals then
                 lastCarVals = ckey
@@ -4239,7 +4313,7 @@ do
         while running do
             local labels = {}
             for l in pairs(carByLabel) do labels[#labels + 1] = l end
-            table.sort(labels)
+            table.sort(labels, CONTEST.byCarName)
             local key = table.concat(labels, "|")
             if key ~= lastKey then
                 lastKey = key

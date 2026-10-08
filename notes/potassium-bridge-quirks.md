@@ -29,3 +29,4 @@ Quirks of the Potassium MCP execute bridge (`mcp__potassium__execute_script` / `
 
 See [battle-bot-project](../build-a-battle-bot/notes.md), [warfare-project](../warfare/notes.md).
 - **Never loop getscriptbytecode/decompile without yielding** (2026-09-29 Pixel Conquest): 22 remotes × 95 scripts of unyielded bytecode fetches froze the game twice. Cache bytecode once per script, `task.wait()` after each, scope to ReplicatedStorage, and run recon in steps with a status file per step.
+- **When the session's potassium MCP shows ECONNREFUSED but Potassium is running** (it started after the session), the endpoint `http://127.0.0.1:8225/mcp` (auth header in `~/.claude.json` mcpServers.potassium) can be driven directly with a tiny JSON-RPC client: initialize → notifications/initialized → tools/call `execute_script` with `{pid, source}` (the arg is `source`, not `script`). Used 2026-10-08; scratch copy was `kmcp.py`. Only the user can reconnect a "user" MCP server via /mcp.

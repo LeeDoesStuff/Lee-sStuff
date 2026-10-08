@@ -55,4 +55,6 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 - It hunts for servers where other players' `leaderstats["Cars Sold"]` is under a cap.
 - The servers API allows at most 2 calls per 4 s (the 3rd gets a 429).
 
+**Game update 2026-10-08:** store buys now confirm via `HUD.StoreConfirmation` (returns a quantity) and store clicks only reach 32 studs. **Xeno users:** fireclickdetector is emulated there, so `HOOK.click` alternates in real VirtualInputManager clicks (gated on identifyexecutor). Details in fix-it-up-spec.md.
+
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md).
