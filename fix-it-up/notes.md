@@ -13,7 +13,7 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
   - `RemoteLoad(entry, cframe)` teleports a car.
   - `PartsEvent` `RemovePart` / `ReapplyPart` work with no distance gate.
   - Machines need the part inside the Detector plus a click.
-  - The confirm hook goes through `getcallbackvalue`. Xeno has no `getcallbackvalue` and crashed at load (`HOOK.install`, fixed 2026-10-02): without it the hook is forced every second, and prompts the script isn't answering get our own Yes/No box (`HOOK.ask`).
+  - The confirm hook goes through `getcallbackvalue`.
 
 **User preferences:**
 - Repair at the Dealership stations (the "secondary garage"), not the busy Pitstop.
@@ -55,6 +55,6 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 - It hunts for servers where other players' `leaderstats["Cars Sold"]` is under a cap.
 - The servers API allows at most 2 calls per 4 s (the 3rd gets a 429).
 
-**Game update 2026-10-08:** store buys now confirm via `HUD.StoreConfirmation` (returns a quantity) and store clicks only reach 32 studs. **Xeno users:** fireclickdetector is emulated there, so `HOOK.click` alternates in real VirtualInputManager clicks (gated on identifyexecutor). Details in fix-it-up-spec.md.
+**Game update 2026-10-08:** store buys now confirm via `HUD.StoreConfirmation` (returns a quantity) and store clicks only reach 32 studs. **Xeno users:** fireclickdetector is emulated there, so `HOOK.click` alternates in real VirtualInputManager clicks (gated on identifyexecutor). Xeno also lacks `getcallbackvalue` (crashed at load before a 2026-10-02 cloud fix): the hooks read the game's own callbacks from `getrenv()._G` instead, then fall back to `HOOK.ask` (our own Yes/No box). Details in fix-it-up-spec.md.
 
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md).

@@ -182,6 +182,30 @@ local function myMoney() return tonumber(Status.Money.Value) or 0 end -- the gam
 getgenv().FIU_HOOKS = getgenv().FIU_HOOKS or setmetatable({}, { __mode = "k" })
 HOOK.orig = getgenv().FIU_ORIG_CONFIRM
 local confirmFn, lastConfirm = nil, nil -- confirmFn(text) -> bool while the script is buying/selling
+-- last resort when neither getcallbackvalue nor the game's _G is reachable (Xeno without getrenv): our own Yes/No box
+function HOOK.ask(text)
+    local gui = Instance.new("ScreenGui")
+    gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "FIU_Confirm", false, 1000
+    local f = Instance.new("Frame")
+    f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(340, 130), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+    f.BackgroundColor3, f.BorderSizePixel, f.Parent = Color3.fromRGB(25, 25, 30), 0, gui
+    local l = Instance.new("TextLabel")
+    l.Size, l.Position, l.BackgroundTransparency = UDim2.new(1, -20, 0, 70), UDim2.fromOffset(10, 8), 1
+    l.Text, l.TextWrapped, l.TextColor3, l.Font, l.TextSize, l.Parent = text, true, Color3.new(1, 1, 1), Enum.Font.Gotham, 15, f
+    local answer
+    for i, opt in ipairs({ { "Yes", true, Color3.fromRGB(60, 160, 80) }, { "No", false, Color3.fromRGB(170, 60, 60) } }) do
+        local b = Instance.new("TextButton")
+        b.Size, b.Position = UDim2.fromOffset(150, 34), UDim2.fromOffset(i == 1 and 15 or 175, 86)
+        b.Text, b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize, b.BorderSizePixel = opt[1], opt[3], Color3.new(1, 1, 1), Enum.Font.GothamBold, 15, 0
+        b.Parent = f
+        b.MouseButton1Click:Connect(function() answer = opt[2] end)
+    end
+    gui.Parent = (gethui and gethui()) or LP:WaitForChild("PlayerGui")
+    local t = os.clock()
+    repeat task.wait(0.05) until answer ~= nil or os.clock() - t > 30
+    gui:Destroy()
+    return answer == true
+end
 function HOOK.fn(text, ...)
     lastConfirm = { t = os.clock(), text = tostring(text) }
     if confirmFn then return confirmFn(tostring(text)) == true end
@@ -192,7 +216,7 @@ function HOOK.fn(text, ...)
         return false
     end
     if HOOK.orig then return HOOK.orig(text, ...) end
-    if not HOOK.canRead then return HOOK.ask(tostring(text)) end -- can't reach the game's dialog: ask with our own
+    if not getcallbackvalue then return HOOK.ask(tostring(text)) end -- the game's dialog is out of reach: ask with our own
     return false -- the game's dialog isn't set up yet: decline rather than hang
 end
 getgenv().FIU_HOOKS[HOOK.fn] = true
@@ -204,12 +228,12 @@ function HOOK.storeFn(name, price, ...)
     lastConfirm = { t = os.clock(), text = tostring(name) }
     if confirmFn then return confirmFn(("buy %s for %s€"):format(tostring(name), tostring(price))) == true and 1 or 0 end
     if HOOK.sorig then return HOOK.sorig(name, price, ...) end
+    if not getcallbackvalue then return HOOK.ask(("Buy %s for %s€?"):format(tostring(name), tostring(price))) and 1 or 0 end
     return 0
 end
 getgenv().FIU_HOOKS[HOOK.storeFn] = true
 -- Xeno has no reliable getcallbackvalue: the HUD scripts publish both callbacks in the game's _G (measured 2026-10-08),
 -- so read them there and re-assign ours blindly every second.
--- ponytail: with neither getcallbackvalue nor getrenv the pass-through is nil, so the player's own buys are declined while it runs
 function HOOK.current(rf, gname)
     if getcallbackvalue then local ok, f = pcall(getcallbackvalue, rf, "OnClientInvoke"); if ok then return f, true end end
     local ok, g = pcall(function() return getrenv()._G end)
@@ -228,30 +252,46 @@ end
 HOOK.install()
 assert(parsePrice(("buy %s for %s€"):format("Sparkplugs", tostring(40))) == 40, "store confirm text self-check")
 
--- Xeno/Solara emulate fireclickdetector client-side, and it often never reaches the server (hood never opened, junk
--- buys missed, 2026-10-08). There, every second click on the same detector is a real one: aim the camera at it and
--- send a VirtualInputManager mouse click. Callers already retry until the click's effect shows.
+-- Xeno/Solara fake fireclickdetector in Lua: they move the ClickDetector onto an invisible part in front of the camera
+-- and spam VirtualUser clicks, and only put it back once a click lands. A missed one strands the detector there (the
+-- hood is then never found again) and the server never hears the click: "hood never opens", junk buys missed
+-- (reported 2026-10-08). There every click is a real one instead: aim the camera at the detector from an angle a
+-- raycast proves is clear (the hood mesh or your own character can sit in front of it), then a VirtualInputManager
+-- mouse click on that spot. Callers already retry until the click's effect shows. Other executors are untouched.
 do
     local exe = identifyexecutor and tostring((identifyexecutor())):lower() or ""
     HOOK.realClicks = not fireclickdetector or exe:find("xeno") ~= nil or exe:find("solara") ~= nil
 end
-HOOK.clicks = setmetatable({}, { __mode = "k" })
+if not fireproximityprompt then -- ponytail: stock route for executors without it; needs the prompt in range (callers stand there)
+    fireproximityprompt = function(pp) pcall(function() pp.HoldDuration = 0; pp:InputHoldBegin(); task.wait(); pp:InputHoldEnd() end) end
+end
+function HOOK.fakeClick(cd) -- the executor's own click, with the detector put back if it was left moved
+    if not fireclickdetector then return end
+    local home = cd.Parent
+    pcall(fireclickdetector, cd)
+    task.delay(1, function() if cd.Parent ~= home and home and home.Parent then cd.Parent = home end end)
+end
 function HOOK.click(cd)
-    local n = (HOOK.clicks[cd] or 0) + 1
-    HOOK.clicks[cd] = n
-    if fireclickdetector and (not HOOK.realClicks or n % 2 == 1) then return fireclickdetector(cd) end
+    if not HOOK.realClicks then return fireclickdetector(cd) end
     local target = cd.Parent
     local pos = target and (target:IsA("BasePart") and target.Position or target:IsA("Model") and target:GetBoundingBox().Position)
     local cam, root = workspace.CurrentCamera, LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-    if not pos or not cam then return end
-    local from = root and root.Position + Vector3.new(0, 3, 0) or cam.CFrame.Position
-    local away = from - pos
-    away = away.Magnitude > 0.1 and away.Unit or Vector3.new(0, 1, 0)
+    if not pos or not cam or not root then return HOOK.fakeClick(cd) end
+    local side = Vector3.new(root.Position.X - pos.X, 0, root.Position.Z - pos.Z)
+    side = side.Magnitude > 0.1 and side.Unit or Vector3.new(0, 0, 1)
+    local eye
+    for _, dir in ipairs({ side + Vector3.new(0, 0.6, 0), Vector3.new(0, 1, 0), side, side + Vector3.new(0, 1.5, 0),
+        -side + Vector3.new(0, 0.6, 0), side:Cross(Vector3.yAxis) + Vector3.new(0, 0.6, 0), -side:Cross(Vector3.yAxis) + Vector3.new(0, 0.6, 0) }) do
+        local from = pos + dir.Unit * 3 -- close: inside every click range, in front of anything farther out
+        local hit = workspace:Raycast(from, (pos - from) * 1.3)
+        if hit and (hit.Instance == target or hit.Instance:IsDescendantOf(target)) then eye = from break end
+    end
+    if not eye then return HOOK.fakeClick(cd) end
     local gui = select(2, pcall(function() return getgenv().FIU_MAIN.lib().ScreenGui end))
     local guiOn = typeof(gui) == "Instance" and gui.Enabled
     local oldType = cam.CameraType
     cam.CameraType = Enum.CameraType.Scriptable
-    cam.CFrame = CFrame.lookAt(pos + away * 5, pos) -- between you and it: nothing in the way, inside click range
+    cam.CFrame = CFrame.lookAt(eye, pos)
     if guiOn then gui.Enabled = false end -- the menu would eat the click
     task.wait()
     local ok = pcall(function() -- an executor without VirtualInputManager access falls back to its own click
@@ -264,7 +304,7 @@ function HOOK.click(cd)
     end)
     if guiOn then gui.Enabled = true end
     cam.CameraType = oldType
-    if not ok and fireclickdetector then fireclickdetector(cd) end
+    if not ok then HOOK.fakeClick(cd) end
 end
 
 -- declared up here: buyJunk (auto-lock message) calls it long before the UI section sets it to Library:Notify.
@@ -625,7 +665,7 @@ local function buyStore(model, isTool)
     local asked = false
     confirmFn = function(text) asked = true; local p = parsePrice(text); return p ~= nil and myMoney() - p >= CFG.reserve end
     -- game update 2026-10-08: store clicks only reach 32 studs (they used to work from 450+), no settle needed after
-    -- the teleport (answered 0.1 s later). Stand next to the item; the second try is a real click on Xeno.
+    -- the teleport (answered 0.1 s later). Stand next to the item; on Xeno every try is a real click.
     local back = hrp() and hrp().CFrame
     local near = back and (back.Position - model:GetPivot().Position).Magnitude < 25
     if not near then tpTo(CFrame.new(model:GetPivot().Position + Vector3.new(0, 2, 5))); task.wait(0.15) end

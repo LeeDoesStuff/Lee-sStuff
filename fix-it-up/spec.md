@@ -293,8 +293,14 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 - New: `Events.PartShopTablet` (body-part shop UI, opened by touching `workspace.Utils.PartsShopDetectors`) and `HUD.SpacerBuy`. Not used yet.
 - Not re-checked after the update: the wheel shop (`WheelBuy`) and brake shop clicks. They still click from afar first and then step over, so worst case they're 2 s slower.
 
-## Xeno / emulated executors
+## Xeno / emulated executors (user doesn't run Xeno: fixes are by design, not live-tested there)
 
-- Reported 2026-10-08: on Xeno the hood never opens and junk car buys struggle. The cause is that Xeno/Solara emulate `fireclickdetector` client-side, and it often doesn't reach the server.
-- Fix: `HOOK.click` makes every second click on the same detector a real one. It aims a Scriptable camera 5 studs from the target on your side, hides the Obsidian ScreenGui, and sends `VirtualInputManager:SendMouseButtonEvent` at its viewport point. All callers already retry until the effect shows.
-- This only kicks in when `identifyexecutor()` contains xeno or solara, or `fireclickdetector` is missing. Verified on Potassium against a store item: the real clicks reached the server 2 out of 2 times. Not run on Xeno itself; xeno-mcp wasn't connected.
+- Reported 2026-10-08: on Xeno the hood never opens and junk car buys struggle. Xeno is "external" (about 40% sUNC). Its `fireclickdetector` is the common Lua fake: it moves the ClickDetector onto an invisible 30-stud part in front of the camera, spams `VirtualUser:ClickButton1`, and only puts the detector back once a click lands. A missed click strands the detector, so `Detector:FindFirstChildWhichIsA("ClickDetector")` finds nothing afterwards, and the server never hears the click.
+- Fix: `HOOK.click`. On Xeno/Solara (`identifyexecutor`), or with no `fireclickdetector`, it never calls the fake. It raycasts from several angles 3 studs around the detector and keeps an angle whose ray actually hits the detector's part. The hood mesh or your own character can sit in front of it; your character stands 4 studs from the hood. Then it hides the Obsidian ScreenGui, points a Scriptable camera from that spot, and sends a VirtualInputManager mouse click at the target's viewport point. If VIM is unavailable, it uses the fake and puts the detector back after 1 s. Other executors are unchanged.
+- Verified 2026-10-08 on Potassium with the Xeno route forced on and the fake click counted:
+  - Store item: the server answered every time.
+  - Fresh-spawned Fia-Te hood: opened on the 1st real click (0.6 s). The detector stayed in place and the camera was restored.
+  - Junk cars, buyJunk stance, declined at the prompt: 5 of 5 made an offer within its 3 tries (1 needed a 2nd click).
+  - The fake was used 0 times.
+- Xeno also lacks `getcallbackvalue`, which crashed the script at load before 2026-10-02. The hooks then read the game's callbacks from `getrenv()._G`, falling back to our own Yes/No box (`HOOK.ask`), and re-assign ours every second.
+- `fireproximityprompt` gets a stock fallback (`HoldDuration = 0` plus `InputHoldBegin`/`InputHoldEnd`) if it's missing. `decompile` uses are already pcall'd.
