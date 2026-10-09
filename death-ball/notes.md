@@ -21,6 +21,8 @@ Started 2026-10-08. Script `%USERPROFILE%\rblx\deathball.lua` (Obsidian, CruelHu
 - **2026-10-09 an alt BANNED from my trade test** (host-driven trade: fake-clicked request/Ready/Close via getconnections, added restricted Default Katana). The game's Button class reports + freezes on any script-fired click (debug.info(2) is [C]) — fireButton is unsafe in this game. No trade actions without the user's per-action OK; check CAN_TRADE_* first.
 - NEVER script-teleport into the Trading place (119260352090770): crashed the client 2/2 (2026-10-09). The user joins it by hand; hub tpTo/auto-join refuse it. Bot Trades tab (host) built, untested live.
 
-Open / not verified: anim 68645 root cause; coordinated attack in a live round; copy vote in a real voting phase; Follow modes; Spam/Save me on other champions; fallback reader (no getgc) and scatter/mode/close commands not live-tested; quest claiming, playtime gifts, D7 reward not automated.
+- Frozen bodies on join (tiny-id Action tracks 68645/31738) = load race at high FPS: joining at 5 FPS prevents it, rejoin fixes it. Hub has Join-at-low-FPS + auto rejoin (same server, one at a time).
+
+Open / not verified: coordinated attack in a live round; copy vote in a real voting phase; Follow modes; Spam/Save me on other champions; fallback reader (no getgc) and scatter/mode/close commands not live-tested; quest claiming, playtime gifts, D7 reward not automated.
 
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md), executor-compat-blind.

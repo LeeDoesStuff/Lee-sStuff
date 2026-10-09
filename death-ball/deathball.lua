@@ -3,6 +3,12 @@
 -- per champion, human-like movement, auto ready, tutorial automation, ball visuals, and a multi-account swarm
 -- (host drives alts over shared workspace files: servers, autoplay, aim, moves, movement, votes, rules, performance).
 -- Spec: deathball-spec.md. Re-exec safe: a newer copy unloads the older one.
+-- Join at low FPS (2026-10-09): accounts that load at full FPS (7 clients at once) often come up with a pile of
+-- broken Action tracks that freeze their body for everyone; the same accounts joined clean at 5 FPS. The cap goes on
+-- first thing (also from the teleport reload) and is lifted a short while after the character has spawned.
+local JOINFPS_FILE = "CruelHub/DeathBall/joinfps.txt"
+local joinFps = (isfile and isfile(JOINFPS_FILE)) and tonumber(readfile(JOINFPS_FILE)) or nil
+if joinFps and setfpscap then pcall(setfpscap, joinFps) end
 if getgenv().CruelHubDB then pcall(getgenv().CruelHubDB.unload) end
 local self = {}
 getgenv().CruelHubDB = self
@@ -36,7 +42,7 @@ local CFG = {
 	parry = false, lead = 0.45, pingComp = true, closeDist = 14, humanize = 0, aimMode = "Off", aimName = "",
 	slotMode = { "Smart", "Smart", "Smart", "Smart" }, moveKind = "Off", followName = "", followDist = 12,
 	aimStyle = "Auto (per account)", aimLog = false,
-	moveBand = 80, dashChance = 0.1, spread = false, spreadDist = 25, idleMove = false, idleAfkMax = 25, persona = "Auto (per account)", animFix = true,
+	moveBand = 80, dashChance = 0.1, spread = false, spreadDist = 25, idleMove = false, idleAfkMax = 25, persona = "Auto (per account)", animFix = true, animRejoin = true, joinHold = 25,
 	clash = true, clashDist = 18, clashSpeed = 150,
 	autoReady = false, antiAfk = true,
 	tutorial = true, requeue = true,
@@ -378,8 +384,14 @@ local function guarded(p)
 	if SW.role == "Swarm" then g.no3d = true end
 	return g
 end
+local joinHold = { untilT = nil }
 local function applyPerf(p)
 	p = guarded(p or { on = false })
+	if joinFps and (not joinHold.untilT or os.clock() < joinHold.untilT) then
+		if setfpscap then pcall(setfpscap, joinFps) end
+		perfApplied = nil
+		return
+	end
 	local key_ = HttpService:JSONEncode(p)
 	if key_ == perfApplied then return end
 	perfApplied = key_
@@ -1054,6 +1066,52 @@ task.spawn(function()
 	end
 end)
 
+-- broken-animation auto rejoin (2026-10-09): sometimes an account joins with a pile of bare Animation tracks
+-- (tiny asset id like 68645 / 31738, no parent, length 0, Action priority) that freeze its body for everyone.
+-- A rejoin fixes it. Detect it per account and rejoin THE SAME server, one account at a time (shared lock),
+-- so a fix never sends the whole swarm out at once.
+local animBroken, brokenSince, loadedAt = false, nil, os.clock()
+local function brokenTracks()
+	local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+	local an = hum and hum:FindFirstChildOfClass("Animator")
+	local n = 0
+	for _, t in an and an:GetPlayingAnimationTracks() or {} do
+		local a = t.Animation
+		local id = a and tonumber(a.AnimationId:match("(%d+)$"))
+		if a and a.Parent == nil and t.Length == 0 and id and id < 1000000 then n += 1 end
+	end
+	return n
+end
+task.spawn(function()
+	local LOCK = SWARM .. "/rejoin_lock.json"
+	while alive do
+		task.wait(5)
+		animBroken = os.clock() - loadedAt > 20 and brokenTracks() >= 2
+		brokenSince = animBroken and (brokenSince or os.clock()) or nil
+		-- wait for a break between rounds, unless it has been broken for 90 s
+		if animBroken and CFG.animRejoin and game.PlaceId ~= TUTORIAL_PLACE and (not inGame() or os.clock() - brokenSince > 90) then
+			local lock = hasFiles and jread(LOCK)
+			if not (lock and lock.id ~= LP.UserId and os.time() - (lock.t or 0) < 45) then
+				if hasFiles then jwrite(LOCK, { id = LP.UserId, t = os.time() }) end
+				task.wait(1 + math.random() * 5)
+				local mine = not hasFiles or ((jread(LOCK) or {}).id == LP.UserId)
+				if mine and brokenTracks() >= 2 then
+					SW.status = "animations broken: rejoining this server"
+					if SW.tpTo then SW.tpTo(game.PlaceId, game.JobId) end
+					task.wait(30)
+				end
+			end
+		end
+	end
+end)
+
+task.spawn(function()
+	if not joinFps then return end
+	local t0 = os.clock()
+	while alive and not (LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")) and os.clock() - t0 < 60 do task.wait(0.5) end
+	joinHold.untilT = os.clock() + (CFG.joinHold or 25)
+end)
+
 -- frozen animations: seen 2026-10-08 on an alt mid-session: a bare Animation (asset 68645, never loads, length 0)
 -- replayed ~8x/s at Action priority piles up 60+ tracks and freezes the local walk/run (others see you fine).
 -- Source not found yet; this stops such tracks and logs what we were doing the first time it shows up.
@@ -1178,7 +1236,8 @@ local function queueReload()
 	local q = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
 	if not (q and CFG.requeue) then return end
 	-- local dev copy wins when present, else the public loader (saved key passes it)
-	pcall(q, 'if isfile and isfile("deathball.lua") then loadstring(readfile("deathball.lua"))() else ' .. LOADER .. ' end')
+	pcall(q, 'pcall(function() if setfpscap and isfile and isfile("CruelHub/DeathBall/joinfps.txt") then setfpscap(tonumber(readfile("CruelHub/DeathBall/joinfps.txt")) or 5) end end) '
+		.. 'if isfile and isfile("deathball.lua") then loadstring(readfile("deathball.lua"))() else ' .. LOADER .. ' end')
 end
 local function tpTo(placeId, jobId)
 	-- script teleports INTO the Trading place crashed the client 2/2 (2026-10-09); only join it by hand
@@ -1191,6 +1250,7 @@ local function tpTo(placeId, jobId)
 	SW.teleportError = not ok and tostring(err) or nil
 	return ok
 end
+SW.tpTo = tpTo -- for loops defined above tpTo
 on(TeleportService.TeleportInitFailed, function(player, result, message)
 	if player == LP then SW.teleportError = tostring(result) .. ": " .. tostring(message) end
 end)
@@ -1363,6 +1423,8 @@ local function runCmd(c)
 		if job and job ~= game.JobId then tpTo(a.placeId, job) end
 	elseif k == "rejoin" then
 		tpTo(game.PlaceId)
+	elseif k == "rejoinbot" then -- host picked this account: back into the same server
+		if a.target == LP.UserId then tpTo(game.PlaceId, game.JobId) end
 	elseif k == "mode" then
 		tpTo(a.placeId)
 	elseif k == "reset" then
@@ -1379,7 +1441,7 @@ local function accStatus()
 		id = LP.UserId, name = LP.Name, role = SW.role, t = os.time(), placeId = game.PlaceId, jobId = game.JobId,
 		inGame = inGame(), ready = val("IS_READY") == true, wins = stat("Wins:Total"),
 		parries = stats.parries, hp = val("PLAYER_HEALTH_CURRENT"), mem = math.floor(memGuard.mb),
-		gems = (function() local ok, g = pcall(function() return Inventory:Get().Items.Gems end) g = ok and g if type(g) == "table" then g = g.Count end return tonumber(g) end)(), guard = memGuard.on, tut = game.PlaceId == TUTORIAL_PLACE and tutorialStage() or nil,
+		gems = (function() local ok, g = pcall(function() return Inventory:Get().Items.Gems end) g = ok and g if type(g) == "table" then g = g.Count end return tonumber(g) end)(), guard = memGuard.on, animBroken = animBroken, tut = game.PlaceId == TUTORIAL_PLACE and tutorialStage() or nil,
 	}
 end
 task.spawn(function()
@@ -1400,6 +1462,8 @@ task.spawn(function()
 			end
 		end)
 		SW.members = list
+		SW.byName = {}
+		for _, m in list do if m.role == "Swarm" then SW.byName[m.name] = m.id end end
 		local locked = SW.host and SW.host.lock and SW.host.id ~= LP.UserId and os.time() - (SW.host.t or 0) <= 15
 		if locked and SW.role == "Host" then setRole("Swarm") SW.status = "Host is locked to " .. SW.host.name
 		elseif locked and SW.role == "Off" and not SW.noAuto then setRole("Swarm") end
@@ -1599,6 +1663,9 @@ local movesLabel = B.MS:AddLabel("-", true)
 
 -- Movement tab
 B.AF = Tabs.Misc:AddLeftGroupbox("Animation fix", "person-standing")
+B.AF:AddToggle("DB_AnimRejoin", { Text = "Auto rejoin when animations break", Default = CFG.animRejoin,
+	Tooltip = "Rejoins this same server when the body freezes (broken animation pile). One account at a time across the swarm.",
+	Callback = set("animRejoin") })
 B.AF:AddToggle("DB_AnimFix", { Text = "Unfreeze my animations", Default = CFG.animFix,
 	Tooltip = "Stops broken Action tracks (asset 68645) that freeze your own walk animation", Callback = set("animFix") })
 local animLabel = B.AF:AddLabel("-", true)
@@ -1606,6 +1673,16 @@ B.MG = Tabs.Misc:AddRightGroupbox("Crash guard", "shield-alert")
 B.MG:AddLabel("Each client uses ~1.8 GB; many clients on one PC run out of RAM and crash. Above the limit this switches to lowest graphics and 30 FPS (swarm alts also stop 3D rendering) until memory drops.", true)
 B.MG:AddToggle("DB_MemGuard", { Text = "Memory guard", Default = CFG.memGuard, Callback = set("memGuard") })
 B.MG:AddSlider("DB_MemLimit", { Text = "Limit", Default = CFG.memLimit, Min = 1200, Max = 4000, Rounding = 0, Suffix = " MB", Callback = set("memLimit") })
+B.MG:AddToggle("DB_JoinFps", { Text = "Join at low FPS", Default = joinFps ~= nil,
+	Tooltip = "Caps FPS while joining (before the game loads) so characters don't come up with frozen animations. Applies to every account on this PC from the next join.",
+	Callback = function(v)
+		if not hasFiles then return end
+		if v then pcall(writefile, JOINFPS_FILE, tostring(Options.DB_JoinFpsValue and Options.DB_JoinFpsValue.Value or 5))
+		elseif isfile(JOINFPS_FILE) then pcall(delfile, JOINFPS_FILE) end
+	end })
+B.MG:AddSlider("DB_JoinFpsValue", { Text = "Join FPS", Default = joinFps or 5, Min = 3, Max = 30, Rounding = 0,
+	Callback = function(v) if hasFiles and isfile(JOINFPS_FILE) then pcall(writefile, JOINFPS_FILE, tostring(v)) end end })
+B.MG:AddSlider("DB_JoinHold", { Text = "Keep it low for", Default = CFG.joinHold, Min = 5, Max = 90, Rounding = 0, Suffix = "s after spawn", Callback = set("joinHold") })
 local memLabel = B.MG:AddLabel("-", true)
 B.AF:AddToggle("DB_AimLog", { Text = "Log my aims (debug)", Default = CFG.aimLog, Callback = set("aimLog") })
 B.MV = Tabs.Movement:AddLeftGroupbox("In-round movement", "footprints")
@@ -1713,6 +1790,11 @@ B.hd:AddButton({ Text = "Scatter servers", Tooltip = "Every alt goes to a differ
 	end)
 end })
 B.hd:AddButton({ Text = "Rejoin", Func = function() pushCmd("rejoin") end })
+B.hd:AddDropdown("SW_RejoinBot", { Text = "One bot", Values = {}, AllowNull = true })
+B.hd:AddButton({ Text = "Rejoin that bot (same server)", Func = function()
+	local id = SW.byName and SW.byName[Options.SW_RejoinBot.Value or ""]
+	if id then pushCmd("rejoinbot", { target = id }) Library:Notify("Rejoining " .. Options.SW_RejoinBot.Value, 3) end
+end })
 B.hd:AddButton({ Text = "Reset characters", Func = function() pushCmd("reset") end })
 B.hd:AddDropdown("SW_Mode", { Text = "Send to mode", Values = { "Lobby (beginner)", "Classic", "Death Ball hub", "Pro" }, Default = "Classic" })
 B.hd:AddButton({ Text = "Send swarm to mode", Func = function()
@@ -1908,6 +1990,7 @@ task.spawn(function()
 		tv.ids = {}
 		for _, m in SW.members do if m.role == "Swarm" then names[#names + 1] = m.name tv.ids[m.name] = m.id end end
 		pcall(function() Options.TR_Bot:SetValues(names) end)
+		pcall(function() Options.SW_RejoinBot:SetValues(names) end)
 		local st = tv.bot and jread(SWARM .. "/trade_" .. tv.bot .. ".json")
 		if not tv.bot then
 			trStatus:SetText("No bot selected")
@@ -2002,7 +2085,7 @@ task.spawn(function()
 					for _, m in ipairs(grp) do -- ipairs: grp also has a `title` field
 						local state = m.tut and ("tutorial " .. tostring(m.tut) .. "/13") or (m.inGame and "in round" or (m.ready and "ready" or "lobby"))
 						lines[#lines + 1] = ("%s%s · %s · %s gems · %d wins · %s MB%s"):format(m.name, m.id == LP.UserId and " (you)" or "", state,
-							short(m.gems), m.wins or 0, tostring(m.mem or "?"), m.guard and " · guard" or "")
+							short(m.gems), m.wins or 0, tostring(m.mem or "?"), (m.guard and " · guard" or "") .. (m.animBroken and " · ANIM BROKEN" or ""))
 					end
 				end
 			end
