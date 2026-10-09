@@ -91,3 +91,57 @@ Clicks: VirtualInputManager mouse events at `AbsolutePosition + AbsoluteSize/2 +
   - Performance push: FPS cap (setfpscap), 3D rendering off, quality level 1, master volume 0.
   - `queue_on_teleport` re-runs the local `deathball.lua` if present, else the public LuaLoader.
 - **Verified live 2026-10-08:** tutorial 1→13 (steps run by hand with the same calls), real round won with 0 damage, hub loads clean, user's own test: host "join" pulled the alt into the host's Classic server and the alt auto-parried (42 presses).
+
+## Aim (verified 2026-10-08)
+- `PlayerScripts.LocalCamLookReplicator.CamLookReplicator` fires `ReplicatedStorage.ReplicateCamLook(lookX, lookY, lookZ, serverTime)` every Stepped at 60 Hz while `PlayerControl.isInGame`. The server sends your deflect toward where the camera looks.
+- `ReplicatedFirst.Classes.MouseReplicator` raycasts the mouse (500 studs, excludes FX/camera/char) and sends `Remotes.ReplicateMouse(pos)` (20 Hz, only while an ability asks for it) — ability aim.
+- Test: `BindToRenderStep(Last+50)` setting `Camera.CFrame = lookAt(cam, targetHRP)` for 0.3 s, F pressed 1–2 frames later → ball's next `Target` was the aimed player **4/4**. When Extend-o Arm fired first, the ball went elsewhere (the move deflects with its own timing/aim).
+
+## Champions and moves (`DataBins.ChampionData` / `AbilityData`)
+- Inventory: `EquippedChampions[1]` = champion GUID → `Champions[guid]` {Type, Level, XP, Abilities = chosen option per slot}. Slot i is key `i` (Ability1..4 = One..Four). A move unlocks at **champion** level ≥ `AbilityData[name].LevelRequirement`.
+- `AbilityData[name]`: Cooldown, ActiveTime, LevelRequirement, Range, and `HoverData` tags: AutoDeflect, Movement, Passive, CreatesCollidables, Untargetable, ExtraHealth, FaceoffDisabled.
+- Champions (slot1 | slot2 | slot3 | slot4, gem price):
+  - Lufus (50): Extend-o Arm | Gum Gum Balloon | Glass Wall | Time Haki
+  - Gazo (500): Fake Ball | Phase Dash | Blindfold/Cursed Blue | Astral Portal
+  - Saito (500): Upper Cut | Super Jump | Sonic Slide | Ground Walls/Aftershock
+  - Foxuro (20k): Ninja Run | Shadow Clone | Tree Jump | Fox Armour
+  - Kameki (20k): Dragon Rush | Instant Travel | Ki Blast | Death Ball
+  - Keilo (20k): Zap Freeze/Zap Deflect | Godspeed | Assassin Invisibility | Lightning Intercept
+  - Koju (20k): Leap Strike | Spirit Wall | Chain Spear | Handgun
+  - Senshu (20k): Egoist Warp | Charged Kick | Yellow Card | Juggling Blast
+  - Torokai (20k): Activate Fire | Ice Slide | Ice Zone | Ice Shield
+  - Denjin (50k): Jet Dash | Gravity Hold | Orbital Cannon | Overheat
+  - Gloom (50k): Shadow Rampage | Dark Reversal | Dread Sphere | Phantom Grasp
+  - Jiro (50k): Bomb Jump | Bonk | Side Step | Bungee
+  - Dr (100k): Juice Up | Sentry Gun | Tank | Stone Freeze
+  - Friera (100k): Sky Glide | Mana Shot | Runeguard | Singularity
+  - JJ (100k): Phantom Slap | Revenge | Fist Barrage | Standoff
+  - Misaki (100k): Scout Hook | Titan's Spear/Spear Storm | Titan Rush | Thunderfall
+  - Wu (100k): Dagger Dash | Blink | Rulers Hold | Arise
+  - Gemtoki (special): Gem Hunt | Double or Nothing | Cash Out | Donate
+- Selected cooldowns (s) / unlock level: Extend-o Arm 25/0 (AutoDeflect, measured: deflects the ball from ~0.7–1.2 s out), Gum Gum Balloon 25/5 (Movement+Passive, measured: speed bursts to 70), Glass Wall 35/50, Time Haki 30/90, Assassin Invisibility 35/50 (Untargetable), Fox Armour 80/90 (ExtraHealth), Blink 0.3/20, Jet Dash 0.25/0, Handgun 0.4/89, Spear Storm 0.05/101, Singularity 1.25/85. Full list of 76 in AbilityData.
+- Script "Smart" rule: AutoDeflect → "Save me" (fire when F is on cooldown and tti < 1.1 s); Untargetable/ExtraHealth → "When targeted" (tti < 1.5 s); pure Movement → off; everything else → on cooldown.
+
+## Real player movement (measured 2026-10-08, Classic, 7 players × ~2 min at 10 Hz)
+| stat | median |
+|---|---|
+| time moving (>2 studs/s) | 84 % |
+| walk speed | 25 (WalkSpeed); boosts 40; dash spikes 170–230 |
+| samples above 45 studs/s (dash) | 1 % (range 0–8.5 %) |
+| jumps | ~0–2 / min (Humanoid states: Running 91 %, Freefall 8 %) |
+| heading change > 45° | 37 / min (every ~1.6 s) |
+| move burst / stop length | 1.2 s / 0.6 s |
+| distance to ball, not targeted / targeted | 86 / 44 studs |
+Script "Human" mode: random waypoint inside the map Floor (15–70 % of half-size), ≥ 0.6 × band from the ball, segments 0.6–2.5 s, 30 % chance of a 0.25–0.95 s stop, dash (Q) chance per long move, ~2 % jump per segment, WASD from the user pauses it 1.5 s.
+
+## Votes (2026-10-08)
+- `Values.GAMEMODE_VOTES` / `MAP_VOTES` are server tallies only (no per-player record). `GAMEMODE_VOTING_ACTIVE`, `MAP_VOTING_ACTIVE`, `AVAILABLE_GAMEMODES` {Gamemodes {Standard "Classic", OneLife "One Life", Team, Randomizer "Cyber Brawl"}, Maps}.
+- Pages `PlayerGui.PAGES.GamemodeSelectPage` / `MapSelectPage`: `Content.ListFrame` holds clones (LayoutOrder = mode/map LayoutOrder) whose `ImageButton` fires `Actions.SELECT_GAMEMODE` / `SELECT_MAP`. The chosen one shows `ImageButton.VotedFrame.Visible`. Gamemode page opens only while ready and voting is active (and 20 s after your last vote).
+- Copy vote: the host publishes its VotedFrame pick (LayoutOrder + label); alts in the same server click the matching button when it's on screen (not live-tested in a voting phase yet).
+
+## Swarm v2 (2026-10-08)
+- host.json `play`: aimMode/aimName (Own, Player, Nearest, Farthest, Random, Not swarm, Swarm, Host), moves (Own/Smart all/Spam all/Off all), moveKind (Own/Off/Human/Follow host/Follow player) + followName/followDist, spread, copyVote, tutorial, stayWithHost; `lock`; `vote`.
+- **Lock host + auto add:** while a locked host is online, any account running the hub with role Off becomes Swarm, and an account set to Host is demoted (opt-out file `noauto_<UserId>.txt`).
+- Swarm tutorial: alts follow the host's "auto complete tutorial"; "Keep alts in my server" teleports alts (between rounds, ≤ every 30 s) to the host's job, which also pulls fresh accounts in after the tutorial teleport.
+- Live 2026-10-08: my main account host (locked), an alt swarm in the same Classic server: alt walked the arena at 25 studs/s with Balloon bursts, used Gum Gum Balloon on cooldown, aimed parries at non-swarm players.
+- **Double load guard:** a teleport can start two copies (queue_on_teleport + autoexec/loader). `CruelHubDB_GEN` increments per load; a stale copy unloads itself, names its aim RenderStep binding with its generation, and doesn't reset the newer copy's performance settings.
