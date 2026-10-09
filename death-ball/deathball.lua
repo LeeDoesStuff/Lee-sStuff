@@ -94,24 +94,28 @@ end
 -- Game buttons listen on InputBegan/InputEnded. Firing those connections works in background windows, where
 -- injected mouse clicks are ignored (measured 2026-10-08: a VIM click on a background client did nothing).
 -- Executors without getconnections fall back to a real VIM click.
+-- Clicking game buttons safely. The game's Button class reports + freezes any click fired through getconnections
+-- (debug.info(2) is [C]; that got an alt banned 2026-10-09), and background windows never receive VIM mouse
+-- events. What works everywhere (measured 2026-10-09 on a background client): select the button with
+-- GuiService.SelectedObject and press gamepad A through VirtualInputManager:HandleGamepadButtonInput. The engine
+-- delivers a real Gamepad1/ButtonA input, which the Button class accepts. Returns false if the executor can't.
+local padReady = false
 local function fireButton(g)
-	-- DISABLED 2026-10-09: the game's Button class reports + freezes any click fired through getconnections
-	-- (debug.info(2) is [C]); it got an alt banned. Callers fall back to a real VIM click (needs a focused window).
-	if true then return false end
-	if type(getconnections) ~= "function" then return false end
-	local pos = g.AbsolutePosition + g.AbsoluteSize / 2
-	local function fake(state)
-		return { UserInputType = Enum.UserInputType.MouseButton1, UserInputState = state, Position = Vector3.new(pos.X, pos.Y, 0),
-			KeyCode = Enum.KeyCode.Unknown, Delta = Vector3.zero }
-	end
-	local fired = false
+	if not (g and g:IsA("GuiObject")) then return false end
 	local ok = pcall(function()
-		for _, c in getconnections(g.InputBegan) do c:Fire(fake(Enum.UserInputState.Begin)) fired = true end
+		if not padReady then VIM:HandleGamepadConnect(0) padReady = true end
+		local wasSel = g.Selectable
+		g.Selectable = true
+		GuiService.SelectedObject = g
+		task.wait(0.08)
+		VIM:HandleGamepadButtonInput(0, Enum.KeyCode.ButtonA, 1)
+		task.wait(0.06)
+		VIM:HandleGamepadButtonInput(0, Enum.KeyCode.ButtonA, 0)
 		task.wait(0.05)
-		for _, c in getconnections(g.InputEnded) do c:Fire(fake(Enum.UserInputState.End)) fired = true end
-		if g:IsA("GuiButton") then for _, sig in { g.Activated, g.MouseButton1Click } do for _, c in getconnections(sig) do c:Fire() fired = true end end end
+		if GuiService.SelectedObject == g then GuiService.SelectedObject = nil end
+		if g.Parent then g.Selectable = wasSel end
 	end)
-	return ok and fired
+	return ok
 end
 local function clickGui(g)
 	if fireButton(g) then return end
@@ -398,6 +402,8 @@ end
 local parryReason = "-"
 local function allowedToParry(ball)
 	if not following() then parryReason = "free" return true end
+	-- the tutorial bot round has 1-3 players: swarm win/lose rules (e.g. "alive <= 3") would block every deflect
+	if game.PlaceId == TUTORIAL_PLACE then parryReason = "tutorial" return true end
 	local r = SW.host.rules or {}
 	local host = Players:GetPlayerByUserId(SW.host.id)
 	local al = aliveList()
@@ -788,6 +794,11 @@ on(RunService.Heartbeat, function()
 			-- the drawn ball runs ~interp behind the server's, and F needs one-way ping to arrive
 			local lead = CFG.lead + (CFG.pingComp and (LP:GetNetworkPing() + b.interp) or 0)
 			if not allowedToParry(b) then continue end
+			-- tutorial: the ball waits anchored ~10-15 studs away until you deflect; press regardless of close-range setting
+			if onTut and b.anchored and d < 40 and os.clock() - lastPress > 0.8 and not ch:GetAttribute("isDeflecting") then
+				press("tutorial", b, d, tti)
+				continue
+			end
 			local deflecting = ch:GetAttribute("isDeflecting")
 			if CFG.clash and d <= CFG.clashDist and b.speed >= CFG.clashSpeed and os.clock() - lastClash > 0.12 then
 				lastClash = os.clock()
