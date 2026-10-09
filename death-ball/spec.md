@@ -174,4 +174,24 @@ Script "Human" mode: random waypoint inside the map Floor (15–70 % of half-siz
 - Host performance push FPS cap now 5–240. Copy host parry settings: button + "Keep host parry settings" (publishes timing, ping, close range, delay, clash, prediction).
 - Safe boot: `getgenv().CRUELHUB_SAFEBOOT = true` before loading skips the autoload config.
 - **Whitelist (host, Swarm Play → Swarm aim):** "Whitelist me" (default on) and a multi-player whitelist. Alts never aim, pass or pick an attack victim that is whitelisted; the host's own aim skips its whitelist too.
-- Auto join is toggleable on both sides: host "Auto join me (waits for a free slot)" (Swarm Play) and per alt "Auto join host" (Swarm → Identity, Swarm role). An alt joins only when both are on.
+- Auto join is toggleable on both sides: host "Auto join (alts join my server)" (Swarm tab → Servers, top) and per alt "Auto join host" (Swarm → Identity, Swarm role). An alt joins only when both are on.
+
+## Real players' shots (recorded 2026-10-09, 110 deflects, Classic, 6 real players)
+- Recorder (`db_shots.lua`): on every ball target change, 4 frames later log shooter, new target, ball pos, launch velocity, everyone's positions (server time stamped).
+- Launch yaw off the straight line to the new target: median 14°, quartiles 5° / 14° / 26°, 10 % over 70°. Per player: pjWL5 12° mixed sides, jodog101 12° leaning right (53 % right / 27 % left), Sally19348 16°, Alexarudyy 23° wide, azul00000000 10°. The swarm launched dead straight (1–4°), an easy tell.
+- Pitch: basically flat (median −0.1°); ~10 % aimed down ~20°; almost no lobs.
+- Return to sender 14–50 % per player; nearest target 0–40 %; farthest ~0 %.
+- The new target is the player closest to the launch direction only 59/109 times, so the server's pick isn't just "nearest to the look ray" (measured launch is 4 frames in, already bending).
+
+## Targeting styles (hub, 2026-10-09)
+- Straight, Curve right, Curve left, Mixer, Wild, Returner, Bully: yaw range, side bias, chance to aim down, and target weights (return to sender / nearest / farthest, rest random). Auto = one per account; host toggle "Different shot style per alt".
+- The aim turns the camera onto the target, then rotates it by the style's yaw/pitch. "Log my aims (debug)" writes `CruelHub/DeathBall/aimlog_<name>.txt` (server time, target, yaw, pitch) to join with the recorder.
+
+## Moves desync (2026-10-09)
+- Bots fired "On cooldown" moves (e.g. Lufus' passive float) at the same instant: all ready at round start, same cooldown. Now: random 1.5–13.5 s before the first use each round, random extra 0.5–(3 + 0.4·cd) s after every use, and a 12 % chance per 0.1 s check once allowed. Spam interval 0.2–0.6 s.
+
+## Personality traits (2026-10-09)
+- 10 base styles (adds Bunny jump 40 %, Dasher dash 50 %, Strafer short twitchy segments, Lazy long stops). Every account then gets its own multiplier exp(U(−0.9, 0.9)) ≈ 0.4×–2.5× on jump, dash, air dash, stop chance and segment lengths (capped), so same-style bots still differ. The Movement tab shows the account's numbers.
+
+## Luau limit hit (2026-10-09)
+- "Out of local registers ... exceeded limit 200" at compile: the main chunk had > 200 locals. UI groupbox handles now live in one table `B`. Keep new top-level state in tables, not new locals.

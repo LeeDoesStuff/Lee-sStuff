@@ -34,6 +34,7 @@ end
 local CFG = {
 	parry = false, lead = 0.45, pingComp = true, closeDist = 14, humanize = 0, aimMode = "Off", aimName = "",
 	slotMode = { "Smart", "Smart", "Smart", "Smart" }, moveKind = "Off", followName = "", followDist = 12,
+	aimStyle = "Auto (per account)", aimLog = false,
 	moveBand = 80, dashChance = 0.1, spread = false, spreadDist = 25, idleMove = false, idleAfkMax = 25, persona = "Auto (per account)", animFix = true,
 	clash = true, clashDist = 18, clashSpeed = 150,
 	autoReady = false, antiAfk = true,
@@ -277,7 +278,7 @@ local hostState = {
 	lock = false,
 	parry = {},
 	play = { aimMode = "Not swarm", aimName = "", moves = "Own", moveKind = "Human", followName = "", followDist = 12,
-		spread = true, spreadDist = 25, copyVote = true, tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
+		spread = true, spreadDist = 25, diverseAim = true, copyVote = true, voteMode = "Copy me", voteMap = "Copy me", tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
 		attack = { on = false, build = 250, pick = "Auto", name = "", victim = "" },
 		whitelistHost = true, whitelist = {} },
 	vote = {},
@@ -404,8 +405,31 @@ local aim = { at = nil, untilT = 0 }
 RunService:BindToRenderStep("CruelHubDBAim" .. GEN, Enum.RenderPriority.Last.Value + 50, function()
 	local p = aim.at
 	local h = p and os.clock() < aim.untilT and hrpOf(p)
-	if h then Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, h.Position) end
+	if h then Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, h.Position) * CFrame.Angles(math.rad(aim.pitch or 0), math.rad(aim.yaw or 0), 0) end
 end)
+
+-- targeting styles, built from 110 real deflects (2026-10-09, Classic): real players launch off the straight line
+-- (yaw offset median 14 deg, quartiles 5/14/26, 10 % over 70), some lean one side, a few aim down ~20 deg;
+-- they send it back to whoever sent it 14-50 % of the time and to the nearest player 0-40 %, almost never the farthest.
+-- yaw = {min, max} degrees, side = chance the offset goes right, ret/near/far = target choice weights (rest random).
+local AIM_STYLES = {
+	Straight = { yaw = { 0, 6 }, side = 0.5, down = 0.02, ret = 0.15, near = 0.10, far = 0.05 },
+	["Curve right"] = { yaw = { 8, 26 }, side = 0.85, down = 0.05, ret = 0.30, near = 0.20, far = 0 },
+	["Curve left"] = { yaw = { 8, 26 }, side = 0.15, down = 0.05, ret = 0.30, near = 0.20, far = 0 },
+	Mixer = { yaw = { 4, 22 }, side = 0.5, down = 0.08, ret = 0.25, near = 0.15, far = 0 },
+	Wild = { yaw = { 15, 60 }, side = 0.5, down = 0.10, ret = 0.40, near = 0.30, far = 0 },
+	Returner = { yaw = { 3, 15 }, side = 0.5, down = 0.05, ret = 0.50, near = 0.20, far = 0 },
+	Bully = { yaw = { 5, 18 }, side = 0.5, down = 0.10, ret = 0.15, near = 0.45, far = 0 },
+}
+local AIM_STYLE_NAMES = { "Straight", "Curve right", "Curve left", "Mixer", "Wild", "Returner", "Bully" }
+local function aimStyle()
+	local pick = CFG.aimStyle
+	if following() and SW.host.play and SW.host.play.diverseAim then pick = "Auto (per account)" end
+	if pick == "Off" then return nil, "Off" end
+	local name = AIM_STYLES[pick] and pick or AIM_STYLE_NAMES[(LP.UserId * 104729) % #AIM_STYLE_NAMES + 1]
+	return AIM_STYLES[name], name
+end
+local lastSender -- who sent the ball to us last (for "return to sender")
 -- coordinated attack: the swarm passes the ball among itself until it's fast (each deflect adds speed),
 -- then whoever holds it fires at the one victim the host picked.
 local atkPhase = "-"
@@ -473,13 +497,32 @@ local function pickAim()
 		table.sort(c, function(a, b) return (hrpOf(a).Position - me.Position).Magnitude < (hrpOf(b).Position - me.Position).Magnitude end)
 		return m == "Nearest" and c[1] or c[#c]
 	end
+	local st = aimStyle()
+	if st and me then
+		local r = math.random()
+		if r < st.ret and lastSender and table.find(c, lastSender) then return lastSender end
+		r -= st.ret
+		table.sort(c, function(a, b) return (hrpOf(a).Position - me.Position).Magnitude < (hrpOf(b).Position - me.Position).Magnitude end)
+		if r < st.near then return c[1] end
+		r -= st.near
+		if r < st.far then return c[#c] end
+	end
 	return c[math.random(1, #c)]
 end
 -- presses `k` with the camera on the aim target; waits 2 frames so CamLook replicates first
 local function aimedKey(k)
 	local p = pickAim()
 	if p then
+		local st = aimStyle()
+		aim.yaw, aim.pitch = 0, 0
+		if st then
+			local mag_ = st.yaw[1] + math.random() * (st.yaw[2] - st.yaw[1])
+			aim.yaw = (math.random() < st.side and -1 or 1) * mag_
+			aim.pitch = math.random() < st.down and -(10 + math.random() * 15) or (math.random() * 4 - 2)
+		end
 		aim.at, aim.untilT = p, os.clock() + 0.3
+		if hasFiles and CFG.aimLog then pcall(appendfile, DIR .. "/aimlog_" .. LP.Name .. ".txt",
+			("%.2f %s yaw=%.1f pitch=%.1f\n"):format(workspace:GetServerTimeNow(), p.Name, aim.yaw, aim.pitch)) end
 		RunService.RenderStepped:Wait()
 		RunService.RenderStepped:Wait()
 	end
@@ -561,8 +604,15 @@ local PERSONAS = {
 	Runner = { stop = 0.10, stopMin = 0.2, stopMax = 0.6, segMin = 1.5, segMax = 3.0, dash = 0.25, jump = 0.02, air = 0.10, band = 85, rMin = 0.30, rMax = 0.80, afk = 0.7 },
 	Camper = { stop = 0.55, stopMin = 0.8, stopMax = 2.5, segMin = 0.6, segMax = 1.5, dash = 0.02, jump = 0.00, air = 0.00, band = 110, rMin = 0.55, rMax = 0.80, afk = 1.5 },
 	Jumper = { stop = 0.25, stopMin = 0.25, stopMax = 0.9, segMin = 0.6, segMax = 2.0, dash = 0.08, jump = 0.12, air = 0.15, band = 80, rMin = 0.15, rMax = 0.70, afk = 0.9 },
+	Bunny = { stop = 0.20, stopMin = 0.2, stopMax = 0.7, segMin = 0.5, segMax = 1.6, dash = 0.06, jump = 0.40, air = 0.08, band = 75, rMin = 0.15, rMax = 0.70, afk = 0.8 },
+	Dasher = { stop = 0.15, stopMin = 0.2, stopMax = 0.6, segMin = 0.8, segMax = 2.2, dash = 0.50, jump = 0.04, air = 0.20, band = 85, rMin = 0.20, rMax = 0.80, afk = 0.7 },
+	Strafer = { stop = 0.10, stopMin = 0.1, stopMax = 0.4, segMin = 0.25, segMax = 0.8, dash = 0.10, jump = 0.05, air = 0.04, band = 80, rMin = 0.10, rMax = 0.60, afk = 0.6 },
+	Lazy = { stop = 0.65, stopMin = 1.0, stopMax = 3.5, segMin = 0.8, segMax = 2.0, dash = 0.01, jump = 0.01, air = 0.00, band = 100, rMin = 0.20, rMax = 0.60, afk = 1.7 },
 }
-local PERSONA_NAMES = { "Average", "Calm", "Twitchy", "Runner", "Camper", "Jumper" }
+local PERSONA_NAMES = { "Average", "Calm", "Twitchy", "Runner", "Camper", "Jumper", "Bunny", "Dasher", "Strafer", "Lazy" }
+-- every account also gets its own wide trait multipliers (0.4x..2.5x on jump/dash/air/stop/segment), so two bots
+-- with the same base style still differ: one jumps a lot, another barely dashes.
+local TRAITS = { "jump", "dash", "air", "stop", "segMin", "segMax" }
 local function persona()
 	local pick = eff("persona") or "Auto (per account)"
 	if following() and SW.host.play and SW.host.play.diverse then pick = "Auto (per account)" end
@@ -575,6 +625,10 @@ local function persona()
 	local rng = Random.new(LP.UserId)
 	local out = { name = name }
 	for k, v in PERSONAS[name] do out[k] = v * (0.85 + rng:NextNumber() * 0.3) end
+	local trng = Random.new(LP.UserId * 31 + 7)
+	for _, k in TRAITS do out[k] = out[k] * math.exp(trng:NextNumber(-0.9, 0.9)) end
+	out.stop, out.jump, out.dash, out.air = math.min(out.stop, 0.8), math.min(out.jump, 0.6), math.min(out.dash, 0.7), math.min(out.air, 0.4)
+	out.segMax = math.max(out.segMax, out.segMin + 0.2)
 	out.rMax = math.min(out.rMax, 0.85)
 	return out
 end
@@ -617,6 +671,14 @@ on(RunService.Heartbeat, function()
 	if not alive then return end
 	local me = inGame()
 	if me and not roundStart then roundStart = os.clock() stats.rounds += 1 end
+	do
+		local b0 = live.balls and live.balls[1]
+		local t0 = b0 and (b0.mine and LP or b0.target)
+		if t0 ~= live.prevTarget then
+			if t0 == LP and live.prevTarget then lastSender = live.prevTarget end
+			live.prevTarget = t0
+		end
+	end
 	if not me then roundStart = nil end
 	if mode == "exact" then
 		local id = val("CURRENT_BALL_ID")
@@ -672,7 +734,12 @@ task.spawn(function()
 		task.wait(0.1)
 		if os.clock() > nextChamp then nextChamp = os.clock() + 5 moves.champ = myChampion() end
 		local ch = moves.champ
-		if not (ch and inGame()) then continue end
+		if not (ch and inGame()) then moves.round = nil continue end
+		if not moves.round then -- new round: every account waits its own random time before its first move
+			moves.round = true
+			moves.nextOk = {}
+			for i = 1, 4 do moves.nextOk[i] = os.clock() + 1.5 + math.random() * 12 end
+		end
 		local b = live.balls and live.balls[1]
 		local mine = b and b.mine
 		local tti = mine and b.tti or math.huge
@@ -686,14 +753,16 @@ task.spawn(function()
 			local since = os.clock() - (moves.lastUse[i] or 0)
 			local ready = since >= s.cd + 0.3
 			local fire = false
-			if m == "Spam" then fire = since >= 0.25
-			elseif m == "On cooldown" then fire = ready
+			if m == "Spam" then fire = since >= 0.2 + math.random() * 0.4
+			elseif m == "On cooldown" then -- not the instant it's ready: a random extra wait + a per-check chance, so bots never sync
+				fire = ready and os.clock() >= (moves.nextOk[i] or 0) and math.random() < 0.12
 			elseif m == "When targeted" then fire = ready and mine and tti < 1.5
 			elseif m == "Save me" then -- an AutoDeflect move parries for you: use it when F is on cooldown and the ball is close
 				fire = ready and mine and tti < 1.1 and os.clock() - lastPress < deflectCd and b and allowedToParry(b)
 			end
 			if fire then
 				moves.lastUse[i] = os.clock()
+				moves.nextOk[i] = os.clock() + s.cd + 0.5 + math.random() * (3 + s.cd * 0.4)
 				task.spawn(aimedKey, SLOT_KEYS[i])
 				moves.text = ("%s (%s)"):format(s.name, m)
 			end
@@ -820,26 +889,66 @@ local function voteButtons(kind)
 	end
 	return out
 end
-local function myVotes()
-	local v = {}
-	for kind in VOTE_PAGES do
-		for _, b in voteButtons(kind) do if b.voted then v[kind] = { order = b.order, name = b.name } end end
+local MODE_ORDER = { Classic = 1, ["One Life"] = 2, Team = 3, ["Cyber Brawl"] = 4 } -- AVAILABLE_GAMEMODES LayoutOrder
+local MAP_ORDER, MAP_NAMES = {}, {}
+pcall(function()
+	for _, info in require(RS.DataBins.MapData).MapInfo do
+		if type(info) == "table" and info.Name and info.LayoutOrder then MAP_ORDER[info.Name] = info.LayoutOrder MAP_NAMES[#MAP_NAMES + 1] = info.Name end
 	end
-	v.modeOpen, v.mapOpen = val("GAMEMODE_VOTING_ACTIVE") == true, val("MAP_VOTING_ACTIVE") == true
+	table.sort(MAP_NAMES)
+end)
+local clicked, hooked, openedAt = {}, setmetatable({}, { __mode = "k" }), {}
+local function hookVoteButtons()
+	for kind in VOTE_PAGES do
+		for _, b in voteButtons(kind) do
+			if not hooked[b.btn] then
+				hooked[b.btn] = true
+				local order, name = b.order, b.name
+				conns[#conns + 1] = b.btn.InputBegan:Connect(function(i)
+					if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+						clicked[kind] = { order = order, name = b.btn.BottomFrame.MapNameLabel.Text, t = os.time() }
+					end
+				end)
+			end
+		end
+	end
+end
+local function myVotes()
+	hookVoteButtons()
+	local v = { modeOpen = val("GAMEMODE_VOTING_ACTIVE") == true, mapOpen = val("MAP_VOTING_ACTIVE") == true }
+	for kind, open in { mode = v.modeOpen, map = v.mapOpen } do
+		if open and not openedAt[kind] then openedAt[kind] = os.time() elseif not open then openedAt[kind] = nil end
+		local pick = kind == "mode" and hostState.play.voteMode or hostState.play.voteMap
+		local fixed = pick ~= "Copy me" and (kind == "mode" and MODE_ORDER[pick] or MAP_ORDER[pick])
+		if open and fixed then
+			v[kind] = { order = fixed, name = pick }
+		elseif open and clicked[kind] and clicked[kind].t >= (openedAt[kind] or 0) - 1 then
+			v[kind] = { order = clicked[kind].order, name = clicked[kind].name }
+		end
+	end
 	return v
 end
 local voteText, lastVoteClick = "-", 0
+local voteTries = {}
 local function copyVotes(hv)
 	if not hv or os.clock() - lastVoteClick < 1.5 then return end
 	for kind in VOTE_PAGES do
 		local want = hv[kind]
-		if want then
+		local open = val(kind == "mode" and "GAMEMODE_VOTING_ACTIVE" or "MAP_VOTING_ACTIVE") == true
+		if not open then voteTries[kind] = nil end
+		if want and open then
+			local key_ = kind .. want.order
 			for _, b in voteButtons(kind) do
-				if b.order == want.order and not b.voted and shown(b.btn) then
-					lastVoteClick = os.clock()
-					clickGui(b.btn)
-					voteText = ("voted %s: %s"):format(kind, want.name)
-					return
+				if b.order == want.order then
+					if b.voted then
+						voteText = ("voted %s: %s ✓"):format(kind, want.name)
+					elseif (voteTries[key_] or 0) < 6 then -- the page may be closed: fire the button's own handler
+						voteTries[key_] = (voteTries[key_] or 0) + 1
+						lastVoteClick = os.clock()
+						if not fireButton(b.btn) and shown(b.btn) then clickGui(b.btn) end
+						voteText = ("voting %s: %s (try %d)"):format(kind, want.name, voteTries[key_])
+						return
+					end
 				end
 			end
 		end
@@ -1179,115 +1288,119 @@ local Tabs = {
 local function set(k) return function(v) CFG[k] = v end end
 
 -- Parry tab
-local AP = Tabs.Parry:AddLeftGroupbox("Auto parry", "shield")
-AP:AddToggle("DB_Parry", { Text = "Auto parry", Default = CFG.parry, Callback = set("parry") })
+local B = {} -- UI groupboxes (kept in one table: the main chunk hit Luau's 200-local limit)
+B.AP = Tabs.Parry:AddLeftGroupbox("Auto parry", "shield")
+B.AP:AddToggle("DB_Parry", { Text = "Auto parry", Default = CFG.parry, Callback = set("parry") })
 	:AddKeyPicker("DB_ParryKey", { Default = "None", Mode = "Toggle", Text = "Auto parry", SyncToggleState = true })
-AP:AddSlider("DB_Lead", { Text = "Parry timing", Default = CFG.lead, Min = 0.15, Max = 0.7, Rounding = 2, Suffix = "s",
+B.AP:AddSlider("DB_Lead", { Text = "Parry timing", Default = CFG.lead, Min = 0.15, Max = 0.7, Rounding = 2, Suffix = "s",
 	Tooltip = "Presses F when the ball is this many seconds away. The block lasts 0.7 s, so 0.35–0.5 is safe.", Callback = set("lead") })
-AP:AddToggle("DB_Ping", { Text = "Add ping to timing", Default = CFG.pingComp, Callback = set("pingComp") })
-AP:AddSlider("DB_Close", { Text = "Always parry within", Default = CFG.closeDist, Min = 0, Max = 40, Rounding = 0, Suffix = " studs",
+B.AP:AddToggle("DB_Ping", { Text = "Add ping to timing", Default = CFG.pingComp, Callback = set("pingComp") })
+B.AP:AddSlider("DB_Close", { Text = "Always parry within", Default = CFG.closeDist, Min = 0, Max = 40, Rounding = 0, Suffix = " studs",
 	Callback = set("closeDist") })
-AP:AddToggle("DB_Predict", { Text = "Predict curve", Default = CFG.predict,
+B.AP:AddToggle("DB_Predict", { Text = "Predict curve", Default = CFG.predict,
 	Tooltip = "Runs the game's own homing math forward to find when the ball really reaches you (it curves toward its target)", Callback = set("predict") })
-AP:AddToggle("DB_PredMove", { Text = "Include my movement", Default = CFG.predMove, Callback = set("predMove") })
-AP:AddSlider("DB_Human", { Text = "Random delay", Default = CFG.humanize, Min = 0, Max = 200, Rounding = 0, Suffix = " ms",
+B.AP:AddToggle("DB_PredMove", { Text = "Include my movement", Default = CFG.predMove, Callback = set("predMove") })
+B.AP:AddSlider("DB_Human", { Text = "Random delay", Default = CFG.humanize, Min = 0, Max = 200, Rounding = 0, Suffix = " ms",
 	Tooltip = "Adds 0..N ms before each press so the timing doesn't look perfect", Callback = set("humanize") })
-local CL = Tabs.Parry:AddLeftGroupbox("Clash", "swords")
-CL:AddLabel("Two players trading the ball point-blank: spams F while it's yours, close and fast.", true)
-CL:AddToggle("DB_Clash", { Text = "Clash spam", Default = CFG.clash, Callback = set("clash") })
-CL:AddSlider("DB_ClashDist", { Text = "Within", Default = CFG.clashDist, Min = 5, Max = 40, Rounding = 0, Suffix = " studs", Callback = set("clashDist") })
-local AM = Tabs.Parry:AddLeftGroupbox("Aim", "crosshair")
-AM:AddLabel("Your deflect flies where your camera looks. This turns the camera onto the chosen player for a moment as you press F (and for moves).", true)
-AM:AddDropdown("DB_AimMode", { Text = "Send the ball to", Values = AIM_MODES, Default = CFG.aimMode, Callback = set("aimMode") })
-AM:AddDropdown("DB_AimName", { Text = "Player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true,
+B.CL = Tabs.Parry:AddLeftGroupbox("Clash", "swords")
+B.CL:AddLabel("Two players trading the ball point-blank: spams F while it's yours, close and fast.", true)
+B.CL:AddToggle("DB_Clash", { Text = "Clash spam", Default = CFG.clash, Callback = set("clash") })
+B.CL:AddSlider("DB_ClashDist", { Text = "Within", Default = CFG.clashDist, Min = 5, Max = 40, Rounding = 0, Suffix = " studs", Callback = set("clashDist") })
+B.AM = Tabs.Parry:AddLeftGroupbox("Aim", "crosshair")
+B.AM:AddLabel("Your deflect flies where your camera looks. This turns the camera onto the chosen player for a moment as you press F (and for moves).", true)
+B.AM:AddDropdown("DB_AimMode", { Text = "Send the ball to", Values = AIM_MODES, Default = CFG.aimMode, Callback = set("aimMode") })
+B.AM:AddDropdown("DB_AimStyle", { Text = "Shot style", Values = { "Auto (per account)", "Off", table.unpack(AIM_STYLE_NAMES) }, Default = CFG.aimStyle,
+	Tooltip = "How you send it: launch angle off the straight line and who you prefer to hit. Built from real players' deflects.", Callback = set("aimStyle") })
+B.AM:AddDropdown("DB_AimName", { Text = "Player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true,
 	Callback = function(v) CFG.aimName = v or "" end })
-CL:AddSlider("DB_ClashSpeed", { Text = "Ball faster than", Default = CFG.clashSpeed, Min = 50, Max = 400, Rounding = 0, Callback = set("clashSpeed") })
+B.CL:AddSlider("DB_ClashSpeed", { Text = "Ball faster than", Default = CFG.clashSpeed, Min = 50, Max = 400, Rounding = 0, Callback = set("clashSpeed") })
 
-local RD = Tabs.Parry:AddRightGroupbox("Rounds", "repeat")
-RD:AddToggle("DB_Ready", { Text = "Auto ready", Tooltip = "Walks into the ready zone before every round", Default = CFG.autoReady, Callback = set("autoReady") })
-RD:AddToggle("DB_Afk", { Text = "Anti AFK", Default = CFG.antiAfk, Callback = set("antiAfk") })
-local LV = Tabs.Parry:AddRightGroupbox("Live", "activity")
-local liveLabel = LV:AddLabel("-", true)
-local statLabel = LV:AddLabel("-", true)
+B.RD = Tabs.Parry:AddRightGroupbox("Rounds", "repeat")
+B.RD:AddToggle("DB_Ready", { Text = "Auto ready", Tooltip = "Walks into the ready zone before every round", Default = CFG.autoReady, Callback = set("autoReady") })
+B.RD:AddToggle("DB_Afk", { Text = "Anti AFK", Default = CFG.antiAfk, Callback = set("antiAfk") })
+B.LV = Tabs.Parry:AddRightGroupbox("Live", "activity")
+local liveLabel = B.LV:AddLabel("-", true)
+local statLabel = B.LV:AddLabel("-", true)
 
 -- Moves tab
-local MC = Tabs.Moves:AddLeftGroupbox("Your champion", "user")
-local champLabel = MC:AddLabel("-", true)
-MC:AddLabel("Smart = Save me for moves that deflect (AutoDeflect), When targeted for invisibility/armor, Off for pure dashes, On cooldown for the rest. Save me fires when F is on cooldown and the ball is under 1.1 s away.", true)
-local MS = Tabs.Moves:AddRightGroupbox("Slots", "layers")
+B.MC = Tabs.Moves:AddLeftGroupbox("Your champion", "user")
+local champLabel = B.MC:AddLabel("-", true)
+B.MC:AddLabel("Smart = Save me for moves that deflect (AutoDeflect), When targeted for invisibility/armor, Off for pure dashes, On cooldown for the rest. Save me fires when F is on cooldown and the ball is under 1.1 s away.", true)
+B.MS = Tabs.Moves:AddRightGroupbox("Slots", "layers")
 for i = 1, 4 do
-	MS:AddDropdown("DB_Slot" .. i, { Text = "Slot " .. i .. " (key " .. i .. ")", Values = MOVE_MODES, Default = CFG.slotMode[i],
+	B.MS:AddDropdown("DB_Slot" .. i, { Text = "Slot " .. i .. " (key " .. i .. ")", Values = MOVE_MODES, Default = CFG.slotMode[i],
 		Callback = function(v) CFG.slotMode[i] = v end })
 end
-local movesLabel = MS:AddLabel("-", true)
+local movesLabel = B.MS:AddLabel("-", true)
 
 -- Movement tab
-local AF = Tabs.Misc:AddLeftGroupbox("Animation fix", "person-standing")
-AF:AddToggle("DB_AnimFix", { Text = "Unfreeze my animations", Default = CFG.animFix,
+B.AF = Tabs.Misc:AddLeftGroupbox("Animation fix", "person-standing")
+B.AF:AddToggle("DB_AnimFix", { Text = "Unfreeze my animations", Default = CFG.animFix,
 	Tooltip = "Stops broken Action tracks (asset 68645) that freeze your own walk animation", Callback = set("animFix") })
-local animLabel = AF:AddLabel("-", true)
-local MV = Tabs.Movement:AddLeftGroupbox("In-round movement", "footprints")
-MV:AddLabel("Human copies how real players moved (measured): walk in short bursts, brief stops, new direction every ~1.6 s, a dash now and then, keep away from the ball. Pressing WASD pauses it.", true)
-MV:AddDropdown("DB_MoveKind", { Text = "Mode", Values = MOVE_KINDS, Default = CFG.moveKind, Callback = set("moveKind") })
-MV:AddDropdown("DB_FollowName", { Text = "Follow player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true,
+local animLabel = B.AF:AddLabel("-", true)
+B.AF:AddToggle("DB_AimLog", { Text = "Log my aims (debug)", Default = CFG.aimLog, Callback = set("aimLog") })
+B.MV = Tabs.Movement:AddLeftGroupbox("In-round movement", "footprints")
+B.MV:AddLabel("Human copies how real players moved (measured): walk in short bursts, brief stops, new direction every ~1.6 s, a dash now and then, keep away from the ball. Pressing WASD pauses it.", true)
+B.MV:AddDropdown("DB_MoveKind", { Text = "Mode", Values = MOVE_KINDS, Default = CFG.moveKind, Callback = set("moveKind") })
+B.MV:AddDropdown("DB_FollowName", { Text = "Follow player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true,
 	Callback = function(v) CFG.followName = v or "" end })
-MV:AddSlider("DB_FollowDist", { Text = "Follow distance", Default = CFG.followDist, Min = 4, Max = 60, Rounding = 0, Suffix = " studs", Callback = set("followDist") })
-local IM = Tabs.Movement:AddLeftGroupbox("Idle (lobby)", "coffee")
-IM:AddLabel("Walks around the lobby between rounds like a player: short walks, pauses, sometimes AFK, never longer than Max AFK. Stays inside the ready zone once ready.", true)
-IM:AddToggle("DB_IdleMove", { Text = "Move while idle", Default = CFG.idleMove, Callback = set("idleMove") })
-IM:AddSlider("DB_IdleAfk", { Text = "Max AFK", Default = CFG.idleAfkMax, Min = 4, Max = 120, Rounding = 0, Suffix = "s", Callback = set("idleAfkMax") })
-local idleLabel = IM:AddLabel("-", true)
-local MH = Tabs.Movement:AddRightGroupbox("Human tuning", "sliders-horizontal")
-MH:AddSlider("DB_Band", { Text = "Stay away from ball", Default = CFG.moveBand, Min = 20, Max = 150, Rounding = 0, Suffix = " studs", Callback = set("moveBand") })
-MH:AddSlider("DB_Dash", { Text = "Dash chance per move", Default = CFG.dashChance, Min = 0, Max = 1, Rounding = 2, Callback = set("dashChance") })
-MH:AddDropdown("DB_Persona", { Text = "Personality", Values = { "Auto (per account)", "Off (measured average)", table.unpack(PERSONA_NAMES) },
+B.MV:AddSlider("DB_FollowDist", { Text = "Follow distance", Default = CFG.followDist, Min = 4, Max = 60, Rounding = 0, Suffix = " studs", Callback = set("followDist") })
+B.IM = Tabs.Movement:AddLeftGroupbox("Idle (lobby)", "coffee")
+B.IM:AddLabel("Walks around the lobby between rounds like a player: short walks, pauses, sometimes AFK, never longer than Max AFK. Stays inside the ready zone once ready.", true)
+B.IM:AddToggle("DB_IdleMove", { Text = "Move while idle", Default = CFG.idleMove, Callback = set("idleMove") })
+B.IM:AddSlider("DB_IdleAfk", { Text = "Max AFK", Default = CFG.idleAfkMax, Min = 4, Max = 120, Rounding = 0, Suffix = "s", Callback = set("idleAfkMax") })
+local idleLabel = B.IM:AddLabel("-", true)
+B.MH = Tabs.Movement:AddRightGroupbox("Human tuning", "sliders-horizontal")
+B.MH:AddSlider("DB_Band", { Text = "Stay away from ball", Default = CFG.moveBand, Min = 20, Max = 150, Rounding = 0, Suffix = " studs", Callback = set("moveBand") })
+B.MH:AddSlider("DB_Dash", { Text = "Dash chance per move", Default = CFG.dashChance, Min = 0, Max = 1, Rounding = 2, Callback = set("dashChance") })
+B.MH:AddDropdown("DB_Persona", { Text = "Personality", Values = { "Auto (per account)", "Off (measured average)", table.unpack(PERSONA_NAMES) },
 	Default = CFG.persona, Tooltip = "Auto gives each account its own style + jitter. Off uses the sliders below.", Callback = set("persona") })
-MH:AddToggle("DB_Spread", { Text = "Keep apart from swarm", Default = CFG.spread, Callback = set("spread") })
-MH:AddSlider("DB_SpreadDist", { Text = "Distance from swarm", Default = CFG.spreadDist, Min = 8, Max = 120, Rounding = 0, Suffix = " studs", Callback = set("spreadDist") })
-local moveLabel = MH:AddLabel("-", true)
+B.MH:AddToggle("DB_Spread", { Text = "Keep apart from swarm", Default = CFG.spread, Callback = set("spread") })
+B.MH:AddSlider("DB_SpreadDist", { Text = "Distance from swarm", Default = CFG.spreadDist, Min = 8, Max = 120, Rounding = 0, Suffix = " studs", Callback = set("spreadDist") })
+local moveLabel = B.MH:AddLabel("-", true)
 
 -- Visuals tab
-local VB = Tabs.Visuals:AddLeftGroupbox("Ball", "circle-dot")
-VB:AddLabel("The game scrambles the ball part's position for scripts; these draw the real one.", true)
-VB:AddToggle("DB_Marker", { Text = "Ball marker", Default = CFG.marker, Callback = set("marker") })
+B.VB = Tabs.Visuals:AddLeftGroupbox("Ball", "circle-dot")
+B.VB:AddLabel("The game scrambles the ball part's position for scripts; these draw the real one.", true)
+B.VB:AddToggle("DB_Marker", { Text = "Ball marker", Default = CFG.marker, Callback = set("marker") })
 	:AddColorPicker("DB_MarkerCol", { Default = CFG.markerColor, Title = "Targeting you", Callback = set("markerColor") })
-VB:AddToggle("DB_Info", { Text = "Target · speed · time", Default = CFG.info, Callback = set("info") })
-VB:AddToggle("DB_PathLine", { Text = "Predicted path (yours)", Default = CFG.pathLine, Callback = set("pathLine") })
-VB:AddToggle("DB_VelLine", { Text = "Direction line (0.5 s)", Default = CFG.velLine, Callback = set("velLine") })
-if not Drawing then VB:AddLabel("Your executor has no Drawing API.", true) end
+B.VB:AddToggle("DB_Info", { Text = "Target · speed · time", Default = CFG.info, Callback = set("info") })
+B.VB:AddToggle("DB_PathLine", { Text = "Predicted path (yours)", Default = CFG.pathLine, Callback = set("pathLine") })
+B.VB:AddToggle("DB_VelLine", { Text = "Direction line (0.5 s)", Default = CFG.velLine, Callback = set("velLine") })
+if not Drawing then B.VB:AddLabel("Your executor has no Drawing API.", true) end
 
 -- Swarm tab
-local ID = Tabs.Swarm:AddLeftGroupbox("Identity", "user")
-ID:AddLabel("Accounts on this PC talk through the executor workspace. Pick Host on the account that drives, Swarm on the alts. Saved per account.", true)
-ID:AddDropdown("SW_Role", { Text = "This account", Values = { "Off", "Host", "Swarm" }, Default = SW.role,
+B.ID = Tabs.Swarm:AddLeftGroupbox("Identity", "user")
+B.ID:AddLabel("Accounts on this PC talk through the executor workspace. Pick Host on the account that drives, Swarm on the alts. Saved per account.", true)
+B.ID:AddDropdown("SW_Role", { Text = "This account", Values = { "Off", "Host", "Swarm" }, Default = SW.role,
 	Callback = function(v) SW.role = v if hasFiles then pcall(writefile, ROLE_FILE, v) end end })
-local swStatus = ID:AddLabel("-", true)
-local LK = ID:AddDependencyBox()
-LK:AddToggle("SW_Lock", { Text = "Lock host + auto add accounts", Default = hostState.lock,
+local swStatus = B.ID:AddLabel("-", true)
+B.LK = B.ID:AddDependencyBox()
+B.LK:AddToggle("SW_Lock", { Text = "Lock host + auto add accounts", Default = hostState.lock,
 	Tooltip = "Every other account that runs the hub joins your swarm by itself, and none of them can become host while you're online",
 	Callback = function(v) hostState.lock = v end })
-LK:SetupDependencies({ { Options.SW_Role, "Host" } })
-local NA = ID:AddDependencyBox()
-NA:AddToggle("SW_NoAuto", { Text = "Never auto join a swarm", Default = SW.noAuto, Callback = function(v)
+B.LK:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.NA = B.ID:AddDependencyBox()
+B.NA:AddToggle("SW_NoAuto", { Text = "Never auto join a swarm", Default = SW.noAuto, Callback = function(v)
 	SW.noAuto = v
 	if hasFiles then if v then pcall(writefile, NOAUTO_FILE, "1") elseif isfile(NOAUTO_FILE) then pcall(delfile, NOAUTO_FILE) end end
 end })
-NA:SetupDependencies({ { Options.SW_Role, "Off" } })
-local SD = ID:AddDependencyBox()
-SD:AddToggle("SW_Obey", { Text = "Obey host", Tooltip = "Follow the host's autoplay, rules and performance while it's online",
+B.NA:SetupDependencies({ { Options.SW_Role, "Off" } })
+B.SD = B.ID:AddDependencyBox()
+B.SD:AddToggle("SW_Obey", { Text = "Obey host", Tooltip = "Follow the host's autoplay, rules and performance while it's online",
 	Default = true, Callback = function(v) SW.obey = v end })
-SD:AddButton({ Text = "Copy host parry settings", Tooltip = "Timing, ping, close range, delay, clash and prediction settings",
+B.SD:AddButton({ Text = "Copy host parry settings", Tooltip = "Timing, ping, close range, delay, clash and prediction settings",
 	Func = function() Library:Notify(applyHostParry() and "Copied the host's parry settings" or "No host parry settings yet", 3) end })
-SD:AddToggle("SW_AutoJoin", { Text = "Auto join host", Default = true,
+B.SD:AddToggle("SW_AutoJoin", { Text = "Auto join host", Default = true,
 	Tooltip = "Join the host's server when it has a free slot (the host's own toggle must be on too)",
 	Callback = function(v) SW.autoJoin = v end })
-SD:AddToggle("SW_SyncParry", { Text = "Keep host parry settings", Default = false, Tooltip = "Copies them again whenever the host changes one",
+B.SD:AddToggle("SW_SyncParry", { Text = "Keep host parry settings", Default = false, Tooltip = "Copies them again whenever the host changes one",
 	Callback = function(v) SW.syncParry = v if v then applyHostParry() end end })
-local swCmdLabel = SD:AddLabel("-", true)
-SD:SetupDependencies({ { Options.SW_Role, "Swarm" } })
+local swCmdLabel = B.SD:AddLabel("-", true)
+B.SD:SetupDependencies({ { Options.SW_Role, "Swarm" } })
 
-local MB = Tabs.Swarm:AddRightGroupbox("Members", "users")
-local membersLabel = MB:AddLabel("-", true)
+B.MB = Tabs.Swarm:AddRightGroupbox("Members", "users")
+local membersLabel = B.MB:AddLabel("-", true)
 
 -- host-only boxes: controls show for the Host role, a hint for the others
 local function hostOnly(box)
@@ -1298,10 +1411,13 @@ local function hostOnly(box)
 	end
 	return box:AddDependencyBox()
 end
-local HD = Tabs.Swarm:AddLeftGroupbox("Servers", "server")
-local hd = hostOnly(HD)
-hd:AddButton({ Text = "Join my server", Func = function() pushCmd("join", { placeId = game.PlaceId, jobId = game.JobId }) Library:Notify("Swarm: joining you", 3) end })
-hd:AddButton({ Text = "Scatter servers", Tooltip = "Every alt goes to a different public server of this mode", Func = function()
+B.HD = Tabs.Swarm:AddLeftGroupbox("Servers", "server")
+B.hd = hostOnly(B.HD)
+B.hd:AddToggle("SW_Stay", { Text = "Auto join (alts join my server)", Default = hostState.play.stayWithHost,
+	Tooltip = "ON: alts outside your server join you between rounds; when it's full they wait and take slots as they open, one alt per free slot. OFF: alts stay where they are.",
+	Callback = function(v) hostState.play.stayWithHost = v end })
+B.hd:AddButton({ Text = "Join my server", Func = function() pushCmd("join", { placeId = game.PlaceId, jobId = game.JobId }) Library:Notify("Swarm: joining you", 3) end })
+B.hd:AddButton({ Text = "Scatter servers", Tooltip = "Every alt goes to a different public server of this mode", Func = function()
 	task.spawn(function()
 		local list, err = serverList(game.PlaceId)
 		if not list then Library:Notify("Scatter: " .. err, 4) return end
@@ -1318,134 +1434,137 @@ hd:AddButton({ Text = "Scatter servers", Tooltip = "Every alt goes to a differen
 		Library:Notify("Swarm: scattering", 3)
 	end)
 end })
-hd:AddButton({ Text = "Rejoin", Func = function() pushCmd("rejoin") end })
-hd:AddButton({ Text = "Reset characters", Func = function() pushCmd("reset") end })
-hd:AddDropdown("SW_Mode", { Text = "Send to mode", Values = { "Lobby (beginner)", "Classic", "Death Ball hub", "Pro" }, Default = "Classic" })
-hd:AddButton({ Text = "Send swarm to mode", Func = function()
+B.hd:AddButton({ Text = "Rejoin", Func = function() pushCmd("rejoin") end })
+B.hd:AddButton({ Text = "Reset characters", Func = function() pushCmd("reset") end })
+B.hd:AddDropdown("SW_Mode", { Text = "Send to mode", Values = { "Lobby (beginner)", "Classic", "Death Ball hub", "Pro" }, Default = "Classic" })
+B.hd:AddButton({ Text = "Send swarm to mode", Func = function()
 	local ids = { ["Lobby (beginner)"] = 83678792452277, Classic = 71000936793663, ["Death Ball hub"] = 15002061926, Pro = 89775940525999 }
 	pushCmd("mode", { placeId = ids[Options.SW_Mode.Value] })
 end })
-hd:AddButton({ Text = "Close swarm clients", DoubleClick = true, Func = function() pushCmd("close") end })
-hd:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.hd:AddButton({ Text = "Close swarm clients", DoubleClick = true, Func = function() pushCmd("close") end })
+B.hd:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local AU = Tabs.Swarm:AddRightGroupbox("Autoplay", "play")
-local au = hostOnly(AU)
-au:AddToggle("SW_AutoReady", { Text = "Swarm auto ready", Default = hostState.autoplay.ready, Callback = function(v) hostState.autoplay.ready = v end })
-au:AddToggle("SW_AutoParry", { Text = "Swarm auto parry", Default = hostState.autoplay.parry, Callback = function(v) hostState.autoplay.parry = v end })
-au:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.AU = Tabs.Swarm:AddRightGroupbox("Autoplay", "play")
+B.au = hostOnly(B.AU)
+B.au:AddToggle("SW_AutoReady", { Text = "Swarm auto ready", Default = hostState.autoplay.ready, Callback = function(v) hostState.autoplay.ready = v end })
+B.au:AddToggle("SW_AutoParry", { Text = "Swarm auto parry", Default = hostState.autoplay.parry, Callback = function(v) hostState.autoplay.parry = v end })
+B.au:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local WL = Tabs.Swarm:AddRightGroupbox("Win / lose rules", "scale")
-local wl = hostOnly(WL)
-wl:AddLabel("Alts stop parrying (and lose) when a lose rule is true. The final rule decides the last 1v1.", true)
-wl:AddToggle("SW_LoseHost", { Text = "Lose while host is alive", Default = hostState.rules.loseHostAlive, Callback = function(v) hostState.rules.loseHostAlive = v end })
-wl:AddSlider("SW_LoseAlive", { Text = "Lose when alive ≤", Default = hostState.rules.loseAliveLE, Min = 0, Max = 9, Rounding = 0,
+B.WL = Tabs.Swarm:AddRightGroupbox("Win / lose rules", "scale")
+B.wl = hostOnly(B.WL)
+B.wl:AddLabel("Alts stop parrying (and lose) when a lose rule is true. The final rule decides the last 1v1.", true)
+B.wl:AddToggle("SW_LoseHost", { Text = "Lose while host is alive", Default = hostState.rules.loseHostAlive, Callback = function(v) hostState.rules.loseHostAlive = v end })
+B.wl:AddSlider("SW_LoseAlive", { Text = "Lose when alive ≤", Default = hostState.rules.loseAliveLE, Min = 0, Max = 9, Rounding = 0,
 	Tooltip = "0 = off", Callback = function(v) hostState.rules.loseAliveLE = v end })
-wl:AddSlider("SW_LoseSpeed", { Text = "Lose when ball ≥", Default = hostState.rules.loseSpeedGE, Min = 0, Max = 400, Rounding = 0,
+B.wl:AddSlider("SW_LoseSpeed", { Text = "Lose when ball ≥", Default = hostState.rules.loseSpeedGE, Min = 0, Max = 400, Rounding = 0,
 	Tooltip = "0 = off", Callback = function(v) hostState.rules.loseSpeedGE = v end })
-wl:AddSlider("SW_LoseAfter", { Text = "Lose after surviving", Default = hostState.rules.loseAfter, Min = 0, Max = 300, Rounding = 0, Suffix = "s",
+B.wl:AddSlider("SW_LoseAfter", { Text = "Lose after surviving", Default = hostState.rules.loseAfter, Min = 0, Max = 300, Rounding = 0, Suffix = "s",
 	Tooltip = "0 = off", Callback = function(v) hostState.rules.loseAfter = v end })
-wl:AddDropdown("SW_Final", { Text = "Only win the final 1v1", Values = { "Always", "Never", "Not vs host", "Not vs swarm" },
+B.wl:AddDropdown("SW_Final", { Text = "Only win the final 1v1", Values = { "Always", "Never", "Not vs host", "Not vs swarm" },
 	Default = hostState.rules.final, Callback = function(v) hostState.rules.final = v end })
-wl:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.wl:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local PA = Tabs.Play:AddLeftGroupbox("Swarm aim", "crosshair")
-local pa = hostOnly(PA)
-pa:AddLabel("Where alts send the ball. Own = each alt's own Aim setting.", true)
-pa:AddDropdown("SW_AimMode", { Text = "Alts send the ball to", Values = { "Own", table.unpack(AIM_MODES) }, Default = hostState.play.aimMode,
+B.PA = Tabs.Play:AddLeftGroupbox("Swarm aim", "crosshair")
+B.pa = hostOnly(B.PA)
+B.pa:AddLabel("Where alts send the ball. Own = each alt's own Aim setting.", true)
+B.pa:AddDropdown("SW_AimMode", { Text = "Alts send the ball to", Values = { "Own", table.unpack(AIM_MODES) }, Default = hostState.play.aimMode,
 	Callback = function(v) hostState.play.aimMode = v end })
-pa:AddToggle("SW_WhitelistHost", { Text = "Whitelist me (alts never target me)", Default = hostState.play.whitelistHost,
+B.pa:AddToggle("SW_DiverseAim", { Text = "Different shot style per alt", Default = hostState.play.diverseAim,
+	Callback = function(v) hostState.play.diverseAim = v end })
+B.pa:AddToggle("SW_WhitelistHost", { Text = "Whitelist me (alts never target me)", Default = hostState.play.whitelistHost,
 	Tooltip = "Covers aim modes, attack passes and the attack victim", Callback = function(v) hostState.play.whitelistHost = v end })
-pa:AddDropdown("SW_Whitelist", { Text = "Whitelist players", SpecialType = "Player", ExcludeLocalPlayer = true, Multi = true,
+B.pa:AddDropdown("SW_Whitelist", { Text = "Whitelist players", SpecialType = "Player", ExcludeLocalPlayer = true, Multi = true,
 	Tooltip = "Nobody in the swarm sends the ball at these players", Callback = function(v)
 		local t = {}
 		for name, on in v do if on then t[#t + 1] = typeof(name) == "Instance" and name.Name or tostring(name) end end
 		hostState.play.whitelist = t
 	end })
-pa:AddDropdown("SW_AimName", { Text = "Target player", SpecialType = "Player", AllowNull = true,
+B.pa:AddDropdown("SW_AimName", { Text = "Target player", SpecialType = "Player", AllowNull = true,
 	Callback = function(v) hostState.play.aimName = v or "" end })
-pa:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.pa:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local PM = Tabs.Play:AddLeftGroupbox("Swarm moves", "zap")
-local pm = hostOnly(PM)
-pm:AddDropdown("SW_Moves", { Text = "Alts' champion moves", Values = { "Own", "Smart all", "Spam all", "Off all" }, Default = hostState.play.moves,
+B.PM = Tabs.Play:AddLeftGroupbox("Swarm moves", "zap")
+B.pm = hostOnly(B.PM)
+B.pm:AddDropdown("SW_Moves", { Text = "Alts' champion moves", Values = { "Own", "Smart all", "Spam all", "Off all" }, Default = hostState.play.moves,
 	Tooltip = "Own = each alt's Moves tab", Callback = function(v) hostState.play.moves = v end })
-pm:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.pm:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local PV = Tabs.Play:AddRightGroupbox("Swarm movement", "footprints")
-local pv = hostOnly(PV)
-pv:AddDropdown("SW_MoveKind", { Text = "Alts move", Values = { "Own", table.unpack(MOVE_KINDS) }, Default = hostState.play.moveKind,
+B.PV = Tabs.Play:AddRightGroupbox("Swarm movement", "footprints")
+B.pv = hostOnly(B.PV)
+B.pv:AddDropdown("SW_MoveKind", { Text = "Alts move", Values = { "Own", table.unpack(MOVE_KINDS) }, Default = hostState.play.moveKind,
 	Callback = function(v) hostState.play.moveKind = v end })
-pv:AddDropdown("SW_FollowName", { Text = "Follow player", SpecialType = "Player", AllowNull = true,
+B.pv:AddDropdown("SW_FollowName", { Text = "Follow player", SpecialType = "Player", AllowNull = true,
 	Callback = function(v) hostState.play.followName = v or "" end })
-pv:AddSlider("SW_FollowDist", { Text = "Follow distance", Default = hostState.play.followDist, Min = 4, Max = 60, Rounding = 0, Suffix = " studs",
+B.pv:AddSlider("SW_FollowDist", { Text = "Follow distance", Default = hostState.play.followDist, Min = 4, Max = 60, Rounding = 0, Suffix = " studs",
 	Callback = function(v) hostState.play.followDist = v end })
-pv:AddDropdown("SW_IdleMove", { Text = "Alts idle movement", Values = { "Own", "On", "Off" }, Default = hostState.play.idleMove,
+B.pv:AddDropdown("SW_IdleMove", { Text = "Alts idle movement", Values = { "Own", "On", "Off" }, Default = hostState.play.idleMove,
 	Callback = function(v) hostState.play.idleMove = v end })
-pv:AddToggle("SW_Diverse", { Text = "Different personality per alt", Default = hostState.play.diverse,
+B.pv:AddToggle("SW_Diverse", { Text = "Different personality per alt", Default = hostState.play.diverse,
 	Callback = function(v) hostState.play.diverse = v end })
-pv:AddToggle("SW_Spread", { Text = "Keep alts apart", Default = hostState.play.spread, Callback = function(v) hostState.play.spread = v end })
-pv:AddSlider("SW_SpreadDist", { Text = "Distance between alts", Default = hostState.play.spreadDist, Min = 8, Max = 120, Rounding = 0, Suffix = " studs",
+B.pv:AddToggle("SW_Spread", { Text = "Keep alts apart", Default = hostState.play.spread, Callback = function(v) hostState.play.spread = v end })
+B.pv:AddSlider("SW_SpreadDist", { Text = "Distance between alts", Default = hostState.play.spreadDist, Min = 8, Max = 120, Rounding = 0, Suffix = " studs",
 	Callback = function(v) hostState.play.spreadDist = v end })
-pv:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.pv:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local PK = Tabs.Play:AddLeftGroupbox("Coordinated attack", "swords")
-local pk = hostOnly(PK)
-pk:AddLabel("The swarm (you included) passes the ball among itself until it's fast, then whoever has it fires at one victim. Swarm accounts need auto parry on.", true)
-pk:AddToggle("SW_Attack", { Text = "Organize attacks", Default = hostState.play.attack.on, Callback = function(v) hostState.play.attack.on = v end })
-pk:AddSlider("SW_AttackBuild", { Text = "Pump to speed", Default = hostState.play.attack.build, Min = 0, Max = 400, Rounding = 0,
+B.PK = Tabs.Play:AddLeftGroupbox("Coordinated attack", "swords")
+B.pk = hostOnly(B.PK)
+B.pk:AddLabel("The swarm (you included) passes the ball among itself until it's fast, then whoever has it fires at one victim. Swarm accounts need auto parry on.", true)
+B.pk:AddToggle("SW_Attack", { Text = "Organize attacks", Default = hostState.play.attack.on, Callback = function(v) hostState.play.attack.on = v end })
+B.pk:AddSlider("SW_AttackBuild", { Text = "Pump to speed", Default = hostState.play.attack.build, Min = 0, Max = 400, Rounding = 0,
 	Tooltip = "0 = attack right away", Callback = function(v) hostState.play.attack.build = v end })
-pk:AddDropdown("SW_AttackPick", { Text = "Victim", Values = { "Auto", "Player" }, Default = hostState.play.attack.pick,
+B.pk:AddDropdown("SW_AttackPick", { Text = "Victim", Values = { "Auto", "Player" }, Default = hostState.play.attack.pick,
 	Tooltip = "Auto keeps one random non-swarm player until they're out", Callback = function(v) hostState.play.attack.pick = v end })
-pk:AddDropdown("SW_AttackName", { Text = "Victim player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true,
+B.pk:AddDropdown("SW_AttackName", { Text = "Victim player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true,
 	Callback = function(v) hostState.play.attack.name = v or "" end })
-local atkLabel = pk:AddLabel("-", true)
-pk:SetupDependencies({ { Options.SW_Role, "Host" } })
+local atkLabel = B.pk:AddLabel("-", true)
+B.pk:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local PVo = Tabs.Play:AddRightGroupbox("Votes", "vote")
-local pvo = hostOnly(PVo)
-pvo:AddLabel("Alts in your server click the same gamemode and map you vote for.", true)
-pvo:AddToggle("SW_CopyVote", { Text = "Copy my votes", Default = hostState.play.copyVote, Callback = function(v) hostState.play.copyVote = v end })
-local voteLabel = pvo:AddLabel("-", true)
-pvo:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.PVo = Tabs.Play:AddRightGroupbox("Votes", "vote")
+B.pvo = hostOnly(B.PVo)
+B.pvo:AddLabel("Alts in your server vote with you: what you click this vote, or a fixed pick. They vote even with their vote page closed and retry until it counts.", true)
+B.pvo:AddToggle("SW_CopyVote", { Text = "Swarm votes", Default = hostState.play.copyVote, Callback = function(v) hostState.play.copyVote = v end })
+B.pvo:AddDropdown("SW_VoteMode", { Text = "Gamemode vote", Values = { "Copy me", "Classic", "One Life", "Team", "Cyber Brawl" },
+	Default = hostState.play.voteMode, Tooltip = "Copy me = whatever you click this vote", Callback = function(v) hostState.play.voteMode = v end })
+B.pvo:AddDropdown("SW_VoteMap", { Text = "Map vote", Values = { "Copy me", table.unpack(MAP_NAMES) },
+	Default = hostState.play.voteMap, Callback = function(v) hostState.play.voteMap = v end })
+local voteLabel = B.pvo:AddLabel("-", true)
+B.pvo:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local PT = Tabs.Play:AddLeftGroupbox("Swarm tutorial + server", "graduation-cap")
-local pt = hostOnly(PT)
-pt:AddToggle("SW_Tutorial", { Text = "Alts auto complete tutorial", Default = hostState.play.tutorial,
+B.PT = Tabs.Play:AddLeftGroupbox("Swarm tutorial + server", "graduation-cap")
+B.pt = hostOnly(B.PT)
+B.pt:AddToggle("SW_Tutorial", { Text = "Alts auto complete tutorial", Default = hostState.play.tutorial,
 	Tooltip = "Fresh accounts in the tutorial play it through (card, bot round, crystals, summon) and land in the lobby",
 	Callback = function(v) hostState.play.tutorial = v end })
-pt:AddToggle("SW_Stay", { Text = "Auto join me (waits for a free slot)", Default = hostState.play.stayWithHost,
-	Tooltip = "Alts outside your server join you between rounds. When it's full they wait and take slots as they open, one alt per free slot. Also brings accounts over right after their tutorial.",
-	Callback = function(v) hostState.play.stayWithHost = v end })
-pt:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.pt:SetupDependencies({ { Options.SW_Role, "Host" } })
 
-local PF = Tabs.Swarm:AddLeftGroupbox("Swarm performance", "cpu")
-local pf = hostOnly(PF)
-pf:AddToggle("SW_PerfOn", { Text = "Apply to swarm", Default = hostState.perf.on, Callback = function(v) hostState.perf.on = v end })
-pf:AddSlider("SW_PerfFps", { Text = "FPS cap", Default = hostState.perf.fps, Min = 5, Max = 240, Rounding = 0, Callback = function(v) hostState.perf.fps = v end })
-pf:AddToggle("SW_Perf3d", { Text = "Turn off 3D rendering", Default = hostState.perf.no3d, Callback = function(v) hostState.perf.no3d = v end })
-pf:AddToggle("SW_PerfLow", { Text = "Lowest graphics", Default = hostState.perf.low, Callback = function(v) hostState.perf.low = v end })
-pf:AddToggle("SW_PerfMute", { Text = "Mute", Default = hostState.perf.mute, Callback = function(v) hostState.perf.mute = v end })
-pf:SetupDependencies({ { Options.SW_Role, "Host" } })
+B.PF = Tabs.Swarm:AddLeftGroupbox("Swarm performance", "cpu")
+B.pf = hostOnly(B.PF)
+B.pf:AddToggle("SW_PerfOn", { Text = "Apply to swarm", Default = hostState.perf.on, Callback = function(v) hostState.perf.on = v end })
+B.pf:AddSlider("SW_PerfFps", { Text = "FPS cap", Default = hostState.perf.fps, Min = 5, Max = 240, Rounding = 0, Callback = function(v) hostState.perf.fps = v end })
+B.pf:AddToggle("SW_Perf3d", { Text = "Turn off 3D rendering", Default = hostState.perf.no3d, Callback = function(v) hostState.perf.no3d = v end })
+B.pf:AddToggle("SW_PerfLow", { Text = "Lowest graphics", Default = hostState.perf.low, Callback = function(v) hostState.perf.low = v end })
+B.pf:AddToggle("SW_PerfMute", { Text = "Mute", Default = hostState.perf.mute, Callback = function(v) hostState.perf.mute = v end })
+B.pf:SetupDependencies({ { Options.SW_Role, "Host" } })
 
 -- Tutorial tab
-local TB = Tabs.Tutorial:AddLeftGroupbox("Tutorial", "graduation-cap")
-TB:AddLabel("New accounts start in the tutorial. This picks a champion card, plays the bot round (parries + ability), claims the crystals, summons and finishes; the game then sends you to the lobby.", true)
-TB:AddToggle("DB_Tutorial", { Text = "Auto complete tutorial", Default = CFG.tutorial, Callback = set("tutorial") })
-local tutLabel = TB:AddLabel("-", true)
+B.TB = Tabs.Tutorial:AddLeftGroupbox("Tutorial", "graduation-cap")
+B.TB:AddLabel("New accounts start in the tutorial. This picks a champion card, plays the bot round (parries + ability), claims the crystals, summons and finishes; the game then sends you to the lobby.", true)
+B.TB:AddToggle("DB_Tutorial", { Text = "Auto complete tutorial", Default = CFG.tutorial, Callback = set("tutorial") })
+local tutLabel = B.TB:AddLabel("-", true)
 
 -- Misc tab
-local PL = Tabs.Misc:AddLeftGroupbox("Performance (this account)", "gauge")
-PL:AddLabel("Swarm accounts that obey the host use the host's performance instead.", true)
-PL:AddSlider("DB_Fps", { Text = "FPS cap", Default = CFG.perfFps, Min = 5, Max = 240, Rounding = 0, Tooltip = "60 = off", Callback = set("perfFps") })
-PL:AddToggle("DB_No3d", { Text = "Turn off 3D rendering", Default = CFG.perf3d, Callback = set("perf3d") })
-PL:AddToggle("DB_Low", { Text = "Lowest graphics", Default = CFG.perfLow, Callback = set("perfLow") })
-PL:AddToggle("DB_Mute", { Text = "Mute", Default = CFG.perfMute, Callback = set("perfMute") })
-local TP = Tabs.Misc:AddRightGroupbox("Teleport", "plane")
-TP:AddToggle("DB_Requeue", { Text = "Reload after teleport", Default = CFG.requeue, Callback = set("requeue") })
-TP:AddButton({ Text = "Rejoin", Func = function() tpTo(game.PlaceId, game.JobId) end })
+B.PL = Tabs.Misc:AddLeftGroupbox("Performance (this account)", "gauge")
+B.PL:AddLabel("Swarm accounts that obey the host use the host's performance instead.", true)
+B.PL:AddSlider("DB_Fps", { Text = "FPS cap", Default = CFG.perfFps, Min = 5, Max = 240, Rounding = 0, Tooltip = "60 = off", Callback = set("perfFps") })
+B.PL:AddToggle("DB_No3d", { Text = "Turn off 3D rendering", Default = CFG.perf3d, Callback = set("perf3d") })
+B.PL:AddToggle("DB_Low", { Text = "Lowest graphics", Default = CFG.perfLow, Callback = set("perfLow") })
+B.PL:AddToggle("DB_Mute", { Text = "Mute", Default = CFG.perfMute, Callback = set("perfMute") })
+B.TP = Tabs.Misc:AddRightGroupbox("Teleport", "plane")
+B.TP:AddToggle("DB_Requeue", { Text = "Reload after teleport", Default = CFG.requeue, Callback = set("requeue") })
+B.TP:AddButton({ Text = "Rejoin", Func = function() tpTo(game.PlaceId, game.JobId) end })
 
-local Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
-Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
+B.Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
+B.Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
 
 function self.unload()
 	alive = false
@@ -1507,7 +1626,11 @@ task.spawn(function()
 		movesLabel:SetText("Last move: " .. moves.text .. (following() and SW.host.play and SW.host.play.moves ~= "Own" and ("\nHost: " .. SW.host.play.moves) or ""))
 		do local a = (SW.role == "Host" and hostState.play.attack) or (SW.host and SW.host.play and SW.host.play.attack) or {}
 			atkLabel:SetText(("Victim: %s\nPhase: %s"):format(a.victim ~= "" and a.victim or "-", atkPhase)) end
-		idleLabel:SetText("Idle: " .. idle.text .. " · " .. persona().name)
+		do
+			local pp = persona()
+			idleLabel:SetText(("Idle: %s\nStyle: %s · jump %.0f%% · dash %.0f%% · air dash %.0f%% · stops %.0f%%"):format(idle.text, pp.name,
+				pp.jump * 100, pp.dash * 100, (pp.air or 0) * 100, pp.stop * 100))
+		end
 		animLabel:SetText(animLog.first and ("Stopped %d broken tracks (first at %s)"):format(animLog.seen, animLog.first) or "No broken tracks seen")
 		moveLabel:SetText("Movement: " .. mv.text .. " (" .. tostring(eff("moveKind")) .. ")")
 		do
