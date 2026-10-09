@@ -195,3 +195,9 @@ Script "Human" mode: random waypoint inside the map Floor (15–70 % of half-siz
 
 ## Luau limit hit (2026-10-09)
 - "Out of local registers ... exceeded limit 200" at compile: the main chunk had > 200 locals. UI groupbox handles now live in one table `B`. Keep new top-level state in tables, not new locals.
+
+## Crash investigation (2026-10-09)
+- Every client idles at ~1.8 GB; 7 clients on a 16 GB PC logged `memoryPrioritizationCallback (level:3)` from 2 s after join and crashed after ~30 min. The hub itself costs ~20–30 MB.
+- Animation 68645 load failures (~11/s per affected client, 3 of 7) kept going after the hub was unloaded: game-side state. Not a literal anywhere (string or packed number) in 736 scripts or DataBins; plays go through `ReplicatedFirst.Tools.Animation.PlayAsync`, which caches one track per character + id. Source still unknown; a namecall trace on Play/LoadAnimation is the next step (both trace attempts hit jammed Potassium execute queues).
+- Hub crash guard: memory guard (default on, 2100 MB) forces lowest graphics + 30 FPS (alts also stop 3D) and reports per-account MB in Members; ball `getgc` scans only on a new ball id, with 0.5→4 s backoff, and the position store is found once.
+- Host Swarm Play → Swarm aim: "Alts use my parry settings" + "Copy my parry settings to alts now".

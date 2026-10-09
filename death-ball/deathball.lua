@@ -41,7 +41,7 @@ local CFG = {
 	tutorial = true, requeue = true,
 	marker = true, markerColor = Color3.fromHex("e0233c"), info = true, velLine = false, pathLine = true,
 	predict = true, predMove = true,
-	perfFps = 60, perf3d = false, perfLow = false, perfMute = false,
+	perfFps = 60, perf3d = false, perfLow = false, perfMute = false, memGuard = true, memLimit = 2100,
 }
 local conns, alive = {}, true
 local Library -- set by the UI section; earlier code (swarm role sync) checks it
@@ -151,11 +151,10 @@ local function scan()
 					and type(rawget(t, "_last")) == "number" then offs = t end
 			end
 		end
-		if offs and balls[1] then
+		if offs and balls[1] and not store then -- the store is module-level (one table for every ball): find it once
 			local id = rawget(balls[1], "Id")
 			local len = 9 + math.max(rawget(offs, "Position"), rawget(offs, "_last"), rawget(offs, "_sPosition")) + 24 + 15
-			if not (store and type(rawget(store, id)) == "string") then
-				store = nil
+			do
 				for _, t in getgc(true) do
 					if type(t) == "table" and t ~= offs then
 						local v = rawget(t, id)
@@ -278,7 +277,7 @@ local hostState = {
 	lock = false,
 	parry = {},
 	play = { aimMode = "Not swarm", aimName = "", moves = "Own", moveKind = "Human", followName = "", followDist = 12,
-		spread = true, spreadDist = 25, diverseAim = true, copyVote = true, voteMode = "Copy me", voteMap = "Copy me", tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
+		spread = true, spreadDist = 25, diverseAim = true, pushParry = false, parryPushAt = 0, copyVote = true, voteMode = "Copy me", voteMap = "Copy me", tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
 		attack = { on = false, build = 250, pick = "Auto", name = "", victim = "" },
 		whitelistHost = true, whitelist = {} },
 	vote = {},
@@ -351,8 +350,20 @@ end
 
 -- ============================== performance ==============================
 local perfApplied
+-- memory guard: 7 clients at ~1.8 GB each ran a 16 GB PC at critical memory and crashed (2026-10-09 logs:
+-- memoryPrioritizationCallback level 3 from 2 s after join). Above the limit: lowest graphics + 30 FPS, and
+-- swarm accounts also stop 3D rendering. It lets go 300 MB below the limit.
+local memGuard = { on = false, mb = 0 }
+local function guarded(p)
+	if not memGuard.on then return p end
+	local g = table.clone(p or {})
+	g.on, g.low = true, true
+	g.fps = math.min((p and p.on and p.fps) or 30, 30)
+	if SW.role == "Swarm" then g.no3d = true end
+	return g
+end
 local function applyPerf(p)
-	p = p or { on = false }
+	p = guarded(p or { on = false })
 	local key_ = HttpService:JSONEncode(p)
 	if key_ == perfApplied then return end
 	perfApplied = key_
@@ -683,7 +694,10 @@ on(RunService.Heartbeat, function()
 	if mode == "exact" then
 		local id = val("CURRENT_BALL_ID")
 		local stale = #balls == 0 or not (rawget(balls[1], "Body") and rawget(balls[1], "Body").Parent)
-		if id ~= lastBallId or (stale and id and os.clock() - lastScan > 1) then lastBallId = id scan() end
+		-- getgc(true) builds a table of every live object: costly on 7 clients. Scan on a new ball id, and while the ball
+		-- isn't found retry with backoff (0.5, 1, 2, 4 s) instead of every second.
+		if id ~= lastBallId then lastBallId, live.scanWait = id, 0.5 scan()
+		elseif stale and id and os.clock() - lastScan > (live.scanWait or 0.5) then live.scanWait = math.min((live.scanWait or 0.5) * 2, 4) scan() end
 	end
 	local onTut = game.PlaceId == TUTORIAL_PLACE and eff("tutorial")
 	local hrp = hrpOf()
@@ -955,6 +969,17 @@ local function copyVotes(hv)
 	end
 end
 
+task.spawn(function()
+	local Stats = game:GetService("Stats")
+	while alive do
+		local ok, mb = pcall(Stats.GetTotalMemoryUsageMb, Stats)
+		memGuard.mb = ok and mb or 0
+		if CFG.memGuard and memGuard.mb > CFG.memLimit then memGuard.on = true
+		elseif memGuard.on and (not CFG.memGuard or memGuard.mb < CFG.memLimit - 300) then memGuard.on = false end
+		task.wait(5)
+	end
+end)
+
 -- frozen animations: seen 2026-10-08 on an alt mid-session: a bare Animation (asset 68645, never loads, length 0)
 -- replayed ~8x/s at Action priority piles up 60+ tracks and freezes the local walk/run (others see you fine).
 -- Source not found yet; this stops such tracks and logs what we were doing the first time it shows up.
@@ -1123,7 +1148,7 @@ local function accStatus()
 	return {
 		id = LP.UserId, name = LP.Name, role = SW.role, t = os.time(), placeId = game.PlaceId, jobId = game.JobId,
 		inGame = inGame(), ready = val("IS_READY") == true, wins = stat("Wins:Total"),
-		parries = stats.parries, hp = val("PLAYER_HEALTH_CURRENT"), tut = game.PlaceId == TUTORIAL_PLACE and tutorialStage() or nil,
+		parries = stats.parries, hp = val("PLAYER_HEALTH_CURRENT"), mem = math.floor(memGuard.mb), guard = memGuard.on, tut = game.PlaceId == TUTORIAL_PLACE and tutorialStage() or nil,
 	}
 end
 task.spawn(function()
@@ -1177,7 +1202,8 @@ task.spawn(function()
 					end
 				end
 				applyPerf(SW.obey and SW.host.perf or localPerf())
-				if SW.syncParry and SW.host.parry and HttpService:JSONEncode(SW.host.parry) ~= parrySynced then applyHostParry() end
+				if (SW.syncParry or (SW.host.play and SW.host.play.pushParry)) and SW.host.parry and HttpService:JSONEncode(SW.host.parry) ~= parrySynced then applyHostParry() end
+				if SW.host.play and (SW.host.play.parryPushAt or 0) > (SW.parryPushSeen or 0) then SW.parryPushSeen = SW.host.play.parryPushAt applyHostParry() end
 				if SW.obey and SW.host.play and SW.host.play.copyVote and SW.host.jobId == game.JobId then copyVotes(SW.host.vote) end
 				-- keep alts in the host's server (also brings fresh accounts over once their tutorial ends)
 				-- auto join: alts outside the host's server queue for its free slots. Only as many alts as there are
@@ -1338,6 +1364,11 @@ B.AF = Tabs.Misc:AddLeftGroupbox("Animation fix", "person-standing")
 B.AF:AddToggle("DB_AnimFix", { Text = "Unfreeze my animations", Default = CFG.animFix,
 	Tooltip = "Stops broken Action tracks (asset 68645) that freeze your own walk animation", Callback = set("animFix") })
 local animLabel = B.AF:AddLabel("-", true)
+B.MG = Tabs.Misc:AddRightGroupbox("Crash guard", "shield-alert")
+B.MG:AddLabel("Each client uses ~1.8 GB; many clients on one PC run out of RAM and crash. Above the limit this switches to lowest graphics and 30 FPS (swarm alts also stop 3D rendering) until memory drops.", true)
+B.MG:AddToggle("DB_MemGuard", { Text = "Memory guard", Default = CFG.memGuard, Callback = set("memGuard") })
+B.MG:AddSlider("DB_MemLimit", { Text = "Limit", Default = CFG.memLimit, Min = 1200, Max = 4000, Rounding = 0, Suffix = " MB", Callback = set("memLimit") })
+local memLabel = B.MG:AddLabel("-", true)
 B.AF:AddToggle("DB_AimLog", { Text = "Log my aims (debug)", Default = CFG.aimLog, Callback = set("aimLog") })
 B.MV = Tabs.Movement:AddLeftGroupbox("In-round movement", "footprints")
 B.MV:AddLabel("Human copies how real players moved (measured): walk in short bursts, brief stops, new direction every ~1.6 s, a dash now and then, keep away from the ball. Pressing WASD pauses it.", true)
@@ -1469,6 +1500,13 @@ B.pa = hostOnly(B.PA)
 B.pa:AddLabel("Where alts send the ball. Own = each alt's own Aim setting.", true)
 B.pa:AddDropdown("SW_AimMode", { Text = "Alts send the ball to", Values = { "Own", table.unpack(AIM_MODES) }, Default = hostState.play.aimMode,
 	Callback = function(v) hostState.play.aimMode = v end })
+B.pa:AddToggle("SW_PushParry", { Text = "Alts use my parry settings", Default = hostState.play.pushParry,
+	Tooltip = "Alts copy your timing, ping, close range, delay, clash and prediction settings and follow your changes",
+	Callback = function(v) hostState.play.pushParry = v end })
+B.pa:AddButton({ Text = "Copy my parry settings to alts now", Func = function()
+	hostState.play.parryPushAt = os.time()
+	Library:Notify("Alts will copy your parry settings", 3)
+end })
 B.pa:AddToggle("SW_DiverseAim", { Text = "Different shot style per alt", Default = hostState.play.diverseAim,
 	Callback = function(v) hostState.play.diverseAim = v end })
 B.pa:AddToggle("SW_WhitelistHost", { Text = "Whitelist me (alts never target me)", Default = hostState.play.whitelistHost,
@@ -1602,8 +1640,9 @@ task.spawn(function()
 		swCmdLabel:SetText((voteText ~= "-" and (voteText .. "\n") or "") .. "Last commands: " .. (#cmdLog > 0 and table.concat(cmdLog, ", ", math.max(1, #cmdLog - 3)) or "none"))
 		local lines = {}
 		for _, m in SW.members do
-			lines[#lines + 1] = ("%s [%s] %s · %s · %d wins%s"):format(m.name, m.role, m.jobId == game.JobId and "here" or "away",
+			lines[#lines + 1] = ("%s [%s] %s · %s · %d wins · %s MB%s%s"):format(m.name, m.role, m.jobId == game.JobId and "here" or "away",
 				m.tut and ("tutorial " .. tostring(m.tut)) or (m.inGame and "in round" or (m.ready and "ready" or "lobby")), m.wins or 0,
+				tostring(m.mem or "?"), m.guard and " (guard)" or "",
 				m.id == LP.UserId and " (you)" or "")
 		end
 		membersLabel:SetText(#lines > 0 and table.concat(lines, "\n") or "No accounts online")
@@ -1631,6 +1670,7 @@ task.spawn(function()
 			idleLabel:SetText(("Idle: %s\nStyle: %s · jump %.0f%% · dash %.0f%% · air dash %.0f%% · stops %.0f%%"):format(idle.text, pp.name,
 				pp.jump * 100, pp.dash * 100, (pp.air or 0) * 100, pp.stop * 100))
 		end
+		memLabel:SetText(("Memory %.0f MB%s"):format(memGuard.mb, memGuard.on and " · GUARD ON (low graphics)" or ""))
 		animLabel:SetText(animLog.first and ("Stopped %d broken tracks (first at %s)"):format(animLog.seen, animLog.first) or "No broken tracks seen")
 		moveLabel:SetText("Movement: " .. mv.text .. " (" .. tostring(eff("moveKind")) .. ")")
 		do
