@@ -18,6 +18,8 @@ Started 2026-10-08. Script `%USERPROFILE%\rblx\deathball.lua` (Obsidian, CruelHu
 - Patch Lua via a .py file written with Write, never a heredoc with 
  (broke strings twice).
 
+- NEVER script-teleport into the Trading place (119260352090770): crashed the client 2/2 (2026-10-09). The user joins it by hand; hub tpTo/auto-join refuse it. Bot Trades tab (host) built, untested live.
+
 Open / not verified: anim 68645 root cause; coordinated attack in a live round; copy vote in a real voting phase; Follow modes; Spam/Save me on other champions; fallback reader (no getgc) and scatter/mode/close commands not live-tested; quest claiming, playtime gifts, D7 reward not automated.
 
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md), executor-compat-blind.

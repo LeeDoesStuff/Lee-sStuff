@@ -1167,6 +1167,8 @@ local function queueReload()
 	pcall(q, 'if isfile and isfile("deathball.lua") then loadstring(readfile("deathball.lua"))() else ' .. LOADER .. ' end')
 end
 local function tpTo(placeId, jobId)
+	-- script teleports INTO the Trading place crashed the client 2/2 (2026-10-09); only join it by hand
+	if placeId == 119260352090770 and game.PlaceId ~= 119260352090770 then return end
 	queueReload()
 	local ok, err = pcall(function()
 		if jobId and jobId ~= "" then TeleportService:TeleportToPlaceInstance(placeId, jobId, LP)
@@ -1428,7 +1430,7 @@ task.spawn(function()
 				-- free slots try at once (lowest UserIds first), so they don't all fight for one opening.
 				SW.joinText = nil
 				if SW.obey and SW.autoJoin ~= false and SW.host.play and SW.host.play.stayWithHost and SW.host.jobId ~= game.JobId and game.PlaceId ~= TUTORIAL_PLACE
-					and SW.host.placeId ~= TUTORIAL_PLACE and not inGame() then
+					and SW.host.placeId ~= TUTORIAL_PLACE and SW.host.placeId ~= 119260352090770 and not inGame() then
 					local free = SW.host.slots or 0
 					local queue = {}
 					for _, m in SW.members do if m.role == "Swarm" and m.jobId ~= SW.host.jobId and m.placeId ~= TUTORIAL_PLACE then queue[#queue + 1] = m.id end end
