@@ -145,3 +145,31 @@ Script "Human" mode: random waypoint inside the map Floor (15–70 % of half-siz
 - Swarm tutorial: alts follow the host's "auto complete tutorial"; "Keep alts in my server" teleports alts (between rounds, ≤ every 30 s) to the host's job, which also pulls fresh accounts in after the tutorial teleport.
 - Live 2026-10-08: my main account host (locked), an alt swarm in the same Classic server: alt walked the arena at 25 studs/s with Balloon bursts, used Gum Gum Balloon on cooldown, aimed parries at non-swarm players.
 - **Double load guard:** a teleport can start two copies (queue_on_teleport + autoexec/loader). `CruelHubDB_GEN` increments per load; a stale copy unloads itself, names its aim RenderStep binding with its generation, and doesn't reset the newer copy's performance settings.
+
+
+## Ball flight model (fitted 2026-10-08 on 12 real hits, 592 samples)
+- Recorder: an alt with parry OFF logs ball pos/vel/speed + own root every frame while targeted, until the hit. "No HP loss but the ball retargets within 5–13 studs" is also a hit (spawn/i-frame protection); counting those gave 12 approaches.
+- The client's own step (`lBall._predictionUpdate`) under-steers vs the server: best fit is **gain 6/s** (×1.25 above speed 500), **no 25-stud snap**, **hit at ~12 studs from the root**, target = your root moving at your current horizontal velocity.
+- Mean timing error: straight line 1.54 s (useless on curves), client formula 0.31 s, fitted 0.25 s.
+- **Fly-by trap:** a fast ball heading almost at you can sweep past and curve back ~1 s later. A press then burns the 0.7 s block and the cooldown, and the return hits you. Gate: only press on the prediction when the ball closes at ≥ 50 % of its speed or is within 25 studs.
+- Decision test (press when predicted tti ≤ 0.45 s): fitted+gate pressed with 0.18–0.62 s left on 11 of 12 approaches (inside the 0.7 s block). The 12th started inside the window.
+- Hub lead = timing slider + ping + `_currentInterpolationDelay` (~0.08 s; the drawn ball runs behind the server).
+
+## Clicking in background windows (measured 2026-10-08)
+- With 7–8 clients open, VirtualInputManager mouse clicks on a **background** Roblox window do nothing (the click hit the right button, per `GetGuiObjectsAtPosition`, but no reaction). Key events (F, 1–4, Q) still work.
+- Game buttons (Prompt CloseButton, summon InputSinker, card SurfaceGui buttons, vote buttons) listen on `InputBegan`/`InputEnded` only (Activated/MouseButton1Click have 0 connections). Firing those connections via `getconnections` with a fake input table `{UserInputType=MouseButton1, UserInputState=Begin/End, Position}` works in the background. The hub does that first and falls back to a VIM click.
+- With this, a fresh account (an alt) did the whole tutorial 1→13 by itself and landed in the beginner lobby.
+
+## Frozen local animations (2026-10-08, cause not found)
+- Symptom: your own character slides without walk/run animation on your screen; others see you animate normally.
+- Animator had 60+ tracks of a bare `Animation` (asset **68645**, parent nil, Length 0, Action priority) replayed ~8×/s. Not caused by F/Q/jump/MoveTo, not reproducible in the lobby with every hub feature on, and it also showed up on an account sitting at tutorial stage 1. Not in any decompiled game script (the id isn't a string constant).
+- Hub fix (Misc → Animation fix, default on): every 0.5 s stops tracks of asset 68645 with Length 0 (only that asset: real tracks also have Length 0 while loading) and writes `CruelHub/DeathBall/anim_freeze.txt` with what the hub was doing the first time.
+
+## Swarm v3 (2026-10-08)
+- **Auto join (waits for a slot):** host.json carries `slots` = MaxPlayers − players. Alts outside the host's job queue by UserId; only as many alts as there are free slots try (every 8 s at most), the rest show "waiting in line". At slots 0 nobody teleports. Verified: two alts took slots as they opened in a full 10-player Classic server.
+- **Personalities:** Average (the measured numbers), Calm, Twitchy, Runner, Camper, Jumper. Auto = one per account from UserId, plus ±15 % jitter on every number from `Random.new(UserId)`. Host toggle forces Auto on alts. Fields: stop chance, stop length, segment length, dash, jump, air dash (jump then Q 0.2–0.35 s later), ball band, arena radius range, AFK scale.
+- **Idle (lobby) movement:** walks between `workspace.LobbyWalkToPoints` (16 parts), pauses, AFK spells capped by "Max AFK" (scaled by personality); once ready it wanders inside the ReadyZone.
+- **Spacing slider:** local "Distance from swarm" and host "Distance between alts" (8–120 studs, default 25).
+- **Coordinated attack:** while the ball is slower than "Pump to speed", the holder passes it to a teammate; above it, to one victim (host picks: a named player, or one random non-swarm player kept until out). Passes go only to teammates ≥ 35 studs away whom the ball needs ≥ 0.75 s to reach (one of the 2 farthest). Closer passes killed alts. With no safe pass it attacks.
+- Host performance push FPS cap now 5–240. Copy host parry settings: button + "Keep host parry settings" (publishes timing, ping, close range, delay, clash, prediction).
+- Safe boot: `getgenv().CRUELHUB_SAFEBOOT = true` before loading skips the autoload config.

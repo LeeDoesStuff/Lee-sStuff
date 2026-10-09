@@ -1008,6 +1008,8 @@ Engine-behaviour sources: [spoofed touches aren't range-checked (2025)](https://
 - **Watch out →** spy buttons that re-fire or block calls, "fire every remote" scripts, and remotes created at runtime under random names (admin frameworks such as Adonis). Spamming a remote with no server handler also prints `Remote event invocation queue exhausted for <path>` in the server's output.
 - **Verify →** the farm's whitelist ⊆ remotes the GAME side was seen firing.
 
+- **Watch out → background windows ignore injected mouse clicks (Death Ball, 2026-10-08).** With several clients open, a VIM click on a background window hits the right GUI object but nothing happens; key events still work. → fire the button's own `InputBegan`/`InputEnded` connections (`getconnections`) with a fake input table, VIM click only as fallback.
+
 #### S4 · If the game ships a client-side anti-cheat → find out what it does when it trips
 - **Detect →** grep the decompile for `:Kick(`, `GetPropertyChangedSignal("WalkSpeed")` (and `JumpPower`, `HipHeight`), `Gravity`, `LogService` / `MessageOut`, `ScriptContext`, `gcinfo` / `collectgarbage("count")`, `CoreGui`, `debug.info`, `getfenv`, `Idled`. Sort each hit: kicks locally, reports through a remote, or answers a heartbeat.
   - → only kicks locally → hook `Kick` yourself (`__namecall` with self == LP, plus `hookfunction` for `LP.Kick(LP)`): block it **and log** the reason, `debug.traceback()` and `getcallingscript()`, which tells you what tripped it. IY `;antikick` blocks the same kicks but logs nothing, and server kicks get through either way.

@@ -14,6 +14,10 @@ Started 2026-10-08. Script `%USERPROFILE%\rblx\deathball.lua` (Obsidian, CruelHu
 - v2 (same day): aim = camera lookAt before F (verified 4/4), per-slot champion moves from AbilityData tags, Human movement from measured real players, copy vote, lock host + auto add, swarm tutorial + keep-in-server. Test pair: my main account host (pid changes), an alt swarm.
 - User wants LOTS of swarm features; keep adding ideas, measure moves per champion live before trusting tags.
 
-Open / not verified: copy vote in a real voting phase; Follow modes; Spam/Save me on other champions; fallback reader (no getgc) and scatter/mode/close commands not live-tested; quest claiming, playtime gifts, D7 reward not automated.
+- v3: fitted ball model (gain 6, hit 12 studs, fly-by gate), clicks via getconnections (VIM mouse dead in background windows), auto join by host `slots`, personalities, coordinated attack with safe-pass rule, anim 68645 fix. Accounts (PIDs change): my main account host; alts an alt, an alt, an alt, noob_yeee1, an alt, an alt.
+- Patch Lua via a .py file written with Write, never a heredoc with 
+ (broke strings twice).
+
+Open / not verified: anim 68645 root cause; coordinated attack in a live round; copy vote in a real voting phase; Follow modes; Spam/Save me on other champions; fallback reader (no getgc) and scatter/mode/close commands not live-tested; quest claiming, playtime gifts, D7 reward not automated.
 
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md), executor-compat-blind.
