@@ -95,6 +95,9 @@ end
 -- injected mouse clicks are ignored (measured 2026-10-08: a VIM click on a background client did nothing).
 -- Executors without getconnections fall back to a real VIM click.
 local function fireButton(g)
+	-- DISABLED 2026-10-09: the game's Button class reports + freezes any click fired through getconnections
+	-- (debug.info(2) is [C]); it got an alt banned. Callers fall back to a real VIM click (needs a focused window).
+	if true then return false end
 	if type(getconnections) ~= "function" then return false end
 	local pos = g.AbsolutePosition + g.AbsoluteSize / 2
 	local function fake(state)
@@ -1278,6 +1281,8 @@ local function promptOption(text) -- a visible prompt button whose label says `t
 	end
 end
 local function tradeCmd(a)
+	-- DISABLED 2026-10-09 after the ban: trade actions need a safe input route and per-action approval first
+	if true then TR.text = "trade actions are disabled" return end
 	local op = a.op
 	if op == "request" or op == "accept" then
 		for _, r in requestRows() do
@@ -1362,7 +1367,8 @@ local function accStatus()
 	return {
 		id = LP.UserId, name = LP.Name, role = SW.role, t = os.time(), placeId = game.PlaceId, jobId = game.JobId,
 		inGame = inGame(), ready = val("IS_READY") == true, wins = stat("Wins:Total"),
-		parries = stats.parries, hp = val("PLAYER_HEALTH_CURRENT"), mem = math.floor(memGuard.mb), guard = memGuard.on, tut = game.PlaceId == TUTORIAL_PLACE and tutorialStage() or nil,
+		parries = stats.parries, hp = val("PLAYER_HEALTH_CURRENT"), mem = math.floor(memGuard.mb),
+		gems = (function() local ok, g = pcall(function() return Inventory:Get().Items.Gems end) g = ok and g if type(g) == "table" then g = g.Count end return tonumber(g) end)(), guard = memGuard.on, tut = game.PlaceId == TUTORIAL_PLACE and tutorialStage() or nil,
 	}
 end
 task.spawn(function()
@@ -1948,10 +1954,12 @@ ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214",
 ThemeManager:ApplyToTab(Tabs.Settings)
 if not getgenv().CRUELHUB_SAFEBOOT then SaveManager:LoadAutoloadConfig() end -- safe boot: nothing auto-starts
 
+local labelErr
 -- label refresh
 task.spawn(function()
 	while alive do
 		if getgenv().CruelHubDB_GEN ~= GEN then self.unload() break end
+		local okL, errL = pcall(function()
 		local b = live.balls and live.balls[1]
 		local ball = b and string.format("Ball: %s · speed %.0f%s", b.mine and "on YOU" or (b.target and b.target.Name or "?"), b.speed,
 			b.tti and b.tti < 9 and string.format(" · %.2fs", b.tti) or "") or "Ball: none"
@@ -1960,14 +1968,35 @@ task.spawn(function()
 			stat("Wins:Total") - stats.startWins, stat("Deflects:Total") - stats.startDeflects))
 		swStatus:SetText(("Role: %s\n%s%s"):format(SW.role, SW.status, SW.teleportError and ("\nTeleport failed: " .. SW.teleportError) or ""))
 		swCmdLabel:SetText((voteText ~= "-" and (voteText .. "\n") or "") .. "Last commands: " .. (#cmdLog > 0 and table.concat(cmdLog, ", ", math.max(1, #cmdLog - 3)) or "none"))
-		local lines = {}
-		for _, m in SW.members do
-			lines[#lines + 1] = ("%s [%s] %s · %s · %d wins · %s MB%s%s"):format(m.name, m.role, m.jobId == game.JobId and "here" or "away",
-				m.tut and ("tutorial " .. tostring(m.tut)) or (m.inGame and "in round" or (m.ready and "ready" or "lobby")), m.wins or 0,
-				tostring(m.mem or "?"), m.guard and " (guard)" or "",
-				m.id == LP.UserId and " (you)" or "")
+		do
+			local function short(n)
+				n = tonumber(n)
+				if not n then return "?" end
+				if n >= 1e6 then return ("%.2fM"):format(n / 1e6) elseif n >= 1e3 then return ("%.1fK"):format(n / 1e3) end
+				return tostring(math.floor(n))
+			end
+			local groups = { { title = "Host" }, { title = "In this server" }, { title = "Other servers" }, { title = "Tutorial" }, { title = "Not in swarm" } }
+			local totalGems, here = 0, 0
+			for _, m in SW.members do
+				totalGems += tonumber(m.gems) or 0
+				local g = m.role == "Host" and 1 or m.role ~= "Swarm" and 5 or m.tut and 4 or m.jobId == game.JobId and 2 or 3
+				if m.jobId == game.JobId then here += 1 end
+				table.insert(groups[g], m)
+			end
+			local lines = { ("%d online · %d in this server · %s gems total"):format(#SW.members, here, short(totalGems)) }
+			for _, grp in groups do
+				if #grp > 0 then
+					table.sort(grp, function(a, b) return a.name:lower() < b.name:lower() end)
+					lines[#lines + 1] = ("— %s (%d) —"):format(grp.title, #grp)
+					for _, m in ipairs(grp) do -- ipairs: grp also has a `title` field
+						local state = m.tut and ("tutorial " .. tostring(m.tut) .. "/13") or (m.inGame and "in round" or (m.ready and "ready" or "lobby"))
+						lines[#lines + 1] = ("%s%s · %s · %s gems · %d wins · %s MB%s"):format(m.name, m.id == LP.UserId and " (you)" or "", state,
+							short(m.gems), m.wins or 0, tostring(m.mem or "?"), m.guard and " · guard" or "")
+					end
+				end
+			end
+			membersLabel:SetText(#SW.members > 0 and table.concat(lines, "\n") or "No accounts online")
 		end
-		membersLabel:SetText(#lines > 0 and table.concat(lines, "\n") or "No accounts online")
 		local ch = moves.champ
 		if ch then
 			local t = {}
@@ -2001,6 +2030,8 @@ task.spawn(function()
 				voteText ~= "-" and ("\n" .. voteText) or ""))
 		end
 		tutLabel:SetText(game.PlaceId == TUTORIAL_PLACE and tut.text or "Not in the tutorial")
+		end)
+		if not okL then labelErr = tostring(errL) if hasFiles then pcall(writefile, DIR .. "/label_err.txt", labelErr) end end
 		task.wait(0.5)
 	end
 end)

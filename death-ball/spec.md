@@ -229,3 +229,8 @@ Script "Human" mode: random waypoint inside the map Floor (15–70 % of half-siz
 - `Actions.Client` (obfuscated VM) also ignores trade calls that start from an executor thread (the gem add did nothing), so it inspects callers as well.
 - Item tradeability: `SharedData.TRADE.CAN_TRADE_ITEM(id, inventory, BinData, "Direct")` / `CAN_TRADE_TRADEABLE(type, inventory, id, data, binData, false, "Direct")` must be checked before offering anything; auras return "Tradeable at Booth"; the default/starter sword is restricted.
 - **Rules from now on:** no script-fired clicks (`getconnections`/`firesignal`) on this game's Buttons; no trade actions on any account without the user approving each one; check `CAN_TRADE_*` first; never offer starter/default items.
+
+## Swarm list + gems (2026-10-09)
+- Heartbeat adds `gems` (`Inventory.Items.Gems`). Members box: header "N online · N in this server · total gems", then groups Host / In this server / Other servers / Tutorial / Not in swarm, each sorted by name; each line shows state (tutorial x/13, in round, ready, lobby), gems (K/M), wins, memory, guard.
+- Fake clicks off: `fireButton` returns false (callers fall back to a real VIM click, which needs a focused window; background alts in the tutorial may stall at prompts). Bot Trades actions disabled.
+- The label refresh loop runs its body in pcall and writes `CruelHub/DeathBall/label_err.txt` on error (a bad label used to silently stop every label from updating).
