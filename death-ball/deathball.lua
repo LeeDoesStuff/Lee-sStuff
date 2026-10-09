@@ -1858,6 +1858,8 @@ local function tcmd(op, extra)
 	a.target, a.op = tv.bot, op
 	pushCmd("trade", a)
 end
+-- same as the tab's buttons, for scripted use/tests: CruelHubDB.trade(botUserId, op, {args})
+self.trade = function(bot, op, extra) tv.bot = bot tcmd(op, extra) end
 B.TA = Tabs.Trades:AddRightGroupbox("Requests", "user-plus")
 B.TA:AddDropdown("TR_Player", { Text = "Player", SpecialType = "Player", AllowNull = true })
 B.TA:AddButton({ Text = "Bot sends trade request", Func = function() tcmd("request", { name = Options.TR_Player.Value and tostring(Options.TR_Player.Value) }) end })

@@ -1010,6 +1010,8 @@ Engine-behaviour sources: [spoofed touches aren't range-checked (2025)](https://
 
 - **Watch out → background windows ignore injected mouse clicks (Death Ball, 2026-10-08).** With several clients open, a VIM click on a background window hits the right GUI object but nothing happens; key events still work. → fire the button's own `InputBegan`/`InputEnded` connections (`getconnections`) with a fake input table, VIM click only as fallback.
 
+- **Watch out → button classes that detect fake clicks (Death Ball, 2026-10-09, cost a ban).** The game's base Button handler checks `debug.info(2, "n") ~= nil or debug.info(2, "s") == "[C]"`; a connection fired via `getconnections(...):Fire()` has `[C]` there → report + `while true do end`. → decompile the UI button class before faking any click; prefer real input (VIM in a focused window) or skip the feature.
+
 #### S4 · If the game ships a client-side anti-cheat → find out what it does when it trips
 - **Detect →** grep the decompile for `:Kick(`, `GetPropertyChangedSignal("WalkSpeed")` (and `JumpPower`, `HipHeight`), `Gravity`, `LogService` / `MessageOut`, `ScriptContext`, `gcinfo` / `collectgarbage("count")`, `CoreGui`, `debug.info`, `getfenv`, `Idled`. Sort each hit: kicks locally, reports through a remote, or answers a heartbeat.
   - → only kicks locally → hook `Kick` yourself (`__namecall` with self == LP, plus `hookfunction` for `LP.Kick(LP)`): block it **and log** the reason, `debug.traceback()` and `getcallingscript()`, which tells you what tripped it. IY `;antikick` blocks the same kicks but logs nothing, and server kicks get through either way.
