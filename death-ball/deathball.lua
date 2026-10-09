@@ -291,7 +291,7 @@ local hostState = {
 	lock = false,
 	parry = {},
 	play = { aimMode = "Not swarm", aimName = "", moves = "Own", moveKind = "Human", followName = "", followDist = 12,
-		spread = true, spreadDist = 25, diverseAim = true, pushParry = false, parryPushAt = 0, copyAim = false, copyMoves = false, copyMovement = false, copyTutorial = false, copyVote = true, voteMode = "Copy me", voteMap = "Copy me", tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
+		spread = true, spreadDist = 25, diverseAim = true, pushParry = false, parryPushAt = 0, copyAim = false, copyMoves = false, copyMovement = false, copyTutorial = false, copyVote = true, voteMode = "Copy me", voteMap = "Copy me", tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true, animFix = "Own",
 		attack = { on = false, pick = "Auto", name = "", victim = "" },
 		whitelistHost = true, whitelist = {} },
 	vote = {},
@@ -354,6 +354,7 @@ local function eff(k)
 		if k == "parry" then return SW.host.autoplay.parry end
 		if k == "autoReady" then return SW.host.autoplay.ready end
 		local pl = SW.host.play
+		if (k == "animRejoin" or k == "animFix") and pl and pl.animFix and pl.animFix ~= "Own" then return pl.animFix == "On" end
 		local hs = pl and pl.hostSettings
 		if hs then
 			if pl.copyAim and (k == "aimMode" or k == "aimName" or k == "aimStyle") and hs[k] ~= nil then return hs[k] end
@@ -1089,7 +1090,7 @@ task.spawn(function()
 		animBroken = os.clock() - loadedAt > 20 and brokenTracks() >= 2
 		brokenSince = animBroken and (brokenSince or os.clock()) or nil
 		-- wait for a break between rounds, unless it has been broken for 90 s
-		if animBroken and CFG.animRejoin and game.PlaceId ~= TUTORIAL_PLACE and (not inGame() or os.clock() - brokenSince > 90) then
+		if animBroken and eff("animRejoin") and game.PlaceId ~= TUTORIAL_PLACE and (not inGame() or os.clock() - brokenSince > 90) then
 			local lock = hasFiles and jread(LOCK)
 			if not (lock and lock.id ~= LP.UserId and os.time() - (lock.t or 0) < 45) then
 				if hasFiles then jwrite(LOCK, { id = LP.UserId, t = os.time() }) end
@@ -1126,7 +1127,7 @@ local animLog = { seen = 0, first = nil }
 task.spawn(function()
 	while alive do
 		task.wait(0.5)
-		if not CFG.animFix then continue end
+		if not eff("animFix") then continue end
 		local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
 		local an = hum and hum:FindFirstChildOfClass("Animator")
 		if not an then continue end
@@ -1797,6 +1798,9 @@ B.hd:AddButton({ Text = "Scatter servers", Tooltip = "Every alt goes to a differ
 	end)
 end })
 B.hd:AddButton({ Text = "Rejoin", Func = function() pushCmd("rejoin") end })
+B.hd:AddDropdown("SW_AnimFix", { Text = "Alts' animation fix", Values = { "Own", "On", "Off" }, Default = hostState.play.animFix or "Own",
+	Tooltip = "Auto rejoin + unfreeze when an alt's body freezes. Own = each alt's Misc setting.",
+	Callback = function(v) hostState.play.animFix = v end })
 B.hd:AddDropdown("SW_RejoinBot", { Text = "One bot", Values = {}, AllowNull = true })
 B.hd:AddButton({ Text = "Rejoin that bot (same server)", Func = function()
 	local id = SW.byName and SW.byName[Options.SW_RejoinBot.Value or ""]
