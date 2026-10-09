@@ -1,0 +1,8 @@
+name = "Death Ball"
+place_id = 15002061926
+game_id = 5166944221
+status = "active"
+script = "deathball.lua"
+loader = 'loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/LuaLoader/main/loader.lua"))()'
+ui = "Obsidian"
+notes = ["notes.md", "spec.md"]

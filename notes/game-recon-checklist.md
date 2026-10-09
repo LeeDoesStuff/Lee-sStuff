@@ -1018,6 +1018,10 @@ Engine-behaviour sources: [spoofed touches aren't range-checked (2025)](https://
   - A **VM hook timing probe** times `debug.info` calls against an empty loop, which catches hooks on `debug.info`.
   - A challenge/response over a remote, so never disable its connection.
   - The script must read the flag at runtime and pause or warn when it flips.
+- **Watch out → trap-guarded classes (Death Ball, 2026-10-08).** The ball class `lBall` checks its caller with `debug.info` when `require`d, and its `__index`/`__tostring` (and `__tostring` on helper tables) fire `Actions[N]` + `while true do end` on a bad caller. The ball part's position is scrambled every frame phase, and the real position sits obfuscated in a buffer string.
+  - → never `require` such a module or `tostring`/print its tables (that includes your own logger).
+  - → find the instance tables with `getgc(true)` and read plain fields with `rawget` only; `rawget` never runs the metamethods.
+  - → decode obfuscated fields from the gc tables that hold the offsets/store (see death-ball spec). Sample "does the part move smoothly?" at each RunService phase before trusting `Part.Position`.
 - **Verify →** a 30-minute farm run with the logging Kick hook shows 0 blocked kicks.
 
 #### S5 · If you get disconnected → read the code before reacting
