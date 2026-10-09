@@ -1099,6 +1099,13 @@ task.spawn(function()
 					SW.status = "animations broken: rejoining this server"
 					if SW.tpTo then SW.tpTo(game.PlaceId, game.JobId) end
 					task.wait(30)
+					-- still here = the teleport didn't happen (server full, teleport refused): hand the turn to the
+					-- next account and back off, instead of re-taking the lock forever (seen 2026-10-09)
+					if hasFiles and ((jread(LOCK) or {}).id == LP.UserId) then jwrite(LOCK, { id = 0, t = 0 }) end
+					SW.status = "rejoin didn't happen; retrying in 2 min"
+					task.wait(120)
+				elseif mine and hasFiles then
+					jwrite(LOCK, { id = 0, t = 0 }) -- recovered on its own: release the turn
 				end
 			end
 		end
