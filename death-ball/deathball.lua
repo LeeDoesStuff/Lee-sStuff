@@ -278,7 +278,8 @@ local hostState = {
 	parry = {},
 	play = { aimMode = "Not swarm", aimName = "", moves = "Own", moveKind = "Human", followName = "", followDist = 12,
 		spread = true, spreadDist = 25, copyVote = true, tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
-		attack = { on = false, build = 250, pick = "Auto", name = "", victim = "" } },
+		attack = { on = false, build = 250, pick = "Auto", name = "", victim = "" },
+		whitelistHost = true, whitelist = {} },
 	vote = {},
 }
 do -- a re-elected host keeps its sequence numbers, so alts don't ignore its new commands
@@ -408,6 +409,14 @@ end)
 -- coordinated attack: the swarm passes the ball among itself until it's fast (each deflect adds speed),
 -- then whoever holds it fires at the one victim the host picked.
 local atkPhase = "-"
+-- whitelist: swarm accounts never send the ball at the host (if whitelisted) or at whitelisted players
+local function protected(p)
+	if SW.role == "Host" then return table.find(hostState.play.whitelist or {}, p.Name) ~= nil end
+	local pl = following() and SW.host.play
+	if not pl then return false end
+	if pl.whitelistHost and p.UserId == SW.host.id then return true end
+	return table.find(pl.whitelist or {}, p.Name) ~= nil
+end
 local function attackAim()
 	local atk = (SW.role == "Host" and hostState.play.attack) or (following() and SW.host.play and SW.host.play.attack)
 	if not (atk and atk.on) then atkPhase = "-" return nil, false end
@@ -419,7 +428,7 @@ local function attackAim()
 		local me = hrpOf()
 		local passSpd = math.max(spd + 10, 50) -- a deflect speeds the ball up
 		for _, p in Players:GetPlayers() do
-			local h = p ~= LP and inGame(p) and swarmish(p) and hrpOf(p)
+			local h = p ~= LP and inGame(p) and swarmish(p) and not protected(p) and hrpOf(p)
 			local d = h and me and (h.Position - me.Position).Magnitude
 			-- a teammate too close can't react in time: that's how pumping killed alts
 			if d and d >= 35 and d / passSpd >= 0.75 then mates[#mates + 1] = { p = p, d = d } end
@@ -432,7 +441,7 @@ local function attackAim()
 		atkPhase = "no safe pass, attacking"
 	end
 	local v = Players:FindFirstChild(atk.victim or "")
-	if v and v ~= LP and inGame(v) and not swarmish(v) then atkPhase = "attacking " .. v.Name return v, true end
+	if v and v ~= LP and inGame(v) and not swarmish(v) and not protected(v) then atkPhase = "attacking " .. v.Name return v, true end
 	atkPhase = "no victim"
 	return nil, true
 end
@@ -445,7 +454,7 @@ local function pickAim()
 	local me = hrpOf()
 	local c = {}
 	for _, p in Players:GetPlayers() do
-		if p ~= LP and inGame(p) and hrpOf(p) then
+		if p ~= LP and inGame(p) and hrpOf(p) and not protected(p) then
 			local sw = (SW.host and p.UserId == SW.host.id) or isSwarmId(p.UserId)
 			if m == "Not swarm" and sw then continue end
 			if m == "Swarm" and not sw then continue end
@@ -454,10 +463,10 @@ local function pickAim()
 	end
 	if m == "Player" then
 		local p = Players:FindFirstChild(name or "")
-		return p and inGame(p) and p or nil
+		return p and inGame(p) and not protected(p) and p or nil
 	elseif m == "Host" then
 		local p = SW.host and Players:GetPlayerByUserId(SW.host.id)
-		return p and p ~= LP and inGame(p) and p or nil
+		return p and p ~= LP and inGame(p) and not protected(p) and p or nil
 	end
 	if #c == 0 then return end
 	if (m == "Nearest" or m == "Farthest") and me then
@@ -1034,7 +1043,7 @@ task.spawn(function()
 			do -- attack victim: a named player, or keep one random non-swarm target until it's out
 				local atk = hostState.play.attack
 				local cur = Players:FindFirstChild(atk.victim or "")
-				local function ok(p) return p and p ~= LP and inGame(p) and not isSwarmId(p.UserId) end
+				local function ok(p) return p and p ~= LP and inGame(p) and not isSwarmId(p.UserId) and not table.find(hostState.play.whitelist or {}, p.Name) end
 				if atk.pick == "Player" then atk.victim = atk.name
 				elseif not ok(cur) then
 					local c = {}
@@ -1341,6 +1350,14 @@ local pa = hostOnly(PA)
 pa:AddLabel("Where alts send the ball. Own = each alt's own Aim setting.", true)
 pa:AddDropdown("SW_AimMode", { Text = "Alts send the ball to", Values = { "Own", table.unpack(AIM_MODES) }, Default = hostState.play.aimMode,
 	Callback = function(v) hostState.play.aimMode = v end })
+pa:AddToggle("SW_WhitelistHost", { Text = "Whitelist me (alts never target me)", Default = hostState.play.whitelistHost,
+	Tooltip = "Covers aim modes, attack passes and the attack victim", Callback = function(v) hostState.play.whitelistHost = v end })
+pa:AddDropdown("SW_Whitelist", { Text = "Whitelist players", SpecialType = "Player", ExcludeLocalPlayer = true, Multi = true,
+	Tooltip = "Nobody in the swarm sends the ball at these players", Callback = function(v)
+		local t = {}
+		for name, on in v do if on then t[#t + 1] = typeof(name) == "Instance" and name.Name or tostring(name) end end
+		hostState.play.whitelist = t
+	end })
 pa:AddDropdown("SW_AimName", { Text = "Target player", SpecialType = "Player", AllowNull = true,
 	Callback = function(v) hostState.play.aimName = v or "" end })
 pa:SetupDependencies({ { Options.SW_Role, "Host" } })

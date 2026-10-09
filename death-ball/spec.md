@@ -173,3 +173,4 @@ Script "Human" mode: random waypoint inside the map Floor (15–70 % of half-siz
 - **Coordinated attack:** while the ball is slower than "Pump to speed", the holder passes it to a teammate; above it, to one victim (host picks: a named player, or one random non-swarm player kept until out). Passes go only to teammates ≥ 35 studs away whom the ball needs ≥ 0.75 s to reach (one of the 2 farthest). Closer passes killed alts. With no safe pass it attacks.
 - Host performance push FPS cap now 5–240. Copy host parry settings: button + "Keep host parry settings" (publishes timing, ping, close range, delay, clash, prediction).
 - Safe boot: `getgenv().CRUELHUB_SAFEBOOT = true` before loading skips the autoload config.
+- **Whitelist (host, Swarm Play → Swarm aim):** "Whitelist me" (default on) and a multi-player whitelist. Alts never aim, pass or pick an attack victim that is whitelisted; the host's own aim skips its whitelist too.
