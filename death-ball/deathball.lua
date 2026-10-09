@@ -272,13 +272,13 @@ local HOSTF = SWARM .. "/host.json"
 local hostState = {
 	id = LP.UserId, name = LP.Name, seq = 0, cmds = {},
 	autoplay = { ready = false, parry = false },
-	rules = { loseHostAlive = false, loseAliveLE = 0, loseSpeedGE = 0, loseAfter = 0, final = "Always" },
+	rules = { loseHostLastAlive = false, loseSwarmLastAlive = false, loseAliveLE = 0, loseSpeedGE = 0, loseAfter = 0, final = "Always" },
 	perf = { on = false, fps = 30, no3d = true, low = true, mute = true },
 	lock = false,
 	parry = {},
 	play = { aimMode = "Not swarm", aimName = "", moves = "Own", moveKind = "Human", followName = "", followDist = 12,
-		spread = true, spreadDist = 25, diverseAim = true, pushParry = false, parryPushAt = 0, copyVote = true, voteMode = "Copy me", voteMap = "Copy me", tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
-		attack = { on = false, build = 250, pick = "Auto", name = "", victim = "" },
+		spread = true, spreadDist = 25, diverseAim = true, pushParry = false, parryPushAt = 0, copyAim = false, copyMoves = false, copyMovement = false, copyTutorial = false, copyVote = true, voteMode = "Copy me", voteMap = "Copy me", tutorial = true, stayWithHost = false, idleMove = "Own", diverse = true,
+		attack = { on = false, pick = "Auto", name = "", victim = "" },
 		whitelistHost = true, whitelist = {} },
 	vote = {},
 }
@@ -288,6 +288,8 @@ do -- a re-elected host keeps its sequence numbers, so alts don't ignore its new
 		hostState.seq = old.seq or 0
 		hostState.autoplay = old.autoplay or hostState.autoplay
 		hostState.rules = old.rules or hostState.rules
+		hostState.rules.loseHostLastAlive = hostState.rules.loseHostLastAlive or hostState.rules.loseHostAlive or false
+		hostState.rules.loseHostAlive = nil
 		hostState.perf = old.perf or hostState.perf
 		for k, v in pairs(old.play or {}) do hostState.play[k] = v end
 		hostState.lock = old.lock or false
@@ -338,6 +340,12 @@ local function eff(k)
 		if k == "parry" then return SW.host.autoplay.parry end
 		if k == "autoReady" then return SW.host.autoplay.ready end
 		local pl = SW.host.play
+		local hs = pl and pl.hostSettings
+		if hs then
+			if pl.copyAim and (k == "aimMode" or k == "aimName" or k == "aimStyle") and hs[k] ~= nil then return hs[k] end
+			if pl.copyMovement and (k == "moveKind" or k == "followName" or k == "followDist" or k == "idleMove" or k == "idleAfkMax" or k == "moveBand" or k == "dashChance" or k == "persona" or k == "spread" or k == "spreadDist") and hs[k] ~= nil then return hs[k] end
+			if pl.copyTutorial and k == "tutorial" and hs[k] ~= nil then return hs[k] end
+		end
 		if pl and pl[k] ~= nil and (k ~= "moveKind" or pl.moveKind ~= "Own") and (k ~= "aimMode" or pl.aimMode ~= "Own") then
 			if k == "aimName" and pl.aimMode == "Own" then return CFG[k] end
 			if (k == "followName" or k == "followDist") and pl.moveKind == "Own" then return CFG[k] end
@@ -389,7 +397,17 @@ local function allowedToParry(ball)
 	local r = SW.host.rules or {}
 	local host = Players:GetPlayerByUserId(SW.host.id)
 	local al = aliveList()
-	if r.loseHostAlive and host and host ~= LP and inGame(host) then parryReason = "host alive" return false end
+	if r.loseHostLastAlive and host and #al == 1 and al[1] == host then parryReason = "host last alive" return false end
+	if r.loseSwarmLastAlive and #al > 0 then
+		local swarmLastAlive, hasSwarmAlt = true, false
+		for _, p in al do
+			if p.UserId ~= SW.host.id then
+				if not isSwarmId(p.UserId) then swarmLastAlive = false break end
+				hasSwarmAlt = true
+			end
+		end
+		if swarmLastAlive and hasSwarmAlt then parryReason = "swarm last alive" return false end
+	end
 	if (r.loseAliveLE or 0) > 0 and #al <= r.loseAliveLE then parryReason = "alive <= " .. r.loseAliveLE return false end
 	if (r.loseSpeedGE or 0) > 0 and ball.speed >= r.loseSpeedGE then parryReason = "speed" return false end
 	if (r.loseAfter or 0) > 0 and roundStart and os.clock() - roundStart >= r.loseAfter then parryReason = "time" return false end
@@ -434,16 +452,15 @@ local AIM_STYLES = {
 }
 local AIM_STYLE_NAMES = { "Straight", "Curve right", "Curve left", "Mixer", "Wild", "Returner", "Bully" }
 local function aimStyle()
-	local pick = CFG.aimStyle
-	if following() and SW.host.play and SW.host.play.diverseAim then pick = "Auto (per account)" end
+	local pick = eff("aimStyle") or CFG.aimStyle
+	if following() and SW.host.play and SW.host.play.diverseAim and not SW.host.play.copyAim then pick = "Auto (per account)" end
 	if pick == "Off" then return nil, "Off" end
 	local name = AIM_STYLES[pick] and pick or AIM_STYLE_NAMES[(LP.UserId * 104729) % #AIM_STYLE_NAMES + 1]
 	return AIM_STYLES[name], name
 end
 local lastSender -- who sent the ball to us last (for "return to sender")
--- coordinated attack: the swarm passes the ball among itself until it's fast (each deflect adds speed),
--- then whoever holds it fires at the one victim the host picked.
-local atkPhase = "-"
+-- coordinated attack: keep safe-passing until the chosen victim finishes a parry and is on cooldown.
+local atkState = { phase = "-", parries = {} }
 -- whitelist: swarm accounts never send the ball at the host (if whitelisted) or at whitelisted players
 local function protected(p)
 	if SW.role == "Host" then return table.find(hostState.play.whitelist or {}, p.Name) ~= nil end
@@ -454,34 +471,45 @@ local function protected(p)
 end
 local function attackAim()
 	local atk = (SW.role == "Host" and hostState.play.attack) or (following() and SW.host.play and SW.host.play.attack)
-	if not (atk and atk.on) then atkPhase = "-" return nil, false end
+	if not (atk and atk.on) then atkState.phase = "-" return nil, false end
 	local b = live and live.balls and live.balls[1]
 	local spd = b and b.speed or 0
 	local function swarmish(p) return (SW.host and p.UserId == SW.host.id) or isSwarmId(p.UserId) end
-	if spd < (atk.build or 0) then
-		local mates = {}
-		local me = hrpOf()
-		local passSpd = math.max(spd + 10, 50) -- a deflect speeds the ball up
+	local v = Players:FindFirstChild(atk.victim or "")
+	if v and v ~= LP and inGame(v) and not swarmish(v) and not protected(v) then
+		local ch = v.Character
+		local state = atkState.parries[v.UserId] or { active = false, readyAt = 0 }
+		local active, now = ch and ch:GetAttribute("isDeflecting") == true or false, os.clock()
+		local cfg = RS:FindFirstChild("RoundSettings") and RS.RoundSettings:FindFirstChild("Configuration")
+		local cooldown = cfg and cfg:GetAttribute("BallDeflectCooldown") or 1.3
+		local block = cfg and cfg:GetAttribute("BallDeflectBlockTime") or 0.7
+		if active and not state.active then state.readyAt = now + cooldown end
+		if state.active and not active then state.readyAt = math.max(state.readyAt, now + math.max(cooldown - block, 0)) end
+		state.active = active
+		atkState.parries[v.UserId] = state
+		if not active and now < state.readyAt then atkState.phase = "attacking " .. v.Name .. " (parry cooldown)" return v, true end
+		local mates, me = {}, hrpOf()
+		local passSpd = math.max(spd + 10, 50)
 		for _, p in Players:GetPlayers() do
 			local h = p ~= LP and inGame(p) and swarmish(p) and not protected(p) and hrpOf(p)
 			local d = h and me and (h.Position - me.Position).Magnitude
-			-- a teammate too close can't react in time: that's how pumping killed alts
 			if d and d >= 35 and d / passSpd >= 0.75 then mates[#mates + 1] = { p = p, d = d } end
 		end
 		table.sort(mates, function(a, b) return a.d > b.d end)
 		if #mates > 0 then
-			atkPhase = ("pumping %.0f/%d"):format(spd, atk.build)
-			return mates[math.random(1, math.min(2, #mates))].p, true -- one of the 2 farthest
+			local mate = mates[math.random(1, math.min(2, #mates))].p
+			atkState.phase = ("passing %.0f to %s; waiting for %s to parry"):format(spd, mate.Name, v.Name)
+			return mate, true
 		end
-		atkPhase = "no safe pass, attacking"
+		atkState.phase = "waiting for " .. v.Name .. " to parry"
+		return nil, true, true
 	end
-	local v = Players:FindFirstChild(atk.victim or "")
-	if v and v ~= LP and inGame(v) and not swarmish(v) and not protected(v) then atkPhase = "attacking " .. v.Name return v, true end
-	atkPhase = "no victim"
+	atkState.phase = "no victim"
 	return nil, true
 end
 local function pickAim()
-	local ap, active = attackAim()
+	local ap, active, hold = attackAim()
+	if hold then return end
 	if ap then return ap end
 	local m, name = eff("aimMode"), eff("aimName")
 	if active and m ~= "Off" and m ~= "Not swarm" then m = "Not swarm" end -- never hand the ball to the swarm outside the pump phase
@@ -577,6 +605,8 @@ local function smartMode(s)
 end
 local moves = { champ = nil, lastUse = {}, text = "-" }
 local function slotMode(i)
+	local hs = following() and SW.host.play and SW.host.play.hostSettings
+	if SW.host and SW.host.play and SW.host.play.copyMoves and hs and hs.slotMode then return hs.slotMode[i] or "Smart" end
 	local o = following() and SW.host.play and SW.host.play.moves or "Own"
 	if o == "Off all" then return "Off" end
 	if o == "Spam all" then return "Spam" end
@@ -589,7 +619,7 @@ end
 -- moving 84 % of the time at walkspeed, bursts ~1.2 s / stops ~0.6 s, heading change every ~1.6 s,
 -- dash (Q) in 1–8 % of samples, ~1 jump/min, ~86 studs from the ball when it isn't theirs.
 local MOVE_KINDS = { "Off", "Human", "Follow host", "Follow player" }
-local mv = { goal = nil, segEnd = 0, stopUntil = 0, userUntil = 0, text = "-" }
+local mv = { goal = nil, segEnd = 0, stopUntil = 0, userUntil = 0, text = "-", rng = Random.new(LP.UserId * 104729 % 2147483647), redScanUntil = 0, dodgeUntil = 0 }
 local function arena()
 	local am = workspace:FindFirstChild("ActiveMap")
 	local map = am and am:GetChildren()[1]
@@ -601,6 +631,34 @@ local function arena()
 		for _, s in sp:GetChildren() do if s:IsA("BasePart") then sum += s.Position n += 1 end end
 		if n > 0 then return sum / n, 80 end
 	end
+end
+function mv.dodgeBoss(hum, hrp, now)
+	if now < mv.dodgeUntil then return true end
+	if now < mv.redScanUntil then return false end
+	mv.redScanUntil = now + 0.2
+	local am = workspace:FindFirstChild("ActiveMap")
+	local map = am and am:GetChildren()[1]
+	local function warningIn(root)
+		if not root then return false end
+		for _, part in root:GetDescendants() do
+			if part:IsA("BasePart") and part.Transparency < 0.8 and part.Color.R > 0.65 and part.Color.G < 0.35 and part.Color.B < 0.35
+				and part.Size.Y < math.min(part.Size.X, part.Size.Z) * 0.25 then
+				local name = part.Name:lower()
+				if name:find("circle") or name:find("warning") or name:find("telegraph") or part:IsA("MeshPart")
+					or (part:IsA("Part") and part.Shape == Enum.PartType.Cylinder) then
+					local d = Vector3.new(hrp.Position.X - part.Position.X, 0, hrp.Position.Z - part.Position.Z).Magnitude
+					if d <= math.max(part.Size.X, part.Size.Z) * 0.5 + 3 and math.abs(hrp.Position.Y - part.Position.Y) < 20 then return true end
+				end
+			end
+		end
+		return false
+	end
+	if warningIn(map) or warningIn(workspace:FindFirstChild("Effects")) then
+		if hum.FloorMaterial == Enum.Material.Air then mv.dodgeUntil = now + 0.08
+		else hum.Jump = true mv.dodgeUntil = now + 0.7 end
+		return true
+	end
+	return false
 end
 local function idOffset(uid, r) -- stable ring slot per account, so a swarm doesn't stack on one spot
 	local a = (uid % 997) / 997 * math.pi * 2
@@ -626,14 +684,14 @@ local PERSONA_NAMES = { "Average", "Calm", "Twitchy", "Runner", "Camper", "Jumpe
 local TRAITS = { "jump", "dash", "air", "stop", "segMin", "segMax" }
 local function persona()
 	local pick = eff("persona") or "Auto (per account)"
-	if following() and SW.host.play and SW.host.play.diverse then pick = "Auto (per account)" end
+	if following() and SW.host.play and SW.host.play.diverse and not SW.host.play.copyMovement then pick = "Auto (per account)" end
 	if pick == "Off (measured average)" then
 		local b = table.clone(PERSONAS.Average)
-		b.dash, b.band, b.name = CFG.dashChance, CFG.moveBand, "Average"
+		b.dash, b.band, b.name = eff("dashChance"), eff("moveBand"), "Average"
 		return b
 	end
-	local name = PERSONAS[pick] and pick or PERSONA_NAMES[(LP.UserId * 7919) % #PERSONA_NAMES + 1]
-	local rng = Random.new(LP.UserId)
+	local rng = Random.new(LP.UserId * 7919 % 2147483647)
+	local name = PERSONAS[pick] and pick or PERSONA_NAMES[rng:NextInteger(1, #PERSONA_NAMES)]
 	local out = { name = name }
 	for k, v in PERSONAS[name] do out[k] = v * (0.85 + rng:NextNumber() * 0.3) end
 	local trng = Random.new(LP.UserId * 31 + 7)
@@ -651,7 +709,7 @@ local function humanGoal(hrp)
 	local pp = persona()
 	local band = pp.band
 	for _ = 1, 10 do
-		local a, r = math.random() * math.pi * 2, half * (pp.rMin + math.random() * (pp.rMax - pp.rMin))
+		local a, r = mv.rng:NextNumber() * math.pi * 2, half * (pp.rMin + mv.rng:NextNumber() * (pp.rMax - pp.rMin))
 		local g = c + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
 		local ok = (g - hrp.Position).Magnitude > 12
 		if ok and ball and not ball.mine and (g - ball.pos).Magnitude < band * 0.6 then ok = false end
@@ -793,34 +851,35 @@ task.spawn(function()
 		local hrp = hrpOf()
 		local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
 		local pp = persona()
+		local now = os.clock()
+		if hrp and hum and inGame() and mv.dodgeBoss(hum, hrp, now) then mv.text = "jumping boss attack" continue end
 		if kind == "Off" or not (hrp and hum and inGame()) then mv.goal = nil mv.text = kind == "Off" and "off" or "waiting for a round" continue end
 		if not typing() then for _, k in MOVE_KEYS do if UIS:IsKeyDown(k) then mv.userUntil = os.clock() + 1.5 end end end
 		if os.clock() < mv.userUntil then mv.text = "you're moving" continue end
-		local now = os.clock()
 		if kind == "Follow host" or kind == "Follow player" then
 			local p = kind == "Follow host" and SW.host and Players:GetPlayerByUserId(SW.host.id) or Players:FindFirstChild(eff("followName") or "")
 			local th = p and p ~= LP and hrpOf(p)
 			if not th then mv.text = "nobody to follow" continue end
 			local g = th.Position + idOffset(LP.UserId, eff("followDist") or 12)
 			if (g - hrp.Position).Magnitude > 4 then hum:MoveTo(g) end
-			if (g - hrp.Position).Magnitude > 60 and math.random() < 0.02 then key(Enum.KeyCode.Q) end
+			if (g - hrp.Position).Magnitude > 60 and mv.rng:NextNumber() < 0.02 then key(Enum.KeyCode.Q) end
 			mv.text = "following " .. p.Name
 		else -- Human
 			if now < mv.stopUntil then mv.text = "pausing" continue end
 			if not mv.goal or now > mv.segEnd or (mv.goal - hrp.Position).Magnitude < 5 then
-				if mv.goal and math.random() < pp.stop then -- stop-and-go like real players
-					mv.stopUntil = now + pp.stopMin + math.random() * (pp.stopMax - pp.stopMin)
+				if mv.goal and mv.rng:NextNumber() < pp.stop then -- stop-and-go like real players
+					mv.stopUntil = now + pp.stopMin + mv.rng:NextNumber() * (pp.stopMax - pp.stopMin)
 					mv.goal = nil
 					hum:MoveTo(hrp.Position)
 					continue
 				end
 				mv.goal = humanGoal(hrp)
-				mv.segEnd = now + pp.segMin + math.random() * (pp.segMax - pp.segMin)
-				if mv.goal and (mv.goal - hrp.Position).Magnitude > 45 and math.random() < pp.dash then task.spawn(key, Enum.KeyCode.Q) end
-				if math.random() < pp.jump then hum.Jump = true end
-				if math.random() < (pp.air or 0) then -- air dash: jump, then dash near the top of the jump
+				mv.segEnd = now + pp.segMin + mv.rng:NextNumber() * (pp.segMax - pp.segMin)
+				if mv.goal and (mv.goal - hrp.Position).Magnitude > 45 and mv.rng:NextNumber() < pp.dash then task.spawn(key, Enum.KeyCode.Q) end
+				if mv.rng:NextNumber() < pp.jump then hum.Jump = true end
+				if mv.rng:NextNumber() < (pp.air or 0) then -- air dash: jump, then dash near the top of the jump
 					hum.Jump = true
-					task.delay(0.2 + math.random() * 0.15, key, Enum.KeyCode.Q)
+					task.delay(0.2 + mv.rng:NextNumber() * 0.15, key, Enum.KeyCode.Q)
 				end
 			end
 			if mv.goal then hum:MoveTo(mv.goal) end
@@ -861,28 +920,28 @@ task.spawn(function()
 		local now = os.clock()
 		if now < idle.afkUntil then idle.text = ("afk %.0fs"):format(idle.afkUntil - now) continue end
 		if idle.goal and now < idle.segEnd and (idle.goal - hrp.Position).Magnitude > 4 then hum:MoveTo(idle.goal) continue end
-		local r = math.random()
+		local r = mv.rng:NextNumber()
 		if idle.goal and r < 0.18 then -- AFK spell, capped
-			idle.afkUntil = now + 4 + math.random() * math.max(CFG.idleAfkMax * math.min(persona().afk, 1) - 4, 0)
+			idle.afkUntil = now + 4 + mv.rng:NextNumber() * math.max(eff("idleAfkMax") * math.min(persona().afk, 1) - 4, 0)
 			idle.goal = nil
 			hum:MoveTo(hrp.Position)
 			continue
 		elseif idle.goal and r < 0.5 then -- short pause
-			idle.afkUntil = now + 0.4 + math.random() * 1.6
+			idle.afkUntil = now + 0.4 + mv.rng:NextNumber() * 1.6
 			idle.goal = nil
 			continue
 		end
 		local z = ready and readyZone()
 		if z then
 			local half = z.Size / 2 - Vector3.new(4, 0, 4)
-			idle.goal = z.Position + Vector3.new((math.random() * 2 - 1) * half.X, 0, (math.random() * 2 - 1) * half.Z)
+			idle.goal = z.Position + Vector3.new((mv.rng:NextNumber() * 2 - 1) * half.X, 0, (mv.rng:NextNumber() * 2 - 1) * half.Z)
 		else
 			local pts = lobbyPoints()
-			local c = pts[#pts > 0 and math.random(1, #pts) or 0] or hrp.Position
-			idle.goal = c + Vector3.new(math.random(-8, 8), 0, math.random(-8, 8))
+			local c = pts[#pts > 0 and mv.rng:NextInteger(1, #pts) or 0] or hrp.Position
+			idle.goal = c + Vector3.new(mv.rng:NextInteger(-8, 8), 0, mv.rng:NextInteger(-8, 8))
 		end
-		idle.segEnd = now + 3 + math.random() * 6
-		if math.random() < 0.06 then hum.Jump = true end
+		idle.segEnd = now + 3 + mv.rng:NextNumber() * 6
+		if mv.rng:NextNumber() < 0.06 then hum.Jump = true end
 		idle.text = ready and "wandering (ready zone)" or "wandering"
 	end
 end)
@@ -1186,6 +1245,12 @@ task.spawn(function()
 				end
 			end
 			for k in PARRY_OPTS do hostState.parry[k] = CFG[k] end
+			hostState.play.hostSettings = {
+				aimMode = CFG.aimMode, aimName = CFG.aimName, aimStyle = CFG.aimStyle, slotMode = table.clone(CFG.slotMode),
+				moveKind = CFG.moveKind, followName = CFG.followName, followDist = CFG.followDist, idleMove = CFG.idleMove,
+				idleAfkMax = CFG.idleAfkMax, moveBand = CFG.moveBand, dashChance = CFG.dashChance, persona = CFG.persona,
+				spread = CFG.spread, spreadDist = CFG.spreadDist, tutorial = CFG.tutorial,
+			}
 			hostWrite()
 			SW.host = hostState
 			applyPerf(localPerf())
@@ -1484,7 +1549,8 @@ B.au:SetupDependencies({ { Options.SW_Role, "Host" } })
 B.WL = Tabs.Swarm:AddRightGroupbox("Win / lose rules", "scale")
 B.wl = hostOnly(B.WL)
 B.wl:AddLabel("Alts stop parrying (and lose) when a lose rule is true. The final rule decides the last 1v1.", true)
-B.wl:AddToggle("SW_LoseHost", { Text = "Lose while host is alive", Default = hostState.rules.loseHostAlive, Callback = function(v) hostState.rules.loseHostAlive = v end })
+B.wl:AddToggle("SW_LoseHost", { Text = "Lose when host is last alive", Default = hostState.rules.loseHostLastAlive, Callback = function(v) hostState.rules.loseHostLastAlive = v end })
+B.wl:AddToggle("SW_LoseSwarm", { Text = "Lose when swarm is last alive", Default = hostState.rules.loseSwarmLastAlive, Callback = function(v) hostState.rules.loseSwarmLastAlive = v end })
 B.wl:AddSlider("SW_LoseAlive", { Text = "Lose when alive ≤", Default = hostState.rules.loseAliveLE, Min = 0, Max = 9, Rounding = 0,
 	Tooltip = "0 = off", Callback = function(v) hostState.rules.loseAliveLE = v end })
 B.wl:AddSlider("SW_LoseSpeed", { Text = "Lose when ball ≥", Default = hostState.rules.loseSpeedGE, Min = 0, Max = 400, Rounding = 0,
@@ -1500,7 +1566,9 @@ B.pa = hostOnly(B.PA)
 B.pa:AddLabel("Where alts send the ball. Own = each alt's own Aim setting.", true)
 B.pa:AddDropdown("SW_AimMode", { Text = "Alts send the ball to", Values = { "Own", table.unpack(AIM_MODES) }, Default = hostState.play.aimMode,
 	Callback = function(v) hostState.play.aimMode = v end })
-B.pa:AddToggle("SW_PushParry", { Text = "Alts use my parry settings", Default = hostState.play.pushParry,
+B.pa:AddToggle("SW_CopyAim", { Text = "Copy host aim settings", Default = hostState.play.copyAim,
+	Tooltip = "Keeps alts on your Aim tab mode, target and shot style", Callback = function(v) hostState.play.copyAim = v end })
+B.pa:AddToggle("SW_PushParry", { Text = "Copy host parry settings", Default = hostState.play.pushParry,
 	Tooltip = "Alts copy your timing, ping, close range, delay, clash and prediction settings and follow your changes",
 	Callback = function(v) hostState.play.pushParry = v end })
 B.pa:AddButton({ Text = "Copy my parry settings to alts now", Func = function()
@@ -1525,12 +1593,16 @@ B.PM = Tabs.Play:AddLeftGroupbox("Swarm moves", "zap")
 B.pm = hostOnly(B.PM)
 B.pm:AddDropdown("SW_Moves", { Text = "Alts' champion moves", Values = { "Own", "Smart all", "Spam all", "Off all" }, Default = hostState.play.moves,
 	Tooltip = "Own = each alt's Moves tab", Callback = function(v) hostState.play.moves = v end })
+B.pm:AddToggle("SW_CopyMoves", { Text = "Copy host move settings", Default = hostState.play.copyMoves,
+	Tooltip = "Copies your four champion move slot choices", Callback = function(v) hostState.play.copyMoves = v end })
 B.pm:SetupDependencies({ { Options.SW_Role, "Host" } })
 
 B.PV = Tabs.Play:AddRightGroupbox("Swarm movement", "footprints")
 B.pv = hostOnly(B.PV)
 B.pv:AddDropdown("SW_MoveKind", { Text = "Alts move", Values = { "Own", table.unpack(MOVE_KINDS) }, Default = hostState.play.moveKind,
 	Callback = function(v) hostState.play.moveKind = v end })
+B.pv:AddToggle("SW_CopyMovement", { Text = "Copy host movement settings", Default = hostState.play.copyMovement,
+	Tooltip = "Keeps alts on your Movement tab mode, follow target, spacing and personality", Callback = function(v) hostState.play.copyMovement = v end })
 B.pv:AddDropdown("SW_FollowName", { Text = "Follow player", SpecialType = "Player", AllowNull = true,
 	Callback = function(v) hostState.play.followName = v or "" end })
 B.pv:AddSlider("SW_FollowDist", { Text = "Follow distance", Default = hostState.play.followDist, Min = 4, Max = 60, Rounding = 0, Suffix = " studs",
@@ -1546,10 +1618,8 @@ B.pv:SetupDependencies({ { Options.SW_Role, "Host" } })
 
 B.PK = Tabs.Play:AddLeftGroupbox("Coordinated attack", "swords")
 B.pk = hostOnly(B.PK)
-B.pk:AddLabel("The swarm (you included) passes the ball among itself until it's fast, then whoever has it fires at one victim. Swarm accounts need auto parry on.", true)
+B.pk:AddLabel("The swarm passes safely until the chosen victim finishes a parry and is on cooldown, then attacks. Swarm accounts need auto parry on.", true)
 B.pk:AddToggle("SW_Attack", { Text = "Organize attacks", Default = hostState.play.attack.on, Callback = function(v) hostState.play.attack.on = v end })
-B.pk:AddSlider("SW_AttackBuild", { Text = "Pump to speed", Default = hostState.play.attack.build, Min = 0, Max = 400, Rounding = 0,
-	Tooltip = "0 = attack right away", Callback = function(v) hostState.play.attack.build = v end })
 B.pk:AddDropdown("SW_AttackPick", { Text = "Victim", Values = { "Auto", "Player" }, Default = hostState.play.attack.pick,
 	Tooltip = "Auto keeps one random non-swarm player until they're out", Callback = function(v) hostState.play.attack.pick = v end })
 B.pk:AddDropdown("SW_AttackName", { Text = "Victim player", SpecialType = "Player", ExcludeLocalPlayer = true, AllowNull = true,
@@ -1573,10 +1643,13 @@ B.pt = hostOnly(B.PT)
 B.pt:AddToggle("SW_Tutorial", { Text = "Alts auto complete tutorial", Default = hostState.play.tutorial,
 	Tooltip = "Fresh accounts in the tutorial play it through (card, bot round, crystals, summon) and land in the lobby",
 	Callback = function(v) hostState.play.tutorial = v end })
+B.pt:AddToggle("SW_CopyTutorial", { Text = "Copy host tutorial setting", Default = hostState.play.copyTutorial,
+	Tooltip = "Follows Auto complete tutorial on your Tutorial tab", Callback = function(v) hostState.play.copyTutorial = v end })
 B.pt:SetupDependencies({ { Options.SW_Role, "Host" } })
 
 B.PF = Tabs.Swarm:AddLeftGroupbox("Swarm performance", "cpu")
 B.pf = hostOnly(B.PF)
+B.pf:AddLabel("Only these controls apply to swarm accounts; Misc performance stays local.", true)
 B.pf:AddToggle("SW_PerfOn", { Text = "Apply to swarm", Default = hostState.perf.on, Callback = function(v) hostState.perf.on = v end })
 B.pf:AddSlider("SW_PerfFps", { Text = "FPS cap", Default = hostState.perf.fps, Min = 5, Max = 240, Rounding = 0, Callback = function(v) hostState.perf.fps = v end })
 B.pf:AddToggle("SW_Perf3d", { Text = "Turn off 3D rendering", Default = hostState.perf.no3d, Callback = function(v) hostState.perf.no3d = v end })
@@ -1592,7 +1665,7 @@ local tutLabel = B.TB:AddLabel("-", true)
 
 -- Misc tab
 B.PL = Tabs.Misc:AddLeftGroupbox("Performance (this account)", "gauge")
-B.PL:AddLabel("Swarm accounts that obey the host use the host's performance instead.", true)
+B.PL:AddLabel("These settings affect this account only. Configure swarm performance on the Swarm tab.", true)
 B.PL:AddSlider("DB_Fps", { Text = "FPS cap", Default = CFG.perfFps, Min = 5, Max = 240, Rounding = 0, Tooltip = "60 = off", Callback = set("perfFps") })
 B.PL:AddToggle("DB_No3d", { Text = "Turn off 3D rendering", Default = CFG.perf3d, Callback = set("perf3d") })
 B.PL:AddToggle("DB_Low", { Text = "Lowest graphics", Default = CFG.perfLow, Callback = set("perfLow") })
@@ -1664,11 +1737,11 @@ task.spawn(function()
 		end
 		movesLabel:SetText("Last move: " .. moves.text .. (following() and SW.host.play and SW.host.play.moves ~= "Own" and ("\nHost: " .. SW.host.play.moves) or ""))
 		do local a = (SW.role == "Host" and hostState.play.attack) or (SW.host and SW.host.play and SW.host.play.attack) or {}
-			atkLabel:SetText(("Victim: %s\nPhase: %s"):format(a.victim ~= "" and a.victim or "-", atkPhase)) end
+			atkLabel:SetText(("Victim: %s\nPhase: %s"):format(a.victim ~= "" and a.victim or "-", atkState.phase)) end
 		do
 			local pp = persona()
-			idleLabel:SetText(("Idle: %s\nStyle: %s · jump %.0f%% · dash %.0f%% · air dash %.0f%% · stops %.0f%%"):format(idle.text, pp.name,
-				pp.jump * 100, pp.dash * 100, (pp.air or 0) * 100, pp.stop * 100))
+			idleLabel:SetText(("Idle: %s\n%s · stop %.0f%% · burst %.1f–%.1fs · dash %.0f%% · jump %.0f%% · air %.0f%%"):format(idle.text, pp.name,
+				pp.stop * 100, pp.segMin, pp.segMax, pp.dash * 100, pp.jump * 100, (pp.air or 0) * 100))
 		end
 		memLabel:SetText(("Memory %.0f MB%s"):format(memGuard.mb, memGuard.on and " · GUARD ON (low graphics)" or ""))
 		animLabel:SetText(animLog.first and ("Stopped %d broken tracks (first at %s)"):format(animLog.seen, animLog.first) or "No broken tracks seen")
