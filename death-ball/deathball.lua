@@ -23,6 +23,7 @@ local LP = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
 local TUTORIAL_PLACE = 109661515411512
+local AFK_PLACE = 137287008696758
 local LOADER = 'loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/LuaLoader/main/loader.lua"))()'
 local DIR = "CruelHub/DeathBall"
 local SWARM = DIR .. "/swarm"
@@ -256,7 +257,7 @@ end
 -- ============================== swarm bus ==============================
 -- Same-PC accounts share the executor workspace: the host writes swarm/host.json (commands, autoplay,
 -- rules, performance); every account writes swarm/acc_<UserId>.json as a heartbeat. Role is per UserId.
-local SW = { role = "Off", host = nil, members = {}, lastSeen = 0, obey = true, status = "-" }
+local SW = { role = "Off", host = nil, members = {}, lastSeen = 0, obey = true, status = "-", teleportError = nil }
 local function jread(path)
 	if not hasFiles or not isfile(path) then return end
 	local ok, d = pcall(function() return HttpService:JSONDecode(readfile(path)) end)
@@ -1167,12 +1168,16 @@ local function queueReload()
 end
 local function tpTo(placeId, jobId)
 	queueReload()
-	if jobId and jobId ~= "" then
-		pcall(TeleportService.TeleportToPlaceInstance, TeleportService, placeId, jobId, LP)
-	else
-		pcall(TeleportService.Teleport, TeleportService, placeId, LP)
-	end
+	local ok, err = pcall(function()
+		if jobId and jobId ~= "" then TeleportService:TeleportToPlaceInstance(placeId, jobId, LP)
+		else TeleportService:Teleport(placeId, LP) end
+	end)
+	SW.teleportError = not ok and tostring(err) or nil
+	return ok
 end
+on(TeleportService.TeleportInitFailed, function(player, result, message)
+	if player == LP then SW.teleportError = tostring(result) .. ": " .. tostring(message) end
+end)
 local function serverList(placeId)
 	local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100"):format(placeId)
 	local ok, body = pcall(game.HttpGet, game, url)
@@ -1182,18 +1187,164 @@ local function serverList(placeId)
 	return data.data
 end
 
+-- ============================== bot trades ==============================
+-- Trading place only. The bot publishes its trade state; the host sends trade commands that the bot runs by
+-- firing its own trade window's buttons (the game's code then talks to the server). We never call the
+-- obfuscated Actions module ourselves, and never touch a trade PIN: if one is asked for, the host is told.
+local TRADE_PLACE = 119260352090770
+local TR = { obj = nil, lastScan = 0, text = "-" }
+local function tradeGui() return LP.PlayerGui:FindFirstChild("TradingGui") end
+local function txnObj() -- the trade window's own object (has ReadyButton / SendContents / AddItemToTrade)
+	local o = TR.obj
+	if o and rawget(o, "Object") and rawget(o, "Object").Parent then return o end
+	if not hasGc or os.clock() - TR.lastScan < 5 then return nil end
+	TR.lastScan = os.clock()
+	for _, t in getgc(true) do
+		if type(t) == "table" and rawget(t, "SendItemClasses") ~= nil and rawget(t, "ReadyButton") ~= nil and rawget(t, "SendContents") ~= nil then
+			TR.obj = t
+			return t
+		end
+	end
+end
+local function invData() local ok, d = pcall(function() return Inventory:Get() end) return ok and d or {} end
+local function swordName(id, item)
+	local s = (invData().Swords or {})[id] or item or {}
+	return ("%s%s"):format(tostring(s.Type or id), s.Aura and (" [" .. tostring(s.Aura) .. "]") or "")
+end
+local function contentsList(side)
+	local out = {}
+	for id, c in (side and side.Contents) or {} do
+		if type(c) == "table" then
+			local name = c.Type == "Swords" and swordName(id, c.Item) or (c.Item and type(c.Item) == "table" and c.Item.Type) or id
+			out[#out + 1] = { id = id, type = c.Type, count = c.Count, name = tostring(name) }
+		end
+	end
+	return out
+end
+local function requestRows() -- rows of TradeRequestPage (TradingGui also holds an old UI_OLD prefab with the same names)
+	local g = tradeGui()
+	local page = g and g:FindFirstChild("TradeRequestPage")
+	local rows = {}
+	if not page then return rows end
+	for _, f in page:GetDescendants() do
+		if f.Name == "RequestButton" and f:IsA("GuiButton") then
+			local row = f.Parent
+			local user = row:FindFirstChild("Username", true)
+			local label = f:FindFirstChild("TextLabel")
+			if user and label then rows[#rows + 1] = { user = user.Text, status = label.Text, btn = f } end
+		end
+	end
+	return rows
+end
+local function pinWaiting()
+	local pg = LP.PlayerGui:FindFirstChild("PROMPT")
+	for _, d in pg and pg:GetChildren() or {} do
+		if d.Name:find("PromptTradePin") and d:IsA("GuiObject") and d.Visible then return true end
+	end
+	return false
+end
+local function tradeState()
+	local cur = val("TRADE_CURRENT")
+	local me, them, partner = nil, nil, nil
+	for k, v in cur or {} do
+		if tonumber(k) == LP.UserId then me = v else them = v partner = Players:GetPlayerByUserId(tonumber(k)) end
+	end
+	local o = txnObj()
+	local timer = o and rawget(o, "TradeTimerLabel")
+	local swords = {}
+	for id, s in invData().Swords or {} do swords[#swords + 1] = { id = id, name = swordName(id) } end
+	table.sort(swords, function(a, b) return a.name < b.name end)
+	local reqs = {}
+	for _, r in requestRows() do if r.status == "SENT" or r.status:find("ACCEPT") then reqs[#reqs + 1] = { user = r.user, status = r.status } end end
+	local gems = (invData().Items or {}).Gems
+	return {
+		t = os.time(), name = LP.Name, place = game.PlaceId, jobId = game.JobId,
+		trading = cur ~= nil, partner = partner and partner.Name or (them and "?" or nil),
+		myLocked = me and me.Locked or false, theirLocked = them and them.Locked or false,
+		mine = contentsList(me), theirs = contentsList(them),
+		timer = timer and timer.Visible and timer.Text or nil,
+		requests = reqs, swords = swords, gems = type(gems) == "table" and gems.Count or gems,
+		pin = pinWaiting(), result = TR.text, tradeStatus = LP:GetAttribute("TradeStatus"),
+	}
+end
+local function promptOption(text) -- a visible prompt button whose label says `text`
+	local pg = LP.PlayerGui:FindFirstChild("PROMPT")
+	for _, d in pg and pg:GetDescendants() or {} do
+		if d:IsA("GuiButton") and shown(d) then
+			for _, l in d:GetDescendants() do if l:IsA("TextLabel") and l.Text == text then return d end end
+		end
+	end
+end
+local function tradeCmd(a)
+	local op = a.op
+	if op == "request" or op == "accept" then
+		for _, r in requestRows() do
+			if r.user:lower() == tostring(a.name):lower() then
+				fireButton(r.btn)
+				TR.text = (op == "request" and "request sent to " or "accepted ") .. r.user .. (pinWaiting() and " (PIN needed)" or "")
+				return
+			end
+		end
+		TR.text = "player " .. tostring(a.name) .. " not in the trade list"
+	elseif op == "decline" then
+		local g = tradeGui()
+		for _, d in g and g:GetDescendants() or {} do
+			if d.Name == "TitleLabel" and d:IsA("TextLabel") and d.Parent and d.Parent:FindFirstChild("DeclineButton") then
+				local p = Players:FindFirstChild(tostring(a.name))
+				if p and d.Text == p.DisplayName then fireButton(d.Parent.DeclineButton) TR.text = "declined " .. p.Name return end
+			end
+		end
+		TR.text = "no request from " .. tostring(a.name)
+	else
+		local o = txnObj()
+		if not o then TR.text = "trade window not found" return end
+		if op == "item" then
+			local cls = rawget(o, "SendContents") and rawget(rawget(o, "SendContents"), "AllClasses")
+			cls = cls and rawget(cls, a.id)
+			if not cls then TR.text = "item not in trade grid" return end
+			if (rawget(cls, "IsHighlighted") == true) ~= (a.on == true) then
+				local b = rawget(cls, "Object")
+				if typeof(b) == "Instance" and not b:IsA("GuiButton") then b = b:FindFirstChildWhichIsA("GuiButton", true) end
+				if typeof(b) == "Instance" then fireButton(b) end
+			end
+			TR.text = (a.on and "added " or "removed ") .. swordName(a.id)
+		elseif op == "gems" then
+			local ok, err = pcall(function() o:AddItemToTrade("Gems", math.max(0, math.floor(tonumber(a.n) or 0))) end)
+			TR.text = ok and ("gems set to " .. tostring(a.n)) or ("gems failed: " .. tostring(err))
+		elseif op == "ready" then
+			local rb = rawget(o, "ReadyButton")
+			if rb and rawget(rb, "Object") then fireButton(rawget(rb, "Object")) end
+			TR.text = "ready toggled" .. (pinWaiting() and " (PIN needed)" or "")
+		elseif op == "cancel" then
+			local cb = rawget(o, "CloseButton")
+			if cb and rawget(cb, "Object") then fireButton(rawget(cb, "Object")) end
+			task.wait(0.4)
+			local opt = promptOption("Cancel")
+			if opt then fireButton(opt) TR.text = "trade cancelled" else TR.text = "cancel prompt not found" end
+		end
+	end
+end
+task.spawn(function()
+	while alive do
+		task.wait(0.5)
+		if game.PlaceId == TRADE_PLACE and hasFiles and SW.role ~= "Off" then
+			jwrite(SWARM .. "/trade_" .. LP.UserId .. ".json", tradeState())
+		end
+	end
+end)
+
 -- ============================== swarm loop ==============================
 local cmdLog = {}
 local function runCmd(c)
 	local k, a = c.kind, c.args or {}
 	cmdLog[#cmdLog + 1] = os.date("%H:%M:%S ") .. k
 	if k == "join" then
-		if game.JobId ~= a.jobId then tpTo(a.placeId, a.jobId) end
+		if (not a.targetId or a.targetId == LP.UserId) and game.JobId ~= a.jobId then tpTo(a.placeId, a.jobId) end
 	elseif k == "scatter" then
 		local job = a.map and a.map[tostring(LP.UserId)]
 		if job and job ~= game.JobId then tpTo(a.placeId, job) end
 	elseif k == "rejoin" then
-		tpTo(game.PlaceId, game.JobId)
+		tpTo(game.PlaceId)
 	elseif k == "mode" then
 		tpTo(a.placeId)
 	elseif k == "reset" then
@@ -1201,6 +1352,8 @@ local function runCmd(c)
 		if hum then hum.Health = 0 end
 	elseif k == "close" then
 		game:Shutdown()
+	elseif k == "trade" then
+		if a.target == LP.UserId then task.spawn(tradeCmd, a) end
 	end
 end
 local function accStatus()
@@ -1245,12 +1398,12 @@ task.spawn(function()
 				end
 			end
 			for k in PARRY_OPTS do hostState.parry[k] = CFG[k] end
-			hostState.play.hostSettings = {
-				aimMode = CFG.aimMode, aimName = CFG.aimName, aimStyle = CFG.aimStyle, slotMode = table.clone(CFG.slotMode),
-				moveKind = CFG.moveKind, followName = CFG.followName, followDist = CFG.followDist, idleMove = CFG.idleMove,
-				idleAfkMax = CFG.idleAfkMax, moveBand = CFG.moveBand, dashChance = CFG.dashChance, persona = CFG.persona,
-				spread = CFG.spread, spreadDist = CFG.spreadDist, tutorial = CFG.tutorial,
-			}
+		hostState.play.hostSettings = {
+			aimMode = CFG.aimMode, aimName = CFG.aimName, aimStyle = CFG.aimStyle, slotMode = table.clone(CFG.slotMode),
+			moveKind = CFG.moveKind, followName = CFG.followName, followDist = CFG.followDist, idleMove = CFG.idleMove,
+			idleAfkMax = CFG.idleAfkMax, moveBand = CFG.moveBand, dashChance = CFG.dashChance, persona = CFG.persona,
+			spread = CFG.spread, spreadDist = CFG.spreadDist, tutorial = CFG.tutorial,
+		}
 			hostWrite()
 			SW.host = hostState
 			applyPerf(localPerf())
@@ -1374,6 +1527,7 @@ local Tabs = {
 	Play = Window:AddTab("Swarm Play", "gamepad-2"),
 	Tutorial = Window:AddTab("Tutorial", "graduation-cap"),
 	Misc = Window:AddTab("Misc", "gauge"),
+	Trades = Window:AddTab("Bot Trades", "repeat-2"),
 	Settings = Window:AddTab("Settings", "settings"),
 }
 local function set(k) return function(v) CFG[k] = v end end
@@ -1513,6 +1667,15 @@ B.hd:AddToggle("SW_Stay", { Text = "Auto join (alts join my server)", Default = 
 	Tooltip = "ON: alts outside your server join you between rounds; when it's full they wait and take slots as they open, one alt per free slot. OFF: alts stay where they are.",
 	Callback = function(v) hostState.play.stayWithHost = v end })
 B.hd:AddButton({ Text = "Join my server", Func = function() pushCmd("join", { placeId = game.PlaceId, jobId = game.JobId }) Library:Notify("Swarm: joining you", 3) end })
+B.hd:AddButton({ Text = "Bring one alt to my server", Func = function()
+	local candidate
+	for _, m in SW.members do
+		if m.role == "Swarm" and m.jobId ~= game.JobId and m.placeId ~= TUTORIAL_PLACE and (not candidate or m.id < candidate.id) then candidate = m end
+	end
+	if not candidate then Library:Notify("No eligible swarm alt to bring", 3) return end
+	pushCmd("join", { placeId = game.PlaceId, jobId = game.JobId, targetId = candidate.id })
+	Library:Notify(candidate.name .. " is joining you", 3)
+end })
 B.hd:AddButton({ Text = "Scatter servers", Tooltip = "Every alt goes to a different public server of this mode", Func = function()
 	task.spawn(function()
 		local list, err = serverList(game.PlaceId)
@@ -1536,6 +1699,10 @@ B.hd:AddDropdown("SW_Mode", { Text = "Send to mode", Values = { "Lobby (beginner
 B.hd:AddButton({ Text = "Send swarm to mode", Func = function()
 	local ids = { ["Lobby (beginner)"] = 83678792452277, Classic = 71000936793663, ["Death Ball hub"] = 15002061926, Pro = 89775940525999 }
 	pushCmd("mode", { placeId = ids[Options.SW_Mode.Value] })
+end })
+B.hd:AddButton({ Text = "Send swarm to AFK farm", Func = function()
+	pushCmd("mode", { placeId = AFK_PLACE })
+	Library:Notify("Swarm: joining AFK farm", 3)
 end })
 B.hd:AddButton({ Text = "Close swarm clients", DoubleClick = true, Func = function() pushCmd("close") end })
 B.hd:SetupDependencies({ { Options.SW_Role, "Host" } })
@@ -1672,7 +1839,85 @@ B.PL:AddToggle("DB_Low", { Text = "Lowest graphics", Default = CFG.perfLow, Call
 B.PL:AddToggle("DB_Mute", { Text = "Mute", Default = CFG.perfMute, Callback = set("perfMute") })
 B.TP = Tabs.Misc:AddRightGroupbox("Teleport", "plane")
 B.TP:AddToggle("DB_Requeue", { Text = "Reload after teleport", Default = CFG.requeue, Callback = set("requeue") })
-B.TP:AddButton({ Text = "Rejoin", Func = function() tpTo(game.PlaceId, game.JobId) end })
+B.TP:AddButton({ Text = "Rejoin", Func = function() tpTo(game.PlaceId) end })
+
+
+-- Bot Trades tab (host): watch and drive one bot's trade from here
+B.TV = Tabs.Trades:AddLeftGroupbox("Bot trade view", "repeat-2")
+local tv = { bot = nil, ids = {} }
+B.TV:AddLabel("Pick a swarm bot in the Trading lobby. Its live trade shows here and every button runs on that bot. If the bot has a trade PIN, enter it on the bot's own window when asked.", true)
+B.TV:AddDropdown("TR_Bot", { Text = "Bot", Values = {}, AllowNull = true, Callback = function(v) tv.bot = v and tv.ids[v] end })
+local trStatus = B.TV:AddLabel("-", true)
+local trTheirs = B.TV:AddLabel("-", true)
+local trMine = B.TV:AddLabel("-", true)
+local function tcmd(op, extra)
+	if not tv.bot then Library:Notify("Pick a bot first", 2) return end
+	local a = extra or {}
+	a.target, a.op = tv.bot, op
+	pushCmd("trade", a)
+end
+B.TA = Tabs.Trades:AddRightGroupbox("Requests", "user-plus")
+B.TA:AddDropdown("TR_Player", { Text = "Player", SpecialType = "Player", AllowNull = true })
+B.TA:AddButton({ Text = "Bot sends trade request", Func = function() tcmd("request", { name = Options.TR_Player.Value and tostring(Options.TR_Player.Value) }) end })
+local trReqs = B.TA:AddLabel("-", true)
+B.TA:AddDropdown("TR_Incoming", { Text = "Incoming request", Values = {}, AllowNull = true })
+B.TA:AddButton({ Text = "Accept", Func = function() tcmd("accept", { name = Options.TR_Incoming.Value }) end })
+B.TA:AddButton({ Text = "Decline", Func = function() tcmd("decline", { name = Options.TR_Incoming.Value }) end })
+B.TO = Tabs.Trades:AddRightGroupbox("Bot offer", "package")
+local swordIds = {}
+B.TO:AddDropdown("TR_Swords", { Text = "Bot swords", Values = {}, Multi = true, AllowNull = true })
+B.TO:AddButton({ Text = "Add selected", Func = function()
+	for label, on in Options.TR_Swords.Value or {} do if on and swordIds[label] then tcmd("item", { id = swordIds[label], on = true }) end end
+end })
+B.TO:AddButton({ Text = "Remove selected", Func = function()
+	for label, on in Options.TR_Swords.Value or {} do if on and swordIds[label] then tcmd("item", { id = swordIds[label], on = false }) end end
+end })
+B.TO:AddInput("TR_Gems", { Text = "Gems to offer", Numeric = true, Default = "0", Finished = true, Placeholder = "0 removes gems" })
+B.TO:AddButton({ Text = "Set gems", Func = function() tcmd("gems", { n = tonumber(Options.TR_Gems.Value) or 0 }) end })
+B.TO:AddButton({ Text = "Ready / unready", Func = function() tcmd("ready") end })
+B.TO:AddButton({ Text = "Cancel trade", DoubleClick = true, Func = function() tcmd("cancel") end })
+task.spawn(function()
+	local function fmt(list)
+		local t = {}
+		for _, c in list or {} do t[#t + 1] = c.type == "Items" and ("%s x%s"):format(c.name, tostring(c.count)) or c.name end
+		return #t > 0 and table.concat(t, ", ") or "nothing"
+	end
+	while alive do
+		local names = {}
+		tv.ids = {}
+		for _, m in SW.members do if m.role == "Swarm" then names[#names + 1] = m.name tv.ids[m.name] = m.id end end
+		pcall(function() Options.TR_Bot:SetValues(names) end)
+		local st = tv.bot and jread(SWARM .. "/trade_" .. tv.bot .. ".json")
+		if not tv.bot then
+			trStatus:SetText("No bot selected")
+		elseif not st or os.time() - (st.t or 0) > 5 then
+			trStatus:SetText("Bot isn't reporting. It needs the hub running, role Swarm, and to be in the Trading lobby.")
+		else
+			local state = st.trading and ("Trading with %s · bot %s · them %s%s"):format(tostring(st.partner), st.myLocked and "READY" or "not ready",
+				st.theirLocked and "READY" or "not ready", st.timer and (" · " .. st.timer) or "") or "Not in a trade"
+			trStatus:SetText(("%s\n%s gems · %d swords%s\nLast: %s"):format(state, tostring(st.gems or "?"), #(st.swords or {}),
+				st.pin and "\nPIN PROMPT OPEN on the bot: enter it there" or "", tostring(st.result)))
+			trTheirs:SetText("Their offer: " .. (st.trading and fmt(st.theirs) or "-"))
+			trMine:SetText("Bot offer: " .. (st.trading and fmt(st.mine) or "-"))
+			local inc, lines = {}, {}
+			for _, r in st.requests or {} do
+				lines[#lines + 1] = r.user .. ": " .. r.status
+				if r.status:find("ACCEPT") then inc[#inc + 1] = r.user end
+			end
+			trReqs:SetText(#lines > 0 and table.concat(lines, "\n") or "No pending requests")
+			pcall(function() Options.TR_Incoming:SetValues(inc) end)
+			local labels = {}
+			swordIds = {}
+			for _, sw in st.swords or {} do
+				local label = ("%s #%s"):format(sw.name, sw.id:sub(1, 4))
+				labels[#labels + 1] = label
+				swordIds[label] = sw.id
+			end
+			if #labels ~= (tv.lastSwordCount or -1) then tv.lastSwordCount = #labels pcall(function() Options.TR_Swords:SetValues(labels) end) end
+		end
+		task.wait(1)
+	end
+end)
 
 B.Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
 B.Menu:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
@@ -1709,7 +1954,7 @@ task.spawn(function()
 		liveLabel:SetText(("%s\nReader: %s\nLast: %s\nRule: %s"):format(ball, mode, live.last or "-", parryReason))
 		statLabel:SetText(("Session: %d presses · %d rounds · %d wins · %d deflects"):format(stats.parries, stats.rounds,
 			stat("Wins:Total") - stats.startWins, stat("Deflects:Total") - stats.startDeflects))
-		swStatus:SetText(("Role: %s\n%s"):format(SW.role, SW.status))
+		swStatus:SetText(("Role: %s\n%s%s"):format(SW.role, SW.status, SW.teleportError and ("\nTeleport failed: " .. SW.teleportError) or ""))
 		swCmdLabel:SetText((voteText ~= "-" and (voteText .. "\n") or "") .. "Last commands: " .. (#cmdLog > 0 and table.concat(cmdLog, ", ", math.max(1, #cmdLog - 3)) or "none"))
 		local lines = {}
 		for _, m in SW.members do
