@@ -1074,7 +1074,7 @@ task.spawn(function()
 				-- auto join: alts outside the host's server queue for its free slots. Only as many alts as there are
 				-- free slots try at once (lowest UserIds first), so they don't all fight for one opening.
 				SW.joinText = nil
-				if SW.obey and SW.host.play and SW.host.play.stayWithHost and SW.host.jobId ~= game.JobId and game.PlaceId ~= TUTORIAL_PLACE
+				if SW.obey and SW.autoJoin ~= false and SW.host.play and SW.host.play.stayWithHost and SW.host.jobId ~= game.JobId and game.PlaceId ~= TUTORIAL_PLACE
 					and SW.host.placeId ~= TUTORIAL_PLACE and not inGame() then
 					local free = SW.host.slots or 0
 					local queue = {}
@@ -1278,6 +1278,9 @@ SD:AddToggle("SW_Obey", { Text = "Obey host", Tooltip = "Follow the host's autop
 	Default = true, Callback = function(v) SW.obey = v end })
 SD:AddButton({ Text = "Copy host parry settings", Tooltip = "Timing, ping, close range, delay, clash and prediction settings",
 	Func = function() Library:Notify(applyHostParry() and "Copied the host's parry settings" or "No host parry settings yet", 3) end })
+SD:AddToggle("SW_AutoJoin", { Text = "Auto join host", Default = true,
+	Tooltip = "Join the host's server when it has a free slot (the host's own toggle must be on too)",
+	Callback = function(v) SW.autoJoin = v end })
 SD:AddToggle("SW_SyncParry", { Text = "Keep host parry settings", Default = false, Tooltip = "Copies them again whenever the host changes one",
 	Callback = function(v) SW.syncParry = v if v then applyHostParry() end end })
 local swCmdLabel = SD:AddLabel("-", true)
