@@ -318,3 +318,17 @@ These are in the `PLACES` table in `fiu_main.lua`: junkyard, spare parts, Used C
 - The structure is unchanged after the update. All 12 garages have MoneyBuy on `RootPos.Attachment` (MaxActivationDistance 10, hold 1 s), `Open` is set once bought and clears again within about a minute, and the prize lands in `Cache`.
 - Bug that could freeze multi-open runs: `AUC.free()` called `RequestStreamAroundAsync` directly before every open, and that call hangs forever once streaming jams. It now uses `streamAt`.
 - **New auction cooldown (game update 2026-10-08):** an open 3.5 s after the previous one is silently ignored: no charge, no notify, and the prompt stays enabled. The farmer used to stop there ("the garage didn't open"). It now keeps pressing the same garage while no money has left, up to 40 s. Verified with a 2-open run: open 2 went through after waiting 8 s. Run log: "Garage3: car Fia-Te Ponto", "Garage6 (waited 8 s): +€70K". Don't infer "opened" from a money dip: the €75K charge and a €75K money pile can land together, so the balance never moves.
+
+## Auto flip phases (2026-10-10, user request)
+
+`autoStep` runs one action per tick, re-checked from the top every tick:
+1. **Buy** every matching junk car, rarest first by real spawn chance, while there's garage room and money (reserve).
+2. **Repair** every script-bought car that hasn't been repaired. Locked script-bought cars are repaired too.
+3. **Sell** the repaired, unlocked script-bought cars, as each car's sell timer allows.
+
+Rules:
+- A match that spawns during phase 2 or 3 is bought before the next repair or sale, never mid-job.
+- The refresh-wave settle (wait for the whole wave; S tier or rarer bought on sight) is unchanged.
+- A car whose buy fails (price went up, sniped, declined) is skipped for 60 s (`j.failUntil`), so it can't block phases 2 and 3.
+- No trip home between consecutive buys, or between a buy and its repair.
+- The idle status names the phase that's waiting, e.g. "sell phase: waiting sell timer for X".

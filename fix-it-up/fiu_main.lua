@@ -271,7 +271,12 @@ function HOOK.fakeClick(cd) -- the executor's own click, with the detector put b
     pcall(fireclickdetector, cd)
     task.delay(1, function() if cd.Parent ~= home and home and home.Parent then cd.Parent = home end end)
 end
+-- every scripted click is paced: an alt was banned in another game (2026-10-09) for inputs fired far too fast
+HOOK.lastClick = 0
 function HOOK.click(cd)
+    local gap = 0.4 - (os.clock() - HOOK.lastClick)
+    if gap > 0 then task.wait(gap) end
+    HOOK.lastClick = os.clock()
     if not HOOK.realClicks then return fireclickdetector(cd) end
     local target = cd.Parent
     local pos = target and (target:IsA("BasePart") and target.Position or target:IsA("Model") and target:GetBoundingBox().Position)
@@ -729,7 +734,7 @@ local function repairCar(e)
         local t = os.clock()
         repeat
             HOOK.click(cd)
-            task.wait(0.5)
+            task.wait(1) -- human pace, not a burst
             if not hoodOpen() and os.clock() - t > 3 then tpTo(hoodSpot(car)) end -- re-stand in case the car shifted
         until hoodOpen() or os.clock() - t > 10
     end
@@ -1399,7 +1404,7 @@ end)
 -- ============================== auto flip ==============================
 local autoStatus = "off"
 local function wantedJunk()
-    local best, taken = nil, 0 -- taken = matching cars left to players standing at them
+    local best, taken, n = nil, 0, 0 -- taken = matching cars left to players standing at them; n = buyable matches
     -- rarest first by the real spawn chance (tiers are too coarse: a 0.2% A beats a 0.9% A), then profit
     local list = sortedJunk()
     table.sort(list, function(a, b)
@@ -1413,12 +1418,12 @@ local function wantedJunk()
         local rareOk
         if CFG.buyBy == "Spawn chance" then rareOk = j.sc ~= nil and j.sc > 0 and j.sc <= CFG.buyMaxPct
         else rareOk = TIER_RANK[j.tier] <= TIER_RANK[CFG.buyMinTier] end
-        if not j.exclusive and rareOk and modelOk
+        if not j.exclusive and rareOk and modelOk and (j.failUntil or 0) <= os.clock()
             and j.lo <= CFG.buyMaxPrice and j.profitLo >= CFG.buyMinProfit and myMoney() - j.lo >= CFG.reserve then
-            if CONTEST.skip(j) then taken += 1 else best = best or j end
+            if CONTEST.skip(j) then taken += 1 else best = best or j; n += 1 end
         end
     end
-    return best, taken
+    return best, taken, n
 end
 
 -- home: a quiet spot you park at between auto actions (STATE.home = { x, y, z, lookX, lookZ })
@@ -1432,36 +1437,33 @@ local function goHome(force)
     tpTo(CFrame.lookAt(pos, pos + Vector3.new(h[4], 0, h[5])))
 end
 
--- buy the best matching junk car. onlyRare: just A tier or rarer (they jump ahead of repairs and sales).
--- returns true when it acted (or is holding for a refresh), so autoStep stops there
-local function buyStep(onlyRare)
+-- Auto runs in phases, re-checked every tick (one action per tick):
+--   1) BUY    every matching junk car, rarest first, while there's garage room and money
+--   2) REPAIR every script-bought car not repaired yet
+--   3) SELL   the repaired ones that aren't locked, as each one's sell timer allows
+-- A match that spawns mid-repair is bought before the next car is repaired (a player would take it first), but
+-- never mid-job: a repair or sale always finishes.
+local function buyStep()
     if not CFG.autoBuy then return false end
-    if #entries() >= garageSlots() then
-        if not onlyRare then autoStatus = ("garage full %d/%d"):format(#entries(), garageSlots()) end
-        return false
-    end
-    local j, taken = wantedJunk()
-    if not j then
-        if not onlyRare then
-            autoStatus = taken > 0 and ("%d matching car%s left to players at them"):format(taken, taken == 1 and "" or "s")
-                or "no junk car matches the filters"
-        end
-        return false
-    end
-    if onlyRare and TIER_RANK[j.tier] > TIER_RANK.A then return false end
+    if #entries() >= garageSlots() then return false end
+    local j = wantedJunk()
+    if not j then return false end
     busy, busyWhat = true, "buying " .. j.name
     local e, msg = buyJunk(j, { auto = true })
     log(msg)
-    if not (e and CFG.autoRepair) then goHome() end -- a repair is next anyway: go straight there
+    -- a car that couldn't be bought (price went up, sniped, declined) waits a minute so it can't block phases 2-3
+    if not e then j.failUntil = os.clock() + 60 end
+    local more = #entries() < garageSlots() and wantedJunk()
+    if not more and not (e and CFG.autoRepair) then goHome() end -- more to buy, or a repair next: don't go home between
     busy = false
     return true
 end
 
 local function autoStep()
     if busy or manualPending then return end
-    -- 0) a junkyard refresh spawns a car every ~2 s for ~20 s. Don't commit to anything (a buy, or a repair that
-    -- would block the rare that spawns last) until the wave is over, then pick the rarest. An S-tier or rarer match
-    -- is bought on sight: nothing later in the wave can beat it.
+    -- a junkyard refresh spawns a car every ~2 s for ~20 s. Don't commit to anything (a buy, or a repair that would
+    -- block the rare that spawns last) until the wave is over, then buy rarest first. An S-tier or rarer match is
+    -- bought on sight: nothing later in the wave can beat it.
     if CFG.autoBuy and #entries() < garageSlots() and os.clock() - (CONTEST.lastSpawn or 0) < CFG.buySettle then
         local j = wantedJunk()
         if not (j and TIER_RANK[j.tier] <= TIER_RANK.S) then
@@ -1469,44 +1471,57 @@ local function autoStep()
             return
         end
     end
-    -- rare matches jump ahead of repairs and sales (another player would take them first)
-    if buyStep(true) then return end
-    -- 1) finish cars we bought: repair, then sell
+    -- phase 1: buy
+    if buyStep() then return end
+    -- phase 2: repair everything bought (locked script-bought cars are repaired too, just never sold)
     for _, e in ipairs(entries()) do
         maybeAutoLock(e) -- also catches cars bought before auto lock was turned on
-        local o = OWNED[e.Name] -- locked (favorite) script-bought cars still get repaired, they're just never sold
-        if o and os.time() >= (o.nextTry or 0) then
-            if CFG.autoRepair and not o.repaired then
-                busy, busyWhat = true, "repairing " .. entryModel(e)
-                local ok, msg = repairCar(e)
-                o.tries = (o.tries or 0) + 1
-                if ok or o.tries >= 2 then o.repaired = true end -- two tries, then sell it as it is
-                saveOwned()
-                log(msg)
-                if o.repaired and CFG.cleanAfter then local _, m2 = cleanCar(e); log(m2) end
-                if o.repaired and CFG.paintAfter then local _, m3 = paintCar(e, paintColor(), CFG.paintMaterial); log(m3) end
-                goHome()
-                busy = false
-                return
-            end
-            if CFG.autoSell and not isFav(e) and e.Name ~= CFG.farmCarGuid and (o.repaired or not CFG.autoRepair) then
-                local left = sellCooldownLeft(e)
-                if left > 0 then
-                    autoStatus = ("waiting sell timer for %s: %dm %02ds"):format(entryModel(e), left // 60, left % 60)
-                else
-                    busy, busyWhat = true, "selling " .. entryModel(e)
-                    local ok, msg = sellCar(e)
-                    log(msg)
-                    goHome()
-                    busy = false
-                    if not ok and OWNED[e.Name] then OWNED[e.Name].nextTry = os.time() + 30 end -- don't respawn it at the NPC every 2 s
-                    return
-                end
-            end
+        local o = OWNED[e.Name]
+        if CFG.autoRepair and o and not o.repaired and os.time() >= (o.nextTry or 0) then
+            busy, busyWhat = true, "repairing " .. entryModel(e)
+            local ok, msg = repairCar(e)
+            o.tries = (o.tries or 0) + 1
+            if ok or o.tries >= 2 then o.repaired = true end -- two tries, then sell it as it is
+            saveOwned()
+            log(msg)
+            if o.repaired and CFG.cleanAfter then local _, m2 = cleanCar(e); log(m2) end
+            if o.repaired and CFG.paintAfter then local _, m3 = paintCar(e, paintColor(), CFG.paintMaterial); log(m3) end
+            goHome()
+            busy = false
+            return
         end
     end
-    -- 2) buy the best junk car that fits
-    buyStep(false)
+    -- phase 3: sell what's repaired and not locked
+    local soonest, soonestE
+    for _, e in ipairs(entries()) do
+        local o = OWNED[e.Name]
+        if CFG.autoSell and o and not isFav(e) and e.Name ~= CFG.farmCarGuid and (o.repaired or not CFG.autoRepair)
+            and os.time() >= (o.nextTry or 0) then
+            local left = sellCooldownLeft(e)
+            if left <= 0 then
+                busy, busyWhat = true, "selling " .. entryModel(e)
+                local ok, msg = sellCar(e)
+                log(msg)
+                goHome()
+                busy = false
+                if not ok and OWNED[e.Name] then OWNED[e.Name].nextTry = os.time() + 30 end -- don't respawn it at the NPC every 2 s
+                return
+            end
+            if not soonest or left < soonest then soonest, soonestE = left, e end
+        end
+    end
+    -- nothing to do this tick: say why
+    local _, taken = wantedJunk()
+    if soonest then
+        autoStatus = ("sell phase: waiting sell timer for %s: %dm %02ds"):format(entryModel(soonestE), soonest // 60, soonest % 60)
+    elseif CFG.autoBuy and #entries() >= garageSlots() then
+        autoStatus = ("garage full %d/%d"):format(#entries(), garageSlots())
+    elseif CFG.autoBuy then
+        autoStatus = taken > 0 and ("%d matching car%s left to players at them"):format(taken, taken == 1 and "" or "s")
+            or "no junk car matches the filters"
+    else
+        autoStatus = "idle"
+    end
 end
 
 -- ============================== player ==============================
@@ -2913,7 +2928,7 @@ do
         if not cd then return false end
         tpTo(hoodSpot(car))
         local t = os.clock()
-        repeat HOOK.click(cd); task.wait(0.5) until isOpen() or os.clock() - t > 10 -- a fresh spawn ignores the hood ~4.5 s
+        repeat HOOK.click(cd); task.wait(1) until isOpen() or os.clock() - t > 10 -- a fresh spawn ignores the hood ~4.5 s
         return isOpen()
     end
 
