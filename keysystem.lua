@@ -5,6 +5,28 @@ local SERVICE = "cruelhubkeysys"
 local VAULT = "https://vss.pandauth.com/kv/f50aaaf4f8afc66f"
 local KEY_FILE = "cruelhub_key.txt" -- a valid key is remembered, so it's asked for once until it expires
 local LOGO_URL = "https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/assets/cruelhub.jpg"
+local DISCORD = "wAq3hhH8E" -- discord.gg invite
+
+-- Opens the invite in the Discord app through its local RPC (ports 6463-6472). Without the app (or without request),
+-- the link goes to the clipboard instead. Returns "opened", "copied" or nil.
+local function openDiscord()
+    local http = game:GetService("HttpService")
+    local req = request or http_request or (syn and syn.request) or (fluxus and fluxus.request)
+    for port = 6463, 6472 do
+        local ok, res = pcall(req or error, {
+            Url = ("http://127.0.0.1:%d/rpc?v=1"):format(port), Method = "POST",
+            Headers = { ["Content-Type"] = "application/json", Origin = "https://discord.com" },
+            Body = http:JSONEncode({ cmd = "INVITE_BROWSER", nonce = http:GenerateGUID(false), args = { code = DISCORD } }),
+        })
+        if ok and type(res) == "table" and res.StatusCode == 200 then return "opened" end
+        if not req then break end
+    end
+    return pcall(setclipboard, "https://discord.gg/" .. DISCORD) and "copied" or nil
+end
+if not getgenv().__cruelDiscord then -- once per game session, not on every execute
+    getgenv().__cruelDiscord = true
+    task.spawn(openDiscord)
+end
 
 -- CruelHub look: near-black with a crimson accent (same palette as the script menus)
 local c = Color3.fromHex
@@ -146,9 +168,13 @@ do
     local submitBtn, getKeyBtn = mkBtn("Submit", 0, true), mkBtn("Get Key", 0.5, false)
 
     make("TextLabel", {
-        Size = UDim2.new(1, -28, 0, 14), Position = UDim2.new(0, 14, 1, -26), BackgroundTransparency = 1,
+        Size = UDim2.new(1, -90, 0, 14), Position = UDim2.new(0, 14, 1, -26), BackgroundTransparency = 1,
         Text = "a valid key is remembered until it expires", TextColor3 = MUTED, Font = Enum.Font.Gotham, TextSize = 11,
         TextXAlignment = Enum.TextXAlignment.Left,
+    }, frame)
+    local dcBtn = make("TextButton", {
+        Size = UDim2.fromOffset(64, 14), Position = UDim2.new(1, -78, 1, -26), BackgroundTransparency = 1,
+        Text = "discord", TextColor3 = ACCENT, Font = Enum.Font.GothamBold, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right,
     }, frame)
 
     -- drag by the title bar
@@ -202,6 +228,15 @@ do
         else
             say("could not get key link", BAD)
         end
+    end)
+
+    local lastDc = -math.huge
+    dcBtn.MouseButton1Click:Connect(function()
+        if os.clock() - lastDc < 5 then return end
+        lastDc = os.clock()
+        local how = openDiscord()
+        say(how == "opened" and "discord invite opened" or how == "copied" and "discord invite copied to clipboard"
+            or "discord.gg/" .. DISCORD, how and GOOD or FONT)
     end)
 
     gui.Parent = parent
