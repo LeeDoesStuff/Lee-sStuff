@@ -25,7 +25,21 @@ local function openDiscord()
 end
 if not getgenv().__cruelDiscord then -- once per game session, not on every execute
     getgenv().__cruelDiscord = true
-    task.spawn(openDiscord)
+    task.spawn(function()
+        local how = openDiscord()
+        local join = Instance.new("BindableFunction")
+        join.OnInvoke = function() openDiscord() end
+        local note = {
+            Title = "CruelHub", Duration = 10, Button1 = "Join",
+            Text = "Please join our Discord for support, updates and new scripts!"
+                .. (how == "copied" and " (invite copied to clipboard)" or ""),
+            Callback = join,
+        }
+        for _ = 1, 10 do -- SetCore errors until the core scripts have registered it
+            if pcall(game:GetService("StarterGui").SetCore, game:GetService("StarterGui"), "SendNotification", note) then break end
+            task.wait(1)
+        end
+    end)
 end
 
 -- CruelHub look: near-black with a crimson accent (same palette as the script menus)
