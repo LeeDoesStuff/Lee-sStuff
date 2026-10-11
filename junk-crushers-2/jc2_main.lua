@@ -145,13 +145,6 @@ local function now() return workspace:GetServerTimeNow() end
 local function due(k) return (S.backoff[k] or 0) < os.clock() end
 local function hold(k, s) S.backoff[k] = os.clock() + s end
 
-local function json(k)
-    local s = LP:GetAttribute(k)
-    if type(s) ~= "string" or s == "" then return {} end
-    local ok, t = pcall(HttpService.JSONDecode, HttpService, s)
-    return ok and type(t) == "table" and t or {}
-end
-
 local function plot()
     local m = workspace:FindFirstChild("Map")
     local ps = m and m:FindFirstChild("Plots")
@@ -173,9 +166,17 @@ local function valueOf(folder, child)
 end
 local function coins()   return valueOf("PlayerBalances", "Coins") end
 local function looted()  return valueOf("InventoryFolder", "Junk") end
-local function carried() return valueOf("Inventory", "JunkBlocks") end
+local function carried() return valueOf("Inventory", "JunkBlocks") end -- total value of blocks in hand, not a count
 local function gems()    return num("Diamonds") end
 local function tokens()  return num("RebirthCoins") end
+
+local function json(k)
+    local s = LP:GetAttribute(k)
+    if type(s) ~= "string" or s == "" then return {} end
+    local ok, t = pcall(HttpService.JSONDecode, HttpService, s)
+    return ok and type(t) == "table" and t or {}
+end
+local function held() return #json("CarriedBlockValues") end -- blocks in hand
 
 local function ready()
     return A("CoinDataReady") == true and A("DataLoadState") == "Ready" and not A("RebirthPending") and not A("DroneSavePending")
@@ -237,7 +238,20 @@ end
 -- ============================== movement + prompts ==============================
 local function flat(a, b) return Vector3.new(b.X - a.X, 0, b.Z - a.Z) end
 
--- straight walk; if it stops moving (a wall) it jumps once, then gives up instead of grinding
+-- short CFrame steps; small steps because one long jump is what server movement checks look for
+local function stepTo(pos, radius, deadline, size)
+    while S.alive and os.clock() < deadline do
+        local h = hrp()
+        if not h then return false end
+        local d = flat(h.Position, pos)
+        if d.Magnitude <= radius then return true end
+        h.CFrame += d.Magnitude > size and d.Unit * size or d
+        task.wait(0.07)
+    end
+    return false
+end
+
+-- straight walk; gives up after 1 s without progress (no jumping: a jump by the crusher lands in its feed bin)
 local function walkStraight(pos, radius, deadline)
     local anchor, anchorT = nil, os.clock()
     while S.alive and os.clock() < deadline do
@@ -247,17 +261,15 @@ local function walkStraight(pos, radius, deadline)
         hum:MoveTo(Vector3.new(pos.X, h.Position.Y, pos.Z))
         if not anchor or (h.Position - anchor).Magnitude > 1 then
             anchor, anchorT = h.Position, os.clock()
-        elseif os.clock() - anchorT > 2 then
-            return false
         elseif os.clock() - anchorT > 1 then
-            hum.Jump = true
+            return false
         end
         task.wait(0.15)
     end
     return false
 end
 
--- pathfinding walk with a straight-line fallback; fast mode steps 8 studs at a time instead
+-- pathfinding walk, straight-line fallback, then short steps when stuck close to the target
 local function moveTo(pos, radius, timeout)
     if not pos then return false end
     radius, timeout = radius or 3, timeout or 10
@@ -265,17 +277,7 @@ local function moveTo(pos, radius, timeout)
     local h, hum = hrp(), humanoid()
     if not (h and hum) then return false end
     if flat(h.Position, pos).Magnitude <= radius then return true end
-    if CFG.fastMove then
-        while S.alive and os.clock() < deadline do
-            h = hrp()
-            if not h then return false end
-            local d = flat(h.Position, pos)
-            if d.Magnitude <= radius then return true end
-            h.CFrame += d.Magnitude > 8 and d.Unit * 8 or d
-            task.wait(0.06)
-        end
-        return false
-    end
+    if CFG.fastMove then return stepTo(pos, radius, deadline, 8) end
     if flat(h.Position, pos).Magnitude > 10 then
         -- aim just short: buttons sit inside solid parts, which fails a path
         local away = flat(pos, h.Position)
@@ -292,7 +294,10 @@ local function moveTo(pos, radius, timeout)
             end
         end
     end
-    return walkStraight(pos, radius, deadline)
+    if walkStraight(pos, radius, deadline) then return true end
+    h = hrp()
+    if h and flat(h.Position, pos).Magnitude <= 30 then return stepTo(pos, radius, os.clock() + 3, 4) end
+    return false
 end
 
 local function firePrompt(prompt)
@@ -513,10 +518,10 @@ function F.blocksStep(p, h)
     local stack = c and c:FindFirstChild("StackPickup")
     local sp = stack and stack:FindFirstChildWhichIsA("ProximityPrompt", true)
     if sp and sp.Enabled then
-        local n0 = carried()
+        local n0 = held()
         if usePrompt(sp, 10) then
             task.wait(0.6)
-            S.counts.blocks += math.max(0, carried() - n0)
+            S.counts.blocks += math.max(0, held() - n0)
             return true
         end
     end
@@ -541,7 +546,7 @@ function F.blocksStep(p, h)
     return false
 end
 
--- free Auto Loader: stand on the Unload Pad while the server takes the blocks
+-- free Auto Loader: stand on the Unload Pad while the server takes the blocks (~1 per 1.8 s, measured)
 function F.unloadStep(p)
     if carried() <= 0 then return false end
     if A("AutoLoader") == true and A("AutoLoaderDisabled") ~= true then return false end -- the pass does it
@@ -549,14 +554,24 @@ function F.unloadStep(p)
     local st = f and f:FindFirstChild("Start")
     local base = st and (st:FindFirstChild("Base") or st:FindFirstChildWhichIsA("BasePart", true))
     if not base then return false end
-    local n0 = carried()
     moveTo(base.Position, 1.5, 12)
-    local t = os.clock()
-    while S.alive and carried() > 0 and os.clock() - t < 15 and not S.eventBusy do task.wait(0.2) end
-    local n = n0 - carried()
-    if n > 0 then
-        S.counts.unloads += n
-        log(("unloaded %d blocks"):format(n))
+    local h = hrp()
+    if not h or flat(h.Position, base.Position).Magnitude > 2.5 then
+        log("couldn't reach the Unload Pad, retrying in 10 s")
+        hold("unload", 10)
+        return true
+    end
+    local n0, v0 = held(), carried()
+    local last, lastT = n0, os.clock()
+    while S.alive and carried() > 0 and not S.eventBusy and os.clock() - lastT < 6 do
+        task.wait(0.25)
+        local n = held()
+        if n < last then last, lastT = n, os.clock() end
+    end
+    local n = n0 - held()
+    if n > 0 or carried() < v0 then
+        S.counts.unloads += math.max(n, 0)
+        log(("unloaded %d blocks (%s)"):format(n, compact(v0 - carried())))
     else
         log("Unload Pad took nothing, retrying in 20 s")
         hold("unload", 20)
@@ -583,11 +598,11 @@ function F.smelterStep(p)
     if CFG.smeltInput and sm:GetAttribute("Smelting") ~= true and due("smelt") and (carried() > 0 or looted() > 0) then
         local pr = input and input:FindFirstChildWhichIsA("ProximityPrompt", true)
         if pr and pr.Enabled then
-            local b0, j0 = carried(), looted()
+            local b0, j0 = held(), looted()
             hold("smelt", 30)
             if usePrompt(pr, 10) then
                 task.wait(1.5)
-                log(("smelter started (blocks %d -> %d, junk %d -> %d)"):format(b0, carried(), j0, looted()))
+                log(("smelter started (blocks %d -> %d, junk %d -> %d)"):format(b0, held(), j0, looted()))
                 return true
             end
         end
@@ -1765,10 +1780,10 @@ task.spawn(function()
             local d = p and F.dumpster(p)
             local c = coins()
 
-            L.farm:SetText(("%s\nDumpster %s/%s · Junk %d · Blocks %d\nPicked %d · Loots %d · Unloaded %d")
-                :format(S.status, tostring(d and d:GetAttribute("CurrentCapacity") or "?"),
-                    d and (d:GetAttribute("InfiniteStorage") and "∞" or tostring(d:GetAttribute("MaxCapacity") or 25)) or "?",
-                    looted(), carried(), cnt.picks, cnt.loots, cnt.unloads))
+            L.farm:SetText(("%s\nDumpster %s/%s · Junk %s\nHolding %d blocks (%s)\nPicked %d · Loots %d · Unloaded %d")
+                :format(S.status, compact(d and d:GetAttribute("CurrentCapacity") or 0),
+                    d and (d:GetAttribute("InfiniteStorage") and "∞" or compact(d:GetAttribute("MaxCapacity") or 25)) or "?",
+                    compact(looted()), held(), compact(carried()), cnt.picks, cnt.loots, cnt.unloads))
 
             local sm = p and p:FindFirstChild("Smelter")
             L.smelt:SetText(sm and ("%s · %d waiting"):format(sm:GetAttribute("Smelting") and "Smelting" or "Idle",

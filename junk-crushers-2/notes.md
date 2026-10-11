@@ -49,9 +49,12 @@ Run in the order of [recon-quickstart](../notes/recon-quickstart.md), on a fresh
 - **Junk has ClickDetectors** at 40 studs (`JunkClickDetector`) and 48 studs (`JunkClickTarget`). The farm ignores them and uses `JunkPickupRequest`, the same call the game's click handler makes.
 - **The coin board is ClickDetector hitboxes** (`JunkRainUpgrader.ButtonHitboxes.<Key>_<One|Max>`, 36 studs) in front of `CoinUpgradeRequest`.
 - **Dumpster capacity was 60 at DumpsterLevel 1** on this account. The client code's fallback says 25, so read `MaxCapacity` and never assume.
-- **The full loop works:**
-  - Loot 60 → crush 60 → 60 blocks (1:1) → Pick Up All → stand on `Factory.Start.Base` within 1.5 studs → all 60 unloaded in about 5 s.
-  - One full cycle every ~13–14 s. In 60 s that was 5 loots and 240 blocks unloaded.
+- **`Inventory.JunkBlocks` is the total VALUE of the blocks you're holding, not a count.**
+  - The count is `#CarriedBlockValues`, a JSON attribute listing each held block's value. `CarriedBlockAngles` holds their angles.
+  - Measured 2026-10-11: 7 blocks worth 56,286 each made JunkBlocks 394,000.
+  - The first test's "60 blocks unloaded" was really a value of 60, so read the counts below as values.
+- **The Unload Pad takes about one block per 1.8 s while you stand on it.** Measured: 7 blocks in 12 s, which paid +756K coins (1.43M → 2.19M).
+- **The full loop works:** loot → crush → Pick Up All → stand on `Factory.Start.Base` → sold. On a level-1 account that was one cycle every ~13–14 s.
   - Coins went 200 → 776 with a 1-drone, level-1 account.
   - `JunkPickupRequest` with our own sequence numbers (from 1,000,001, clear of the game's counter) was accepted.
   - Auto Claim claimed a Junk Index entry (`CupTrash:Normal`).
@@ -61,6 +64,13 @@ Run in the order of [recon-quickstart](../notes/recon-quickstart.md), on a fresh
   - Fix: never enter the pad. The pad is 28 studs wide against a 48-stud pickup reach, so stand 3 studs outside the fence on the dumpster side and slide along it to line up with the target (`F.padSpot`).
   - Every other walk goes through PathfindingService (agent radius 2.5, aimed just short of the target, because buttons sit inside solid parts), with stuck detection: no progress for 1 s → jump, 2 s → give up.
   - The re-test trace never came within 4 studs of the fence.
+- **The crusher's feed bin is a trap** (2026-10-11).
+  - What happened: the old stuck-handler jumped when a walk stalled. A jump next to the crusher landed the character in `Crusher.FeedBin`, and it couldn't walk back out.
+  - The unload step then waited at the pad 13 studs away, the server took nothing, and the farm logged "Unload Pad took nothing" in a loop with 7 blocks (394K) in hand.
+  - Fix:
+    - No jumping when stuck. After 1 s without progress, short 4-stud CFrame steps take over within 30 studs of the target.
+    - Unload checks it's really on the pad (≤2.5 studs) before waiting.
+    - The wait ends after 6 s with no block taken, instead of a fixed 15 s.
 - **Base is 80x80 and contains the Unload Pad.** Auto Build's client gate (standing inside your own `Plot.Base`) is therefore met wherever the farm already goes, and the pad is the walk target when a build is due.
 - **Fresh-account factory:** `Layout` = Start 0:5, Conveyor 0:4, Scanner 0:3, Polisher 0:2, Sell 0:1, with 5 spare Conveyors in Stock. The tutorial gave the Polisher, and UpgraderTutorialStage was 5 (done).
 

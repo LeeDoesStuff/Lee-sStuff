@@ -29,7 +29,7 @@ rain junk (Plot.Junk) --JunkPickupRequest--> dumpster --"Loot Dumpster" prompt--
   - `PlayerBalances.Coins` / `PlayerBalances.Junk` (numbers)
   - `leaderstats.Coins/Junk` (strings)
   - `InventoryFolder.Junk` (looted junk, not crushed yet)
-  - `Inventory.JunkBlocks` (blocks carried)
+  - `Inventory.JunkBlocks`: the **total value** of the blocks carried. The count is `#CarriedBlockValues` (JSON list of per-block values; **measured** 7 × 56,286 = 394,000). Also `CarriedBlockAngles`, and `PendingCrushBlockUnits` (crush in progress).
 - **JSON attributes** (decode with `HttpService:JSONDecode`, never `require` a module):
   - `FactoryDataJSON`: `{Version, StarterLayoutVersion, LoaderLayoutVersion, UpgraderOwnershipVersion, Stock={Kind=n}, Layout={["x:z"]={Kind, Rotation}}}`
   - `DroneInventoryJSON`: `{[droneId]=type}`
@@ -140,7 +140,8 @@ Ranges are measured from the HRP to the closest point of the target's bounding b
 ### Unload (no remote)
 - "Stand near the start to unload your blocks" (TutorialGuidanceClient:253-262). The server pulls blocks from `Inventory.JunkBlocks` onto the conveyor.
 - It broadcasts `FactoryTransit(block|nil, fromCF=hand, toCF=start cell, 0.45, true)` and stamps `HandPlacementStartedAt/From/Target` (FactoryBuildClient:1593-1665).
-- **measured:** standing within 1.5 studs of `Factory.Start.Base`'s centre unloaded 60 blocks in about 5 s.
+- **measured:** standing on `Factory.Start.Base` (6 × 6, CanCollide false; the floor ray hits `Start.Belt`) unloads about **1 block per 1.8 s**. 7 blocks took 12 s and paid +756K coins.
+- **measured:** standing 13 studs away (stuck in `Crusher.FeedBin`) unloads nothing, so you have to be on the pad itself.
 
 ### Coin board: `CoinUpgradeRequest:FireServer(plotName, key, mode)`
 Called at CoinUpgradeBoardClient:410. key ∈ `Rain, Speed, Slots, DroneSpeed, AutoClicker`; mode ∈ `"One"`/`"Max"` (`Slots` is One only, :318-319). Client gates:
