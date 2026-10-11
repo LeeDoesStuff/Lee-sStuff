@@ -51,6 +51,17 @@ It uses the game's own ATTACK SIZE slider and blocks the game's Robux prompts.
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/pixel-conquest/pc_main.lua"))()
 ```
 
+### [Junk Crushers 2](junk-crushers-2/)
+Auto farm for the whole junk loop: picks up rain junk, loots the dumpster when it's full, crushes, collects the blocks and carries them to the factory's Unload Pad. That covers what the Auto Loader and Infinite Storage passes do, for free.
+- **Upgrades:** coin board cards, crusher, dumpster, factory upgraders with Auto Build, and Auto Roll for drone crates (gems or tokens only).
+- **Rebirth:** smart auto rebirth and the rebirth shop.
+- **Rewards and events:** every daily, hourly and index claim, the Junk Boss (kill it or switch it off), the Diamond event and the Mega Crate rain.
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/junk-crushers-2/jc2_main.lua"))()
+```
+*After a server hop it reloads from your executor's workspace folder, so save it there as `jc2_main.lua` to keep it across hops.*
+
 ### [Fix It Up!](fix-it-up/)
 A flip farm with one menu tab for each part of the game:
 - **Junkyard:** tier and spawn-% ESP on every junk car, a clickable list with one-click Buy, rare-spawn alerts, and a lookup for any car's rarity, engines, cost and profit.

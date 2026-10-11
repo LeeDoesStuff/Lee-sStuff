@@ -1,0 +1,8 @@
+name = "[AUTO CLICK] Junk Crushers 2"
+place_id = 73968232750026
+game_id = 10656201650
+status = "active"
+script = "jc2_main.lua"
+loader = 'loadstring(readfile("jc2_main.lua"))()  # re-queued with queue_on_teleport'
+ui = "Obsidian"
+notes = ["notes.md", "spec.md"]
