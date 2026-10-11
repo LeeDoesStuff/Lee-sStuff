@@ -1,30 +1,13 @@
 -- CruelHub · Junk Crushers 2
---[[
-    [AUTO CLICK] Junk Crushers 2 (PlaceId 73968232750026) - auto farm hub
-    UI: Obsidian (deividcomsono), CruelHub look
+-- Auto farm hub for [AUTO CLICK] Junk Crushers 2 (PlaceId 73968232750026). See notes.md / spec.md.
 
-    THE LOOP (read from the client; notes.md / spec.md have the citations):
-      junk rains on your plot -> click it (JunkPickupRequest) -> dumpster -> "Loot Dumpster" prompt ->
-      "Crush Junk" prompt -> junk blocks roll out -> pick up (JunkPickupRequest, 12 studs) or "Pick Up All" ->
-      stand on the factory's Unload Pad -> upgraders multiply each block -> the Sell pad pays coins (server side).
-
-    Recreated passes (the outcome, not ownership: every pass effect is applied by the server):
-      AutoLoader       -> Auto Unload walks your blocks to the Unload Pad
-      Infinite Storage -> loots the dumpster the moment it fills, plus auto dumpster upgrades
-      Fast Rain        -> maxes the free Rain Speed card (+300% vs the pass's +50%)
-      Auto Clicker     -> Auto Pickup at ~2.5 clicks/s stacks with the game's own clicker
-
-    Never fired: remotes no client script calls (honeypot candidates), the admin panel's remotes and every
-    Robux path. Crate and offline-earnings remotes are argument-locked to their gem / free forms.
-]]
-
-local Players     = game:GetService("Players")
-local RS          = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
-local VirtualUser = game:GetService("VirtualUser")
-local GuiService  = game:GetService("GuiService")
+local Players            = game:GetService("Players")
+local RS                 = game:GetService("ReplicatedStorage")
+local HttpService        = game:GetService("HttpService")
+local VirtualUser        = game:GetService("VirtualUser")
+local GuiService         = game:GetService("GuiService")
 local PathfindingService = game:GetService("PathfindingService")
-local LP          = Players.LocalPlayer
+local LP                 = Players.LocalPlayer
 
 local PLACE_ID, SPEC_VERSION = 73968232750026, 1616
 local SELF_URL = "https://raw.githubusercontent.com/LeeDoesStuff/Lee-sStuff/main/junk-crushers-2/jc2_main.lua"
@@ -32,43 +15,43 @@ local DIR      = "CruelHub/JunkCrushers2"
 local LOG_FILE = DIR .. "/log.txt"
 
 if game.PlaceId ~= PLACE_ID then
-    warn("[CruelHub] jc2_main.lua is the Junk Crushers 2 script; this place (" .. game.PlaceId .. ") isn't it")
+    warn("[CruelHub] jc2_main.lua only runs in Junk Crushers 2")
     return
 end
 if not game:IsLoaded() then game.Loaded:Wait() end
 
--- newest copy wins: autoexec + a teleport requeue can both start one; an older copy sees the token change and unloads
+-- newest copy wins (autoexec + teleport requeue can both start one)
 local TOKEN = {}
 getgenv().CruelHubJC2_TOKEN = TOKEN
 if getgenv().CruelHubJC2 then pcall(getgenv().CruelHubJC2.unload) end
 for _, d in { "CruelHub", DIR } do if not isfolder(d) then pcall(makefolder, d) end end
 
+-- ============================== config ==============================
 local CFG = {
-    -- Farm
+    -- farm
     farm = false, pickup = true, loot = true, crush = true, blocks = true, unload = true,
     reach = 44, crushMin = 10, lootIdle = 8, fastMove = false,
     smeltClaim = true, smeltInput = false,
-    -- Upgrades
+    -- upgrades
     upgrades = false, coinKeys = { Rain = true, Speed = true, AutoClicker = true, DroneSpeed = true, Slots = true },
     coinOrder = "Cheapest first", reserve = 0, crusher = true, dumpster = true,
-    factoryBuy = true, autoBuild = true, upgraderTut = true, roll = true,
-    -- Rebirth
+    factoryBuy = true, autoBuild = true, upgraderTut = true,
+    roll = true, crateKind = "Normal (100 gems)", crateBatch = 3, crateFloor = 0, crateStop = "Exotic",
+    -- rebirth
     rebirthMode = "Off", rebirthMinTokens = 2, rebirthMax = 0,
     shop = false, shopSave = true,
-    shopItems = { ["Junk Magnet"] = true, ["Mutations (Gold / Diamond / Atomic)"] = true, ["Refabricator (2.5x)"] = true,
-        ["Rebirth Amplifier (3x)"] = true, ["Ion Accelerator (1.5x)"] = true, ["PowerCore Boosters (2.5x)"] = true,
-        ["Drone Crate Luck"] = true },
-    -- Drones
-    equipBest = false, crateKind = "Normal (100 gems)", crateBatch = 3, crateFloor = 0, crateStop = "Exotic",
-    rareNotify = true, serverRare = false,
-    -- Rewards
-    claims = false, cWelcome = true, cDaily = true, cOffline = true, cHourly = true, cDailyQuest = true, cMain = true,
-    cIndex = true, cMilestone = true, cChest = true,
-    -- Events
-    bossMode = "Game default", diamond = false, gemUpgrades = false, gemFloor = 0,
+    shopItems = { ["Junk Magnet"] = true, Mutations = true, Refabricator = true, ["Rebirth Amplifier"] = true,
+        ["Ion Accelerator"] = true, ["PowerCore Boosters"] = true, ["Drone Luck"] = true },
+    -- drones
+    equipBest = false, rareNotify = true, serverRare = false,
+    -- rewards
+    claims = false, cWelcome = true, cDaily = true, cOffline = true, cHourly = true, cDailyQuest = true,
+    cMain = true, cIndex = true, cMilestone = true, cChest = true,
+    -- events
+    bossMode = "Default", diamond = false, gemUpgrades = false, gemFloor = 0,
     megaCrates = false, meteorCrates = false, worldChallenge = false, eventNotify = true,
-    -- Settings
-    antiAfk = true, rejoin = true, gap = 0.35,
+    -- settings
+    antiAfk = true, rejoin = true, gap = 0.35, iySafety = false, iyNoRender = false,
 }
 
 local S = {
@@ -79,11 +62,11 @@ local S = {
     counts = { picks = 0, loots = 0, crushes = 0, blocks = 0, unloads = 0, buys = 0, rebirths = 0, claims = 0,
         drones = 0, bossKills = 0, diamonds = 0, drops = 0 },
     lastRebirth = os.clock(), rebirthLock = 0, equipDirty = true, equipAt = 0, coinRes = {},
-    dropLogged = {}, unload = function() end,
+    dropLogged = {}, dropTries = {}, unload = function() end,
 }
 getgenv().CruelHubJC2 = S
 
-local notify = function() end -- Library:Notify once the UI exists
+local notify = function() end -- becomes Library:Notify once the UI loads
 
 local function log(msg)
     S.log[#S.log + 1] = os.date("%H:%M:%S ") .. tostring(msg)
@@ -100,9 +83,8 @@ local function on(signal, fn)
     return c
 end
 
--- ============================== remotes (guarded) ==============================
--- Remotes the hub never fires. First block: no client script calls them (honeypot candidates).
--- Then the admin panel (shown to one UserId only), then Robux and trades.
+-- ============================== remotes ==============================
+-- never fired: no client caller (honeypots), the admin panel, Robux, trades
 local FORBIDDEN = {}
 for _, n in { "PrivatePlaytimeQuery", "PrivatePlaytimeDevice", "AdminPlayerStats", "JunkRainUpgradeRequest",
     "JunkRainUpgradeResult", "ClaimGroupReward", "SetBigJunkScale",
@@ -110,7 +92,7 @@ for _, n in { "PrivatePlaytimeQuery", "PrivatePlaytimeDevice", "AdminPlayerStats
     "SkipRebirthPurchase", "GemPackPurchase", "MegaRainPurchase", "StarterPackPurchaseRequest", "GamepassGifting",
     "LimitedDronePurchase", "DroneTradeInvite", "DroneTradeSession" } do FORBIDDEN[n] = true end
 
--- These remotes also have Robux or destructive forms: only the listed argument shapes go out
+-- remotes that also have Robux or destructive forms: only these argument shapes go out
 local ARGLOCK = {
     NormalDroneCratePurchase  = function(a) return a[1] == "Gems" end,
     PremiumDroneCratePurchase = function(a) return a[1] == 1 and a[2] == "Gems" end,
@@ -120,7 +102,7 @@ local ARGLOCK = {
     SetAutoLoaderEnabled      = function() return LP:GetAttribute("AutoLoader") == true end,
 }
 
--- One shared clock for every remote and prompt: CFG.gap apart plus jitter, never a burst
+-- one shared clock for every remote and prompt: CFG.gap apart plus jitter
 local function pace()
     local slot = math.max(os.clock(), S.gate)
     S.gate = slot + CFG.gap + math.random() * 0.12
@@ -143,7 +125,7 @@ local function call(name, ...)
         if not ok then log(name .. ": " .. tostring(err)) end
         return ok
     end
-    -- a RemoteFunction can hang forever: stop waiting for the answer after 10 s (the request still went out)
+    -- RemoteFunctions can hang: stop waiting after 10 s
     local res, done = nil, false
     task.spawn(function()
         res = table.pack(pcall(r.InvokeServer, r, table.unpack(args, 1, args.n)))
@@ -156,10 +138,12 @@ local function call(name, ...)
     return true, table.unpack(res, 2, res.n)
 end
 
--- ============================== state helpers ==============================
+-- ============================== helpers ==============================
 local function A(k) return LP:GetAttribute(k) end
 local function num(k) return tonumber(LP:GetAttribute(k)) or 0 end
 local function now() return workspace:GetServerTimeNow() end
+local function due(k) return (S.backoff[k] or 0) < os.clock() end
+local function hold(k, s) S.backoff[k] = os.clock() + s end
 
 local function json(k)
     local s = LP:GetAttribute(k)
@@ -188,9 +172,9 @@ local function valueOf(folder, child)
     return v and tonumber(v.Value) or 0
 end
 local function coins()   return valueOf("PlayerBalances", "Coins") end
-local function looted()  return valueOf("InventoryFolder", "Junk") end   -- looted, not crushed yet
-local function carried() return valueOf("Inventory", "JunkBlocks") end   -- blocks in hand
-local function gems()    return num("Diamonds") end                     -- the game calls the Diamonds attr "gems"
+local function looted()  return valueOf("InventoryFolder", "Junk") end
+local function carried() return valueOf("Inventory", "JunkBlocks") end
+local function gems()    return num("Diamonds") end
 local function tokens()  return num("RebirthCoins") end
 
 local function ready()
@@ -203,7 +187,7 @@ local function compact(n)
     local neg, i = n < 0, 1
     n = math.abs(n)
     while n >= 1000 and i < #SUFFIX do n /= 1000; i += 1 end
-    local s = i == 1 and tostring(math.floor(n)) or (n >= 100 and ("%.0f") or n >= 10 and ("%.1f") or ("%.2f")):format(n) .. SUFFIX[i]
+    local s = i == 1 and tostring(math.floor(n)) or (n >= 100 and "%.0f" or n >= 10 and "%.1f" or "%.2f"):format(n) .. SUFFIX[i]
     return (neg and "-" or "") .. s
 end
 
@@ -221,7 +205,7 @@ local function posOf(inst)
     if inst:IsA("Model") then return inst:GetPivot().Position end
 end
 
--- closest point of the instance's box to pos: the same measure the game's pickup range uses
+-- distance to the closest point of the instance's box (the measure the game's pickup range uses)
 local function boxDist(inst, pos)
     local cf, size
     if inst:IsA("Model") then cf, size = inst:GetBoundingBox()
@@ -238,9 +222,22 @@ local function dist(p)
     return (h and p) and (h.Position - p).Magnitude or math.huge
 end
 
+local function onBase(p)
+    local b, h = p:FindFirstChild("Base"), hrp()
+    if not (b and h and b:IsA("BasePart")) then return false end
+    local rel = b.CFrame:PointToObjectSpace(h.Position)
+    return math.abs(rel.X) <= b.Size.X / 2 and math.abs(rel.Z) <= b.Size.Z / 2
+end
+
+local function waitFarmIdle()
+    local t = os.clock()
+    while S.farmBusy and os.clock() - t < 20 do task.wait(0.1) end
+end
+
+-- ============================== movement + prompts ==============================
 local function flat(a, b) return Vector3.new(b.X - a.X, 0, b.Z - a.Z) end
 
--- Straight walk. Stops when it stops moving (a wall): one jump, then it gives up instead of grinding.
+-- straight walk; if it stops moving (a wall) it jumps once, then gives up instead of grinding
 local function walkStraight(pos, radius, deadline)
     local anchor, anchorT = nil, os.clock()
     while S.alive and os.clock() < deadline do
@@ -260,9 +257,7 @@ local function walkStraight(pos, radius, deadline)
     return false
 end
 
--- Walk with the Humanoid like a player, around obstacles (PathfindingService), straight line as fallback.
--- Fast mode steps the root 8 studs at a time instead: small steps, because a single long CFrame jump is
--- what server movement checks look for.
+-- pathfinding walk with a straight-line fallback; fast mode steps 8 studs at a time instead
 local function moveTo(pos, radius, timeout)
     if not pos then return false end
     radius, timeout = radius or 3, timeout or 10
@@ -282,7 +277,7 @@ local function moveTo(pos, radius, timeout)
         return false
     end
     if flat(h.Position, pos).Magnitude > 10 then
-        -- aim just short of the target: buttons and prompts sit inside solid parts, which fails a path
+        -- aim just short: buttons sit inside solid parts, which fails a path
         local away = flat(pos, h.Position)
         local goal = pos + (away.Magnitude > 0 and away.Unit * math.max(radius - 1, 0) or Vector3.zero)
         local path = PathfindingService:CreatePath({ AgentRadius = 2.5, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = 6 })
@@ -303,7 +298,7 @@ end
 local function firePrompt(prompt)
     pace()
     if fireproximityprompt and pcall(fireproximityprompt, prompt) then return true end
-    return (pcall(function() -- what the game's own prompt UI does
+    return (pcall(function()
         prompt:InputHoldBegin()
         task.wait(prompt.HoldDuration + 0.1)
         prompt:InputHoldEnd()
@@ -321,24 +316,12 @@ local function usePrompt(prompt, timeout)
 end
 
 local function pickup(inst)
-    S.seq += 1 -- the game numbers its own pickups from 1; ours start at 1,000,001 so they never collide
+    S.seq += 1 -- ours start at 1,000,001 so they never collide with the game's counter
     return call("JunkPickupRequest", inst, S.seq)
 end
 
-local function onBase(p)
-    local b, h = p:FindFirstChild("Base"), hrp()
-    if not (b and h and b:IsA("BasePart")) then return false end
-    local rel = b.CFrame:PointToObjectSpace(h.Position)
-    return math.abs(rel.X) <= b.Size.X / 2 and math.abs(rel.Z) <= b.Size.Z / 2
-end
-
-local function waitFarmIdle()
-    local t = os.clock()
-    while S.farmBusy and os.clock() - t < 20 do task.wait(0.1) end
-end
-
--- ============================== game tables (copied, never require()d) ==============================
-local JUNK_VALUE = {}
+-- ============================== game data (copied, never require()d) ==============================
+local JUNK_VALUE = {} -- JunkIndexConfig order = value order; unknown names are newer, higher tiers
 for i, id in { "CupTrash", "PlankTrash", "PipeTrash", "TableTrash", "TireTrash", "DumbellTrash", "BenchPressTrash",
     "TukTukTrash", "SmallBoatTrash", "ForkLiftTrash", "RoofTrash", "TentTrash", "ExcavatorTrash", "CamperTrash",
     "MiningTruckTrash", "LocomotiveTrash", "BulldozerTrash", "CargoHelicopterTrash", "GarbageTruckTrash", "CargoShip",
@@ -346,12 +329,11 @@ for i, id in { "CupTrash", "PlankTrash", "PipeTrash", "TableTrash", "TireTrash",
     "FighterJetTrash", "SportsCarTrash", "RocketTrash", "AlienAircraftTrash", "AlienRoverTrash", "AlienStatueTrash",
     "AlienRailgunTrash", "AngelicHelmetTrash", "AngelicGateTrash", "AngelicSwordTrash", "AngelicStatueTrash",
     "AngelicPowerCoreTrash", "InfernalGuardianTrash", "ForgottenHaulerTrash" } do JUNK_VALUE[id] = i end
--- JunkIndexConfig order = value order (each tier is worth ~2x the last); unknown names are newer, higher tiers
 
-local HOURLY = { { "Coins", 1000, "Collect 1K Junk" }, { "Diamond", 10, "Pick Up 10 Diamond Junk" },
-    { "Playtime", 1800, "Play 30 Minutes" }, { "Blocks", 30, "Pick Up 30 Junk Blocks" } }
-local DAILY = { { "Crates", 15, "Open 15 Drone Crates" }, { "Rebirth", 1, "Rebirth" }, { "Mega", 1, "Open a Mega Crate" },
-    { "Rain", 20, "Buy 20 Junk Rain Upgrades" } }
+local HOURLY = { { "Coins", 1000, "Collect 1K junk" }, { "Diamond", 10, "10 diamond junk" },
+    { "Playtime", 1800, "Play 30 min" }, { "Blocks", 30, "30 junk blocks" } }
+local DAILY = { { "Crates", 15, "Open 15 crates" }, { "Rebirth", 1, "Rebirth" }, { "Mega", 1, "Open a Mega Crate" },
+    { "Rain", 20, "20 rain upgrades" } }
 
 local COIN_COST = {
     Speed = { 100, 1e3, 1e4, 1e5, 1e6, 2e7, 2e8, 2e9, 4e9, 8e9, 1.6e10, 3.2e10, 6.4e10, 1.28e11, 2.56e11, 3.08e11, 3.68e11,
@@ -363,8 +345,8 @@ local COIN_COST = {
 }
 local COIN_LEVEL = { Speed = "RainSpeedLevel", DroneSpeed = "DroneSpeedLevel", AutoClicker = "AutoClickerLevel" }
 local COIN_KEYS = { "Rain", "Speed", "AutoClicker", "DroneSpeed", "Slots" }
-local COIN_TEXT = { Rain = "Junk Rain (better junk)", Speed = "Rain Speed", AutoClicker = "Auto Clicker",
-    DroneSpeed = "Drone Speed", Slots = "Drone Slots" }
+local COIN_TEXT = { Rain = "Junk Rain", Speed = "Rain Speed", AutoClicker = "Auto Clicker", DroneSpeed = "Drone Speed",
+    Slots = "Drone Slots" }
 local CRUSHER_COST = { 1e3, 1e4, 1e5, 1e6 }
 local DUMPSTER_COST = { [2] = 30, [3] = 500, [4] = 4500, [5] = 2e4, [6] = 6e4, [7] = 1.8e5, [8] = 5.5e5, [9] = 1.5e6,
     [10] = 4.5e6, [11] = 1.3e7, [12] = 1.2e8, [13] = 1e9, [14] = 5e9, [15] = 1e11, [16] = 1e12, [17] = 1e13, [18] = 5e17 }
@@ -388,10 +370,10 @@ local CRATES = {
         buy = function(n) return call("NormalDroneCratePurchase", "Gems", n, "Infernal") end },
     ["Rebirth (10 tokens)"] = { cur = "tokens", price = 10, path = { "RebirthShop", "RebirthCrate", "RebirthDroneCrate" },
         buy = function(n) return call("RebirthDroneCratePurchase", n) end },
-    ["Mega (10,000 gems)"] = { cur = "gems", price = 10000, single = true, path = { "MegaDroneCrate", "CrateBody" },
+    ["Mega (10K gems)"] = { cur = "gems", price = 10000, single = true, path = { "MegaDroneCrate", "CrateBody" },
         buy = function() return call("PremiumDroneCratePurchase", 1, "Gems") end },
 }
-local CRATE_KINDS = { "Normal (100 gems)", "Infernal (300 gems)", "Rebirth (10 tokens)", "Mega (10,000 gems)" }
+local CRATE_KINDS = { "Normal (100 gems)", "Infernal (300 gems)", "Rebirth (10 tokens)", "Mega (10K gems)" }
 
 local function rebirthTokensFor(c)
     if c < 1e6 then return 0 end
@@ -415,34 +397,31 @@ local function mutationCost(id, unlock)
     return l < 10 and 2 ^ l or nil
 end
 
--- rebirth shop in buy order; group = the toggle that covers it
+-- rebirth shop, in buy order
 local SHOP = {
-    { group = "Mutations (Gold / Diamond / Atomic)", id = "Gold", label = "Gold unlock",
-        cost = function() return not A("GoldUnlocked") and 1 or nil end },
+    { group = "Mutations", id = "Gold", label = "Gold unlock", cost = function() return not A("GoldUnlocked") and 1 or nil end },
     { group = "Junk Magnet", id = "JunkMagnet", label = "Junk Magnet",
         cost = function() local l = num("JunkMagnetLevel") return l < 3 and ({ 4, 8, 16 })[l + 1] or nil end },
-    { group = "Refabricator (2.5x)", id = "PrismaticReactor", label = "Refabricator", factory = true, cost = 6 },
-    { group = "Mutations (Gold / Diamond / Atomic)", id = "Diamond", label = "Diamond unlock",
-        cost = function() return not A("DiamondUnlocked") and 3 or nil end },
-    { group = "Mutations (Gold / Diamond / Atomic)", id = "Atomic", label = "Atomic unlock",
-        cost = function() return not A("AtomicUnlocked") and 6 or nil end },
-    { group = "Rebirth Amplifier (3x)", id = "RebirthAmplifier", label = "Rebirth Amplifier", factory = true, cost = 15 },
-    { group = "Ion Accelerator (1.5x)", id = "IonAccelerator", label = "Ion Accelerator", factory = true, cost = 20 },
-    { group = "PowerCore Boosters (2.5x)", id = "NewRebirthConveyor", label = "PowerCore Boosters", factory = true, cost = 30 },
-    { group = "Drone Crate Luck", id = "DroneLuck", label = "Drone Crate Luck",
+    { group = "Refabricator", id = "PrismaticReactor", label = "Refabricator", factory = true, cost = 6 },
+    { group = "Mutations", id = "Diamond", label = "Diamond unlock", cost = function() return not A("DiamondUnlocked") and 3 or nil end },
+    { group = "Mutations", id = "Atomic", label = "Atomic unlock", cost = function() return not A("AtomicUnlocked") and 6 or nil end },
+    { group = "Rebirth Amplifier", id = "RebirthAmplifier", label = "Rebirth Amplifier", factory = true, cost = 15 },
+    { group = "Ion Accelerator", id = "IonAccelerator", label = "Ion Accelerator", factory = true, cost = 20 },
+    { group = "PowerCore Boosters", id = "NewRebirthConveyor", label = "PowerCore Boosters", factory = true, cost = 30 },
+    { group = "Drone Luck", id = "DroneLuck", label = "Drone Luck",
         cost = function() local l = num("DroneLuckLevel") return l < 4 and 2 ^ (l + 1) or nil end },
-    { group = "Mutations (Gold / Diamond / Atomic)", id = "Atomic", label = "Atomic level",
+    { group = "Mutations", id = "Atomic", label = "Atomic level",
         cost = function() return A("AtomicUnlocked") and mutationCost("Atomic", 6) or nil end },
-    { group = "Mutations (Gold / Diamond / Atomic)", id = "Diamond", label = "Diamond level",
+    { group = "Mutations", id = "Diamond", label = "Diamond level",
         cost = function() return A("DiamondUnlocked") and mutationCost("Diamond", 3) or nil end },
-    { group = "Mutations (Gold / Diamond / Atomic)", id = "Gold", label = "Gold level",
+    { group = "Mutations", id = "Gold", label = "Gold level",
         cost = function() return A("GoldUnlocked") and mutationCost("Gold", 1) or nil end },
 }
-local SHOP_GROUPS = { "Junk Magnet", "Mutations (Gold / Diamond / Atomic)", "Refabricator (2.5x)", "Rebirth Amplifier (3x)",
-    "Ion Accelerator (1.5x)", "PowerCore Boosters (2.5x)", "Drone Crate Luck" }
+local SHOP_GROUPS = { "Junk Magnet", "Mutations", "Refabricator", "Rebirth Amplifier", "Ion Accelerator",
+    "PowerCore Boosters", "Drone Luck" }
 
--- ============================== farm (one action per step, owns the character) ==============================
-local F, U = {}, {} -- farm steps, upgrades (declared together: the farm walks to base for U's Auto Build)
+-- ============================== farm (owns the character) ==============================
+local F, U = {}, {}
 
 function F.dumpster(p)
     local d = p:FindFirstChild("Dumpster")
@@ -454,9 +433,8 @@ function F.full(d)
     return (d:GetAttribute("CurrentCapacity") or 0) >= (d:GetAttribute("MaxCapacity") or 25)
 end
 
--- The rain pad is fenced on the side facing the rest of the plot (Decor mesh, collidable), and it's
--- only 28 studs wide against a 48-stud pickup reach. So never walk onto it: stand 3 studs outside
--- the fence on the dumpster's side, slid along it to line up with the target.
+-- The rain pad is fenced on the plot side, and only 28 studs wide against a 48-stud reach:
+-- stand 3 studs outside the fence (dumpster side), slid along it to line up with the target.
 function F.padSpot(p, target)
     local pad, d = p:FindFirstChild("RainSpawnPad"), F.dumpster(p)
     if not (pad and d and pad:IsA("BasePart")) then return target end
@@ -480,7 +458,7 @@ function F.pickupStep(p, h)
         if not j:GetAttribute("ProducedByCrusher") and not j:GetAttribute("Collected") and not j:GetAttribute("Claimed")
             and t >= (j:GetAttribute("PlanetCollectAt") or 0) and (S.skip[j] or 0) < c then
             local d = boxDist(j, h.Position)
-            -- in reach: most valuable first; nothing in reach: walk to the nearest
+            -- in reach: most valuable first; otherwise the nearest
             local score = d <= CFG.reach and (1e9 + (JUNK_VALUE[j.Name] or 1000) * 1000 - d) or -d
             if score > bestScore then best, bestScore, bestDist = j, score, d end
         end
@@ -489,9 +467,7 @@ function F.pickupStep(p, h)
     if bestDist > CFG.reach then
         moveTo(F.padSpot(p, posOf(best)), 2.5, 8)
         local h2 = hrp()
-        if not h2 or boxDist(best, h2.Position) > CFG.reach then
-            S.skip[best] = c + 10 -- out of reach even from the fence: leave it to drones / the magnet
-        end
+        if not h2 or boxDist(best, h2.Position) > CFG.reach then S.skip[best] = c + 10 end -- leave it to drones
         return true
     end
     S.skip[best] = c + 2.5
@@ -504,7 +480,7 @@ function F.lootStep(d)
     if cur <= 0 then return false end
     if usePrompt(d:FindFirstChild("LootDumpsterPrompt", true), 10) then
         S.counts.loots += 1
-        log(("looted the dumpster (%d junk)"):format(cur))
+        log(("looted %d junk"):format(cur))
         task.wait(0.6)
         return true
     end
@@ -565,7 +541,7 @@ function F.blocksStep(p, h)
     return false
 end
 
--- free AutoLoader: carry the blocks to the Unload Pad and stand there while the server takes them
+-- free Auto Loader: stand on the Unload Pad while the server takes the blocks
 function F.unloadStep(p)
     if carried() <= 0 then return false end
     if A("AutoLoader") == true and A("AutoLoaderDisabled") ~= true then return false end -- the pass does it
@@ -580,10 +556,10 @@ function F.unloadStep(p)
     local n = n0 - carried()
     if n > 0 then
         S.counts.unloads += n
-        log(("unloaded %d block(s) onto the line"):format(n))
+        log(("unloaded %d blocks"):format(n))
     else
-        log("Unload Pad took no blocks in 15 s - backing off 20 s")
-        S.backoff.unload = os.clock() + 20
+        log("Unload Pad took nothing, retrying in 20 s")
+        hold("unload", 20)
     end
     return true
 end
@@ -604,15 +580,14 @@ function F.smelterStep(p)
             end
         end
     end
-    if CFG.smeltInput and sm:GetAttribute("Smelting") ~= true and (S.backoff.smelt or 0) < os.clock()
-        and (carried() > 0 or looted() > 0) then
+    if CFG.smeltInput and sm:GetAttribute("Smelting") ~= true and due("smelt") and (carried() > 0 or looted() > 0) then
         local pr = input and input:FindFirstChildWhichIsA("ProximityPrompt", true)
         if pr and pr.Enabled then
             local b0, j0 = carried(), looted()
-            S.backoff.smelt = os.clock() + 30
+            hold("smelt", 30)
             if usePrompt(pr, 10) then
                 task.wait(1.5)
-                log(("smelter started: blocks %d -> %d, junk %d -> %d"):format(b0, carried(), j0, looted()))
+                log(("smelter started (blocks %d -> %d, junk %d -> %d)"):format(b0, carried(), j0, looted()))
                 return true
             end
         end
@@ -623,19 +598,19 @@ end
 function F.step()
     local p = plot()
     if not p then return "no plot yet" end
-    if not ready() then return "waiting for game data" end
+    if not ready() then return "loading" end
     local h = hrp()
     if not (h and humanoid()) then return "no character" end
-    if S.wantBuild and not onBase(p) and (S.backoff.build or 0) < os.clock() then
-        if not moveTo(U.buildSpot(p), 3, 12) then S.backoff.build = os.clock() + 30 end
-        return "walking to base for Auto Build"
+    if S.wantBuild and not onBase(p) and due("build") then
+        if not moveTo(U.buildSpot(p), 3, 12) then hold("build", 30) end
+        return "walking to base"
     end
     local d = F.dumpster(p)
     if CFG.blocks and F.blocksStep(p, h) then return "collecting blocks" end
-    if CFG.unload and (S.backoff.unload or 0) < os.clock() and F.unloadStep(p) then return "unloading blocks" end
+    if CFG.unload and due("unload") and F.unloadStep(p) then return "unloading" end
     if (CFG.smeltClaim or CFG.smeltInput) and F.smelterStep(p) then return "smelter" end
     if CFG.crush and F.crushStep(p) then return "crushing" end
-    if CFG.loot and d and F.full(d) and F.lootStep(d) then return "looting (full)" end
+    if CFG.loot and d and F.full(d) and F.lootStep(d) then return "looting" end
     if CFG.pickup and not A("JunkBossActive") and not F.full(d) and F.pickupStep(p, h) then
         S.idleSince = os.clock()
         return "picking up junk"
@@ -645,11 +620,10 @@ function F.step()
         local inf = d:GetAttribute("InfiniteStorage") and cur >= 60
         if (inf or (cur > 0 and os.clock() - S.idleSince > CFG.lootIdle)) and F.lootStep(d) then return "looting" end
     end
-    return "idle - waiting for junk"
+    return "waiting for junk"
 end
 
--- ============================== upgrades, rebirth, drones (remote-only; walks only for Auto Build when the farm is off) ==============================
-
+-- ============================== upgrades, rebirth, drones ==============================
 local MULT = { K = 1e3, M = 1e6, B = 1e9, T = 1e12, QD = 1e15, QN = 1e18, SX = 1e21, SP = 1e24, OC = 1e27, NO = 1e30, DC = 1e33 }
 local function parseCoins(text)
     text = tostring(text):gsub(",", "")
@@ -659,7 +633,11 @@ local function parseCoins(text)
     return n * (MULT[(suf or ""):upper()] or 1)
 end
 
--- the Rain card's price isn't in any decompiled module: read it off the plot's board, else try and back off
+local function affordable(cost)
+    return cost and cost ~= math.huge and cost <= coins() * (1 - CFG.reserve / 100)
+end
+
+-- the Rain card's price isn't in a decompiled module: read it off the board, else try and back off
 function U.rainCost(p)
     local g = LP.PlayerGui:FindFirstChild("CoinUpgrades_" .. p.Name)
     local card = g and g:FindFirstChild("Rain", true)
@@ -679,20 +657,15 @@ function U.coinCost(p, key)
     return COIN_COST[key][num(COIN_LEVEL[key]) + 1]
 end
 
-local function affordable(cost)
-    return cost and cost ~= math.huge and cost <= coins() * (1 - CFG.reserve / 100)
-end
-
 function U.coinBoard(p)
     local pick, pickCost
     for _, key in COIN_KEYS do
-        if CFG.coinKeys[key] and (S.backoff["coin" .. key] or 0) < os.clock() then
+        if CFG.coinKeys[key] and due("coin" .. key) then
             local cost = U.coinCost(p, key)
-            local unknown = key == "Rain" and cost == nil
-            if unknown or affordable(cost) then
+            if (key == "Rain" and cost == nil) or affordable(cost) then
                 local rank = CFG.coinOrder == "Cheapest first" and (cost or 1e300) or 0
                 if not pick or rank < pickCost then pick, pickCost = key, rank end
-                if CFG.coinOrder ~= "Cheapest first" then break end -- list order = priority
+                if CFG.coinOrder ~= "Cheapest first" then break end
             end
         end
     end
@@ -706,7 +679,7 @@ function U.coinBoard(p)
         S.counts.buys += 1
         log("bought " .. COIN_TEXT[pick])
     else
-        S.backoff["coin" .. pick] = os.clock() + 20
+        hold("coin" .. pick, 20)
         if r then log(COIN_TEXT[pick] .. ": " .. tostring(r.text)) end
     end
     return true
@@ -714,16 +687,16 @@ end
 
 function U.crusher(p)
     local lvl = num("CrusherSpeedLevel")
-    if lvl >= 4 or not affordable(CRUSHER_COST[lvl + 1]) or (S.backoff.crusher or 0) > os.clock() then return false end
+    if lvl >= 4 or not affordable(CRUSHER_COST[lvl + 1]) or not due("crusher") then return false end
     S.crusherRes = nil
     call("CrusherUpgradeRequest", p.Name)
     local t = os.clock()
     while S.crusherRes == nil and os.clock() - t < 4 do task.wait(0.1) end
     if S.crusherRes and S.crusherRes.ok then
         S.counts.buys += 1
-        log(("crusher upgraded to level %d (%ds crush)"):format(lvl + 1, 7 - (lvl + 1)))
+        log(("crusher level %d"):format(lvl + 1))
     else
-        S.backoff.crusher = os.clock() + 30
+        hold("crusher", 30)
         log("crusher upgrade: " .. tostring(S.crusherRes and S.crusherRes.text or "no answer"))
     end
     return true
@@ -732,23 +705,23 @@ end
 function U.dumpster()
     local nextLvl = num("DumpsterLevel") + 1
     local cap = math.min(18, tonumber(RS:GetAttribute("DumpsterMaxAvailable")) or 17)
-    if nextLvl > cap or not affordable(DUMPSTER_COST[nextLvl]) or (S.backoff.dumpster or 0) > os.clock() then return false end
+    if nextLvl > cap or not affordable(DUMPSTER_COST[nextLvl]) or not due("dumpster") then return false end
     S.dumpRes = nil
     call("DumpsterPurchaseRequest", nextLvl)
     local t = os.clock()
     while S.dumpRes == nil and os.clock() - t < 8 do task.wait(0.1) end
     if S.dumpRes and S.dumpRes.ok then
         S.counts.buys += 1
-        log(("dumpster upgraded to level %d"):format(nextLvl))
+        log(("dumpster level %d"):format(nextLvl))
     else
         local why = S.dumpRes and tostring(S.dumpRes.reason) or "no answer"
-        S.backoff.dumpster = os.clock() + (why == "Busy" and 5 or 60)
+        hold("dumpster", why == "Busy" and 5 or 60)
         log("dumpster upgrade: " .. why)
     end
     return true
 end
 
--- an upgrader sitting in Stock isn't on the line yet (spare Conveyors don't count: Auto Build adds those itself)
+-- an upgrader in Stock isn't on the line yet (spare conveyors don't count)
 function U.needsBuild(data)
     if type(data.Stock) ~= "table" then return false end
     for kind, n in data.Stock do
@@ -764,12 +737,12 @@ function U.buildSpot(p)
 end
 
 function U.autoBuild(p, why)
-    if not onBase(p) then S.wantBuild = why return false end -- the build tools only open on your own Base
+    if not onBase(p) then S.wantBuild = why return false end -- build tools only open on your own Base
     for _ = 1, 20 do
         local ok, res, msg = call("FactoryAction", "AutoBuild")
         if ok and res then
             S.wantBuild = nil
-            log("factory re-laid out with Auto Build (" .. why .. ")")
+            log("Auto Build (" .. why .. ")")
             return true
         end
         if not (msg == "Please wait." or msg == "Data is loading.") then
@@ -782,8 +755,8 @@ function U.autoBuild(p, why)
     return false
 end
 
-function U.factory(p)
-    if (S.backoff.factory or 0) > os.clock() then return false end
+function U.factory()
+    if not due("factory") then return false end
     local data = json("FactoryDataJSON")
     local free = num("UpgraderTutorialStage") >= 1 and num("UpgraderTutorialStage") <= 2
     for _, u in UPGRADERS do
@@ -793,11 +766,11 @@ function U.factory(p)
             local ok, res, msg = call("FactoryAction", "Buy", id)
             if ok and res then
                 S.counts.buys += 1
-                log("bought upgrader " .. id .. " (" .. compact(price) .. ")")
+                log("bought " .. id .. " (" .. compact(price) .. ")")
                 if CFG.autoBuild then S.wantBuild = "new " .. id end
             else
-                S.backoff.factory = os.clock() + 30
-                log("upgrader " .. id .. ": " .. tostring(msg or res or "no answer"))
+                hold("factory", 30)
+                log(id .. ": " .. tostring(msg or res or "no answer"))
             end
             return true
         end
@@ -807,14 +780,14 @@ end
 
 function U.upgraderTutorial(p)
     local stage = num("UpgraderTutorialStage")
-    if stage < 1 or stage > 3 or (S.backoff.utut or 0) > os.clock() then return false end
-    S.backoff.utut = os.clock() + 10
+    if stage < 1 or stage > 3 or not due("utut") then return false end
+    hold("utut", 10)
     if stage == 1 then
         call("UpgraderTutorialGo")
         log("upgrader tutorial: GO")
     elseif stage == 2 then
         local ok, res, msg = call("FactoryAction", "Buy", "Polisher")
-        log("upgrader tutorial: free Polisher - " .. tostring(ok and res and "ok" or msg))
+        log("upgrader tutorial: free Polisher " .. tostring(ok and res and "ok" or msg))
     else
         return U.autoBuild(p, "upgrader tutorial")
     end
@@ -828,12 +801,12 @@ function U.rebirthWanted()
     if CFG.rebirthMax > 0 and num("Rebirths") >= CFG.rebirthMax then return false end
     local k = rebirthTokensFor(c)
     local mode = CFG.rebirthMode
-    if mode == "As soon as possible" then return true end
-    if mode == "At token count" then return k >= CFG.rebirthMinTokens end
+    if mode == "ASAP" then return true end
+    if mode == "At tokens" then return k >= CFG.rebirthMinTokens end
     if mode == "Smart" then
-        if num("Rebirths") < 5 then return true end -- each of the first 5 adds a permanent +0.5x coins
+        if num("Rebirths") < 5 then return true end -- each of the first 5 adds +0.5x coins
         if S.income <= 0 then return false end
-        -- rebirth when the next token would take longer than this run's average time per token
+        -- rebirth once the next token would take longer than this run's average per token
         local tNext = (1e6 * 5 ^ k - c) / S.income
         return tNext > (os.clock() - S.lastRebirth) / math.max(k, 1)
     end
@@ -842,14 +815,13 @@ end
 
 function U.rebirth()
     local c = coins()
-    log(("rebirthing: %s coins -> %d token(s)"):format(compact(c), rebirthTokensFor(c)))
+    log(("rebirthing: %s coins -> %d tokens"):format(compact(c), rebirthTokensFor(c)))
     S.rebirthLock = os.clock() + 15
     call("RebirthRequest")
-    return true
 end
 
 function U.rebirthShop()
-    if (S.backoff.shop or 0) > os.clock() then return false end
+    if not due("shop") then return false end
     local data = json("FactoryDataJSON")
     local have = tokens()
     for _, it in SHOP do
@@ -868,12 +840,12 @@ function U.rebirthShop()
                         log(("rebirth shop: %s (%d tokens)"):format(it.label, cost))
                         if it.factory and CFG.autoBuild then S.wantBuild = it.label end
                     else
-                        S.backoff.shop = os.clock() + 60
+                        hold("shop", 60)
                         log("rebirth shop " .. it.label .. ": " .. tostring(msg or res or "no answer"))
                     end
                     return true
                 elseif CFG.shopSave then
-                    return false -- save tokens for the next item in priority order
+                    return false
                 end
             end
         end
@@ -885,38 +857,36 @@ function U.equipBest()
     if not S.equipDirty or os.clock() - S.equipAt < 3 then return false end
     S.equipDirty, S.equipAt = false, os.clock()
     if A("Trading") then return false end
-    call("DroneEquipRequest", "", "EquipBest") -- the game's own Equip Best: the server ranks your drones
+    call("DroneEquipRequest", "", "EquipBest")
     return true
 end
 
 function U.tick()
     local p = plot()
     if not (p and ready()) then return end
-    if CFG.upgrades and CFG.autoBuild and not S.wantBuild and (S.backoff.build or 0) < os.clock() then
+    if CFG.upgrades and CFG.autoBuild and not S.wantBuild and due("build") then
         local kind = U.needsBuild(json("FactoryDataJSON"))
         if kind then S.wantBuild = kind .. " in stock" end
     end
-    if S.wantBuild and (S.backoff.build or 0) < os.clock() then
-        -- the farm walks to the pad itself when it's running; otherwise nobody owns the character, so walk here
+    if S.wantBuild and due("build") then
+        -- the farm walks to the pad itself; with it off, walk here
         if not onBase(p) and not CFG.farm and not S.eventBusy then moveTo(U.buildSpot(p), 3, 12) end
-        if not U.autoBuild(p, S.wantBuild) and not onBase(p) and not CFG.farm then S.backoff.build = os.clock() + 30 end
+        if not U.autoBuild(p, S.wantBuild) and not onBase(p) and not CFG.farm then hold("build", 30) end
     end
     if CFG.rebirthMode ~= "Off" and U.rebirthWanted() then U.rebirth() return end
     if CFG.shop and U.rebirthShop() then return end
     if (CFG.equipBest or (CFG.upgrades and CFG.roll)) and U.equipBest() then return end
     if not CFG.upgrades then return end
     if CFG.upgraderTut and U.upgraderTutorial(p) then return end
-    if CFG.factoryBuy and U.factory(p) then return end
+    if CFG.factoryBuy and U.factory() then return end
     if CFG.crusher and U.crusher(p) then return end
     if CFG.dumpster and U.dumpster() then return end
     U.coinBoard(p)
 end
 
--- ============================== rewards (remote-only) ==============================
+-- ============================== rewards ==============================
 local C = {}
 
-local function due(k) return (S.backoff[k] or 0) < os.clock() end
-local function hold(k, s) S.backoff[k] = os.clock() + s end
 local function claimed(what, ok, res, msg)
     if ok and res ~= false then
         S.counts.claims += 1
@@ -944,7 +914,7 @@ function C.activeHourly()
     return out
 end
 
--- { def, progressAttr, claimedAttr } for each daily slot
+-- { quest, progressAttr, claimedAttr } per daily slot
 function C.activeDaily()
     local D, out = num("DailyQuestDay"), {}
     out[1] = { DAILY[D % #DAILY + 1], "DailyQuestProgress", "DailyQuestClaimed" }
@@ -961,22 +931,22 @@ function C.tick()
     local t = now()
     if CFG.cWelcome and A("WelcomeBoostReady") and A("WelcomeBoostPending") and due("welcome") then
         hold("welcome", 30)
-        claimed("welcome boost (2x coins + 2x luck)", call("ClaimWelcomeBoost"))
+        claimed("welcome boost", call("ClaimWelcomeBoost"))
     end
     if CFG.cDaily and A("DailyRewardsReady") and num("DailyNextClaim") <= t and due("daily") then
         hold("daily", 60)
-        claimed("daily reward (day " .. (num("DailyRewardCount") % 7 + 1) .. ")", call("ClaimDailyReward"))
+        claimed("daily reward", call("ClaimDailyReward"))
     end
     if CFG.cOffline and num("OfflineCoins") > 0 and due("offline") then
         hold("offline", 30)
-        claimed("offline earnings (" .. compact(num("OfflineCoins")) .. ")", call("OfflineEarningsAction", "Claim"))
+        claimed("offline coins (" .. compact(num("OfflineCoins")) .. ")", call("OfflineEarningsAction", "Claim"))
     end
     if CFG.cHourly then
         for _, q in C.activeHourly() do
             local k = q[1]
             if num("Hourly" .. k .. "Progress") >= q[2] and not A("Hourly" .. k .. "Claimed") and due("h" .. k) then
                 hold("h" .. k, 60)
-                claimed("hourly quest: " .. q[3], call("ClaimCollect1K", k))
+                claimed("hourly: " .. q[3], call("ClaimCollect1K", k))
             end
         end
     end
@@ -985,7 +955,7 @@ function C.tick()
             local q = slot[1]
             if num(slot[2]) >= q[2] and not A(slot[3]) and due("d" .. q[1]) then
                 hold("d" .. q[1], 60)
-                claimed("daily quest: " .. q[3], call("ClaimDailyQuest", q[1]))
+                claimed("daily: " .. q[3], call("ClaimDailyQuest", q[1]))
             end
         end
     end
@@ -1012,12 +982,11 @@ function C.tick()
         local disc, ms, found = json("JunkIndexJSON"), json("IndexMilestonesJSON"), 0
         for _, v in disc do if v then found += 1 end end
         for n = 10, 200, 10 do
-            local got = ms[tostring(n)] or ms[n] or table.find(ms, n) or table.find(ms, tostring(n))
-            if not got then
+            if not (ms[tostring(n)] or ms[n] or table.find(ms, n) or table.find(ms, tostring(n))) then
                 if n <= found then
                     if C.indexWait("__milestone", tostring(n)) then
                         S.counts.claims += 1
-                        log("junk index milestone " .. n)
+                        log("index milestone " .. n)
                     else
                         hold("milestone", 120)
                     end
@@ -1033,25 +1002,30 @@ function C.tick()
         if status == "JoinGroup" then
             CFG.cChest = false
             if S.chestToggle then S.chestToggle:SetValue(false) end
-            notify("Daily chest needs the game's Roblox group (3876902). Join it, then turn the chest back on.")
+            notify("Daily chest needs the game's group (3876902)")
         else
             claimed("daily chest", ok, res, msg)
         end
     end
 end
 
--- ============================== events (own the character while they run) ==============================
+-- ============================== events (own the character while running) ==============================
 local E = {}
 
 function E.gemUpgrades()
-    if (S.backoff.gemUp or 0) > os.clock() then return false end
+    if not due("gemUp") then return false end
     local g, gl, ll = gems(), num("EventGemLevel"), num("EventLuckLevel")
     local which, cost
     if gl < 10 then which, cost = "Gems", (gl + 1) * 50 elseif ll < 30 then which, cost = "Luck", (ll + 1) * 100 end
     if not which or g - cost < CFG.gemFloor then return false end
-    S.backoff.gemUp = os.clock() + 1
+    hold("gemUp", 1)
     local ok, res, msg = call("BuyDiamondUpgrade", which)
-    if ok and res ~= false then log("event upgrade: " .. which) else S.backoff.gemUp = os.clock() + 30 log("event upgrade: " .. tostring(msg or res)) end
+    if ok and res ~= false then
+        log("event upgrade: " .. which)
+    else
+        hold("gemUp", 30)
+        log("event upgrade: " .. tostring(msg or res))
+    end
     return true
 end
 
@@ -1059,15 +1033,15 @@ function E.diamond()
     local st = RS:FindFirstChild("DiamondEventState")
     local live = st and st:GetAttribute("Active") and st:GetAttribute("EventType") == "Diamond"
     local onPf = A("AtDiamondPlatform") == true
-    -- the teleport takes a moment to set AtDiamondPlatform: only call the trip over once it's had time to land
+    -- the teleport takes a moment to set AtDiamondPlatform
     if S.onPlatform and ((not onPf and os.clock() - (S.joinAt or 0) > 15) or (not live and os.clock() - (S.joinAt or 0) > 180)) then
         S.onPlatform, S.eventBusy = false, false
-        log("diamond event over - back to farming")
+        log("diamond event over")
         if onPf then call("TeleportToBase") end
     end
     if not (CFG.diamond and live) then return S.onPlatform == true end
     if not onPf then
-        if S.onPlatform then return true end -- teleport still landing
+        if S.onPlatform then return true end
         local joinEnds = st:GetAttribute("JoinEndsAt") or 0
         if st:GetAttribute("DiamondPhase") == "Joining" and joinEnds - now() > 1 and S.joined ~= joinEnds then
             S.joined = joinEnds
@@ -1081,7 +1055,7 @@ function E.diamond()
         end
         return false
     end
-    if not S.onPlatform then S.joinAt = os.clock() end -- joined by hand: farm it too
+    if not S.onPlatform then S.joinAt = os.clock() end -- joined by hand
     S.eventBusy, S.onPlatform = true, true
     if st:GetAttribute("DiamondPhase") == "Returning" then return true end
     local folder, h = workspace:FindFirstChild("DiamondEventJunk"), hrp()
@@ -1104,8 +1078,7 @@ function E.diamond()
     return true
 end
 
--- Mega Crate rain + meteor crates: no client script claims them, so it's a prompt or a touch on the server.
--- Use a prompt when the crate has one, otherwise walk onto it.
+-- Mega Crate rain + meteor crates have no client claim code: use the crate's prompt, else walk onto it
 function E.drops()
     local list = {}
     local mega = RS:FindFirstChild("MegaCrateEventState")
@@ -1122,10 +1095,9 @@ function E.drops()
         local f = workspace:FindFirstChild("MeteorEventDrops")
         if f then for _, m in f:GetChildren() do list[#list + 1] = m end end
     end
-    S.dropTries = S.dropTries or {}
     local target, td
     for _, m in list do
-        if (S.skip[m] or 0) < os.clock() and (S.dropTries[m] or 0) < 3 then -- 3 tries, then it isn't claimable by us
+        if (S.skip[m] or 0) < os.clock() and (S.dropTries[m] or 0) < 3 then
             local d = dist(posOf(m))
             if not td or d < td then target, td = m, d end
         end
@@ -1143,11 +1115,10 @@ function E.drops()
     waitFarmIdle()
     S.skip[target] = os.clock() + 15
     S.dropTries[target] = (S.dropTries[target] or 0) + 1
-    if not S.dropLogged[target.Name] then -- recon: record how this drop is built (prompt vs touch) for the spec
+    if not S.dropLogged[target.Name] then -- record how the drop is built (prompt vs touch)
         S.dropLogged[target.Name] = true
-        local kinds = {}
+        local kinds, parts = {}, {}
         for _, d in target:GetDescendants() do kinds[d.ClassName] = (kinds[d.ClassName] or 0) + 1 end
-        local parts = {}
         for k, v in kinds do parts[#parts + 1] = k .. " x" .. v end
         log("drop " .. target:GetFullName() .. ": " .. table.concat(parts, ", "))
     end
@@ -1160,21 +1131,21 @@ function E.drops()
         task.wait(0.6)
     end
     S.counts.drops += 1
-    log("went for drop " .. target.Name)
+    log("grabbed drop " .. target.Name)
     return true
 end
 
 function E.world()
-    if not CFG.worldChallenge or A("WorldChallengeRewardClaimed") or (S.backoff.world or 0) > os.clock() then return false end
+    if not CFG.worldChallenge or A("WorldChallengeRewardClaimed") or not due("world") then return false end
     local wc = workspace:FindFirstChild("WorldChallenge")
     local part = wc and wc:FindFirstChild("RewardPromptPart")
     local pr = part and part:FindFirstChild("ClaimWorldReward")
     if not (pr and pr.Enabled) then return false end
-    S.backoff.world = os.clock() + 120
+    hold("world", 120)
     S.eventBusy = true
     waitFarmIdle()
     if dist(posOf(part)) > 150 then call("TeleportToShops") task.wait(1.5) end
-    if usePrompt(pr, 25) then log("claimed the World Challenge reward (1,000 gems)") end
+    if usePrompt(pr, 25) then log("claimed World Challenge reward") end
     task.wait(1)
     call("TeleportToBase")
     task.wait(1.5)
@@ -1183,21 +1154,22 @@ function E.world()
 end
 
 function E.crates()
-    if not (CFG.upgrades and CFG.roll) or (S.backoff.crates or 0) > os.clock() then return false end
-    if A("PaidRandomAllowed") ~= true then return false end -- the game hides crates for this account (policy)
+    if not (CFG.upgrades and CFG.roll) or not due("crates") then return false end
+    if A("PaidRandomAllowed") ~= true then return false end -- crates hidden for this account (policy)
     local c = CRATES[CFG.crateKind]
+    if not c then return false end
     local function balance() return c.cur == "gems" and gems() or tokens() end
     local function batch()
         local n = c.single and 1 or CFG.crateBatch
         if balance() - c.price * n < CFG.crateFloor then n = 1 end
         return balance() - c.price * n >= CFG.crateFloor and n or 0
     end
-    -- only make the trip when a full batch is affordable above the floor
+    -- only travel when a full batch is affordable above the floor
     if balance() - c.price * (c.single and 1 or CFG.crateBatch) < CFG.crateFloor then return false end
     local part = workspace
     for _, name in c.path do part = part and part:FindFirstChild(name) end
     local pos = posOf(part)
-    if not pos then log("crate " .. CFG.crateKind .. " not found") S.backoff.crates = os.clock() + 60 return false end
+    if not pos then log(CFG.crateKind .. " crate not found") hold("crates", 60) return false end
     S.eventBusy = true
     waitFarmIdle()
     if dist(pos) > 60 then call("TeleportToShops") task.wait(1.5) end
@@ -1211,20 +1183,20 @@ function E.crates()
         c.buy(n)
         local t = os.clock()
         while S.crateDone == nil and os.clock() - t < 5 do task.wait(0.1) end
-        if S.crateDone == "error" or S.crateDone == nil then S.backoff.crates = os.clock() + 60 break end
+        if S.crateDone == "error" or S.crateDone == nil then hold("crates", 60) break end
         opened += n
         if S.stopHit then
             CFG.roll = false
             if S.rollToggle then S.rollToggle:SetValue(false) end
-            notify("Auto Roll paused: you unboxed " .. (DRONE_NAME[S.stopHit] or S.stopHit) .. "!")
+            notify("Auto Roll stopped: " .. (DRONE_NAME[S.stopHit] or S.stopHit) .. "!")
             break
         end
         task.wait(1 + math.random() * 0.4)
     end
-    log(("opened %d crate(s)"):format(opened))
+    log(("rolled %d crates"):format(opened))
     call("TeleportToBase")
     task.wait(1.5)
-    S.backoff.crates = os.clock() + 20
+    hold("crates", 20)
     S.eventBusy = false
     return true
 end
@@ -1235,7 +1207,7 @@ local function gotDrone(t)
     S.counts.drones += 1
     S.equipDirty = true
     log(("unboxed %s (%s)"):format(DRONE_NAME[t] or tostring(t), RARITY[r] or "?"))
-    if r >= 5 and CFG.rareNotify then notify(("%s drone: %s!"):format(RARITY[r], DRONE_NAME[t] or tostring(t))) end
+    if r >= 5 and CFG.rareNotify then notify(("%s: %s!"):format(RARITY[r], DRONE_NAME[t] or tostring(t))) end
     if r >= (STOP_RANK[CFG.crateStop] or 99) then S.stopHit = t end
 end
 
@@ -1244,7 +1216,9 @@ local function ev(name) return RS:WaitForChild(name, 10) end
 do
     local e = ev("DroneResult")
     if e then on(e.OnClientEvent, function(kind, data)
-        if kind == "Unboxed" and type(data) == "table" then gotDrone(data.Type) S.crateDone = true
+        if kind == "Unboxed" and type(data) == "table" then
+            gotDrone(data.Type)
+            S.crateDone = true
         elseif kind == "UnboxedBatch" and type(data) == "table" and type(data.Results) == "table" then
             for _, r in data.Results do if type(r) == "table" then gotDrone(r.Type) end end
             S.crateDone = true
@@ -1253,27 +1227,33 @@ do
             log("crate: " .. (type(data) == "table" and tostring(data.Message) or tostring(data)))
         end
     end) end
+
     e = ev("PremiumDroneCrateResult")
     if e then on(e.OnClientEvent, function(data)
         if type(data) == "table" then for _, t in data do if type(t) == "string" then gotDrone(t) end end end
         S.crateDone = true
     end) end
+
     e = ev("RareDroneAnnouncement")
     if e then on(e.OnClientEvent, function(who, t, how)
         if CFG.serverRare and who ~= LP.Name then
             notify(("%s %s %s"):format(tostring(who), how == "Looted" and "looted" or "unboxed", DRONE_NAME[t] or tostring(t)))
         end
     end) end
+
     e = ev("CoinUpgradeResult")
     if e then on(e.OnClientEvent, function(plotName, key, ok, text)
         if plotName == A("PlotName") then S.coinRes[key] = { ok = ok, text = text } end
     end) end
+
     e = ev("CrusherUpgradeResult")
     if e then on(e.OnClientEvent, function(plotName, ok, text)
         if plotName == A("PlotName") then S.crusherRes = { ok = ok, text = text } end
     end) end
+
     e = ev("DumpsterPurchaseResult")
-    if e then on(e.OnClientEvent, function(level, ok, reason) S.dumpRes = { ok = ok, reason = reason } end) end
+    if e then on(e.OnClientEvent, function(_, ok, reason) S.dumpRes = { ok = ok, reason = reason } end) end
+
     e = ev("RebirthResult")
     if e then on(e.OnClientEvent, function(success, msg, count)
         if success then
@@ -1281,33 +1261,41 @@ do
             S.lastRebirth, S.rebirthLock = os.clock(), os.clock() + 5
             S.equipDirty = true
             if CFG.autoBuild then S.wantBuild = "after rebirth" end
-            log("rebirth " .. tostring(count) .. " done")
-            notify("Rebirth " .. tostring(count) .. " done")
+            log("rebirth " .. tostring(count))
+            notify("Rebirth " .. tostring(count))
         else
             S.rebirthLock = os.clock() + 30
             log("rebirth refused: " .. tostring(msg))
         end
     end) end
+
+    -- FactorySale(plot, cframe components x12, value) is broadcast for every plot
     e = ev("FactorySale")
     if e then on(e.OnClientEvent, function(p, _, _, _, _, _, _, _, _, _, _, _, _, amount)
-        -- (plot, cframe components..., value): the value is always the last argument
         if typeof(p) == "Instance" and p.Name == A("PlotName") then
             S.factorySaleSeen = true
             S.sales += tonumber(amount) or 0
         end
     end) end
-    e = ev("JunkSoldEvent") -- "N JUNK BLOCKS SOLD FOR X COINS": sent to you only; used until a FactorySale of yours shows up
+
+    e = ev("JunkSoldEvent") -- used until a FactorySale of ours shows up
     if e then on(e.OnClientEvent, function(_, amount)
         if not S.factorySaleSeen then S.sales += tonumber(amount) or 0 end
     end) end
+
     e = ev("JunkBossEvent")
     if e then on(e.OnClientEvent, function(kind, a, b)
-        if kind == "Start" then log("junk boss spawned")
-        elseif kind == "Victory" then S.counts.bossKills += 1 log("junk boss defeated")
+        if kind == "Start" then
+            log("boss spawned")
+        elseif kind == "Victory" then
+            S.counts.bossKills += 1
+            log("boss defeated")
         elseif kind == "Reward" then
             log(("boss reward: %s coins, %s gems"):format(compact(a), compact(b)))
-            if CFG.eventNotify then notify(("Boss down: +%s coins, +%s gems"):format(compact(a), compact(b))) end
-        elseif kind == "Failed" then log("junk boss escaped") end
+            if CFG.eventNotify then notify(("Boss: +%s coins, +%s gems"):format(compact(a), compact(b))) end
+        elseif kind == "Failed" then
+            log("boss escaped")
+        end
     end) end
 end
 
@@ -1315,16 +1303,19 @@ for _, k in { "DroneInventoryJSON", "DroneXPJSON", "DroneSlots", "PaidDroneSlots
     on(LP:GetAttributeChangedSignal(k), function() S.equipDirty = true end)
 end
 
-do -- event announcements
+do
     local st = RS:FindFirstChild("DiamondEventState")
     if st then on(st:GetAttributeChangedSignal("Active"), function()
         if not (st:GetAttribute("Active") and CFG.eventNotify) then return end
-        if st:GetAttribute("EventType") == "Meteor" then notify("Meteor shower: +50% junk rain, drone crates falling")
-        else notify(("Diamond event: joining closes in %s"):format(clock((st:GetAttribute("JoinEndsAt") or 0) - now()))) end
+        if st:GetAttribute("EventType") == "Meteor" then
+            notify("Meteor shower started")
+        else
+            notify(("Diamond event: join closes in %s"):format(clock((st:GetAttribute("JoinEndsAt") or 0) - now())))
+        end
     end) end
     local mega = RS:FindFirstChild("MegaCrateEventState")
     if mega then on(mega:GetAttributeChangedSignal("Active"), function()
-        if mega:GetAttribute("Active") and CFG.eventNotify then notify("Mega Crate rain: 4 free Mega Crates") end
+        if mega:GetAttribute("Active") and CFG.eventNotify then notify("Mega Crate rain started") end
     end) end
 end
 
@@ -1337,21 +1328,21 @@ end)
 on(GuiService.ErrorMessageChanged, function(msg)
     if msg == "" then return end
     local ok, code = pcall(function() return GuiService:GetErrorCode().Value end)
-    log(("disconnected: code %s · %s · job %s"):format(ok and tostring(code) or "?", msg, game.JobId:sub(1, 8)))
+    log(("disconnected: code %s · %s"):format(ok and tostring(code) or "?", msg))
     pcall(writefile, LOG_FILE, table.concat(S.log, "\n"))
 end)
 
--- keep farming across teleports (IY autorejoin, server hops): queue this file for the next server
+-- requeue across teleports (rejoins, server hops)
 on(LP.OnTeleport, function(state)
     if state == Enum.TeleportState.Started and CFG.rejoin and queue_on_teleport then
         queue_on_teleport(('local ok, src = pcall(readfile, "jc2_main.lua") loadstring(ok and src or game:HttpGet(%q))()')
             :format(SELF_URL))
-        log("teleport started - hub queued for the next server")
+        log("teleporting, hub queued")
         pcall(writefile, LOG_FILE, table.concat(S.log, "\n"))
     end
 end)
 
--- ============================== unload + watchdog ==============================
+-- ============================== lifecycle ==============================
 local Library
 local function unload()
     if not S.alive then return end
@@ -1363,21 +1354,20 @@ local function unload()
 end
 S.unload = unload
 
-task.spawn(function()
-    while S.alive do
-        if getgenv().CruelHubJC2_TOKEN ~= TOKEN then log("newer copy started, unloading this one") unload() break end
-        task.wait(1)
-    end
-end)
-
--- ============================== loops ==============================
 local function guard(name, fn)
     local ok, err = pcall(fn)
     if not ok then log(name .. " error: " .. tostring(err)) end
     return ok, err
 end
 
-task.spawn(function() -- farm: owns the character unless an event does
+task.spawn(function() -- watchdog: a newer copy took over
+    while S.alive do
+        if getgenv().CruelHubJC2_TOKEN ~= TOKEN then log("newer copy started, unloading") unload() break end
+        task.wait(1)
+    end
+end)
+
+task.spawn(function() -- farm
     while S.alive do
         if CFG.farm and not S.eventBusy then
             S.farmBusy = true
@@ -1386,13 +1376,13 @@ task.spawn(function() -- farm: owns the character unless an event does
             S.farmBusy = false
             task.wait(0.05)
         else
-            S.status = S.eventBusy and "paused: event" or "off"
+            S.status = S.eventBusy and "paused for event" or "off"
             task.wait(0.3)
         end
     end
 end)
 
-task.spawn(function() -- events, crates, world challenge
+task.spawn(function() -- events, drops, world challenge, crates
     while S.alive do
         if ready() then
             local busy = select(2, guard("diamond", E.diamond))
@@ -1408,12 +1398,11 @@ task.spawn(function() -- boss
     while S.alive do
         if ready() then
             guard("boss", function()
-                local mode = CFG.bossMode
-                if mode == "Turn it off" and A("JunkBossEnabled") ~= false and due("boss") then
+                if CFG.bossMode == "Disable" and A("JunkBossEnabled") ~= false and due("boss") then
                     hold("boss", 30)
                     call("JunkBossEvent", "SetEnabled", false)
-                    log("junk boss turned off: pickups never pause")
-                elseif mode == "Kill it" then
+                    log("boss disabled")
+                elseif CFG.bossMode == "Kill" then
                     if A("JunkBossEnabled") == false and due("boss") then
                         hold("boss", 30)
                         call("JunkBossEvent", "SetEnabled", true)
@@ -1421,7 +1410,7 @@ task.spawn(function() -- boss
                     local p = plot()
                     local boss = p and p:FindFirstChild("PersonalJunkBoss")
                     if A("JunkBossActive") and boss and (boss:GetAttribute("Health") or 1) > 0 then
-                        call("JunkBossEvent", "Click", boss) -- paced: one click per action slot
+                        call("JunkBossEvent", "Click", boss)
                     end
                 end
             end)
@@ -1430,7 +1419,7 @@ task.spawn(function() -- boss
     end
 end)
 
-task.spawn(function() -- upgrades / rebirth / drones
+task.spawn(function() -- upgrades, rebirth, drones
     while S.alive do
         guard("upgrades", U.tick)
         task.wait(1.2)
@@ -1444,7 +1433,7 @@ task.spawn(function() -- rewards
     end
 end)
 
-task.spawn(function() -- income (5-min window of coin gains; spending and rebirths don't count against it)
+task.spawn(function() -- income (5-min window of coin gains), housekeeping
     local n = 0
     while S.alive do
         n += 1
@@ -1458,7 +1447,9 @@ task.spawn(function() -- income (5-min window of coin gains; spending and rebirt
         local sum = 0
         for _, e in S.incomeWin do sum += e[2] end
         S.income = sum / math.clamp(t - S.t0, 1, 300)
-        if n % 30 == 0 then for k in S.skip do if typeof(k) == "Instance" and not k.Parent then S.skip[k] = nil end end end
+        if n % 30 == 0 then
+            for k in S.skip do if typeof(k) == "Instance" and not k.Parent then S.skip[k] = nil end end
+        end
         if S.logDirty and n % 3 == 0 then
             S.logDirty = false
             pcall(writefile, LOG_FILE, table.concat(S.log, "\n"))
@@ -1467,11 +1458,9 @@ task.spawn(function() -- income (5-min window of coin gains; spending and rebirt
     end
 end)
 
--- ============================== Obsidian UI ==============================
--- Local copies in the workspace first: a hung GitHub HttpGet once stalled a reload (and the
--- executor's whole script queue with it). Falls back to GitHub when a copy is missing.
+-- ============================== UI ==============================
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
-local function obsidian(file, remote)
+local function obsidian(file, remote) -- workspace copy first: a hung HttpGet once jammed the executor
     local path = "BattleBotFarm/lib/" .. file
     local ok, src = pcall(function() return isfile(path) and readfile(path) end)
     return loadstring(ok and src or game:HttpGet(repo .. remote))()
@@ -1482,7 +1471,8 @@ local SaveManager  = obsidian("SaveManager.lua", "addons/SaveManager.lua")
 notify = function(msg) pcall(function() Library:Notify(msg, 5) end) end
 
 local Window = Library:CreateWindow({
-    Title = "CruelHub", Icon = (function() -- CruelHub logo from the repo, cached in the workspace; a skull if the executor can't load it
+    Title = "CruelHub",
+    Icon = (function() -- CruelHub logo, cached; skull if the executor can't load it
         local ok, id = pcall(function()
             local f = "CruelHub/logo.jpg"
             if not isfolder("CruelHub") then makefolder("CruelHub") end
@@ -1494,11 +1484,11 @@ local Window = Library:CreateWindow({
             return getcustomasset(f)
         end)
         return ok and id or "skull"
-    end)(), Footer = "Junk Crushers 2 · v1 · farm · upgrades · rebirth · drones · rewards · events",
-    Size = UDim2.fromOffset(704, 824), -- default window size (user pick)
+    end)(),
+    Footer = "Junk Crushers 2 · v1.1",
+    Size = UDim2.fromOffset(704, 824),
     Center = true, AutoShow = true, ToggleKeybind = Enum.KeyCode.RightControl,
 })
--- unloaded by a newer copy while we were still setting up: don't leave a dead menu behind
 if not S.alive or getgenv().CruelHubJC2_TOKEN ~= TOKEN then pcall(Library.Unload, Library) return end
 
 local Tabs = {
@@ -1508,7 +1498,7 @@ local Tabs = {
     Drones   = Window:AddTab("Drones", "plane"),
     Rewards  = Window:AddTab("Rewards", "gift"),
     Events   = Window:AddTab("Events", "party-popper"),
-    Teleport = Window:AddTab("Teleport", "map-pin"),
+    Misc     = Window:AddTab("Misc", "map-pin"),
     Status   = Window:AddTab("Status", "activity"),
     Settings = Window:AddTab("Settings", "settings"),
 }
@@ -1522,9 +1512,9 @@ local function toggle(box, idx, key, text, tip, extra)
         end,
     })
 end
-local function slider(box, idx, key, text, min, max, suffix, tip, rounding)
+local function slider(box, idx, key, text, min, max, suffix, rounding)
     return box:AddSlider(idx, {
-        Text = text, Tooltip = tip, Default = CFG[key], Min = min, Max = max, Rounding = rounding or 0, Suffix = suffix,
+        Text = text, Default = CFG[key], Min = min, Max = max, Rounding = rounding or 0, Suffix = suffix,
         Callback = function(v) CFG[key] = v end,
     })
 end
@@ -1534,7 +1524,7 @@ local function dropdown(box, idx, key, text, values, tip)
         Callback = function(v) CFG[key] = v end,
     })
 end
-local function multi(box, idx, key, text, values, tip, labels)
+local function multi(box, idx, key, text, values, labels)
     local defaults, shown, back = {}, {}, {}
     for _, v in values do
         local l = labels and labels[v] or v
@@ -1542,7 +1532,7 @@ local function multi(box, idx, key, text, values, tip, labels)
         if CFG[key][v] then defaults[#defaults + 1] = l end
     end
     return box:AddDropdown(idx, {
-        Text = text, Tooltip = tip, Values = shown, Default = defaults, Multi = true,
+        Text = text, Values = shown, Default = defaults, Multi = true,
         Callback = function(sel)
             local t = {}
             for _, l in shown do t[back[l]] = sel[l] == true end
@@ -1551,273 +1541,330 @@ local function multi(box, idx, key, text, values, tip, labels)
     })
 end
 
--- ---------- Farm ----------
-local Loop = Tabs.Farm:AddLeftGroupbox("Junk loop — coins", "recycle")
-Loop:AddLabel("Rain junk -> dumpster -> crusher -> blocks -> Unload Pad -> factory sells. Each step below is one part of that loop; the farm does whichever is due.", true)
-toggle(Loop, "JC2_Farm", "farm", "Auto Farm", "Runs the whole loop with the steps ticked below. Owns your character while on (events pause it)")
-    :AddKeyPicker("JC2_FarmKey", { Default = "F6", SyncToggleState = true, Mode = "Toggle", Text = "Auto Farm" })
-toggle(Loop, "JC2_Pickup", "pickup", "Pick up rain junk", "Most valuable junk in reach first; walks to the nearest when nothing is in reach. Stacks with the game's Auto Clicker and magnet")
-toggle(Loop, "JC2_Loot", "loot", "Loot dumpster", "The moment it's full (what the Infinite Storage pass saves you), or when the rain runs dry")
-toggle(Loop, "JC2_Crush", "crush", "Crush junk", "Presses the crusher's Crush Junk button once enough junk is looted")
-toggle(Loop, "JC2_Blocks", "blocks", "Collect junk blocks", "Pick Up All on the stack, or each block that rolls out (12-stud pickup)")
-toggle(Loop, "JC2_Unload", "unload", "Unload blocks (free Auto Loader)", "Carries your blocks to the factory's Unload Pad and waits there while the line takes them. Skipped while the Auto Loader pass is doing it")
-slider(Loop, "JC2_Reach", "reach", "Pickup reach", 10, 46, " studs", "The game allows 48 from your character to the junk's box")
-slider(Loop, "JC2_CrushMin", "crushMin", "Crush at looted junk ≥", 1, 50, "", "The game warns below 10")
-slider(Loop, "JC2_LootIdle", "lootIdle", "Loot a part-full dumpster after", 2, 60, "s idle")
-local farmLabel = Loop:AddLabel("…", true)
+local L = {} -- live readouts
 
-local Smelt = Tabs.Farm:AddRightGroupbox("Smelter — potions, gems, drones", "flame")
-Smelt:AddLabel("A 10-minute batch pays 2-5 rolls: 2x coin or 2x luck potions (applied on claim), gems, or drones up to Halo and Cinder.", true)
-toggle(Smelt, "JC2_SmeltClaim", "smeltClaim", "Claim smelter rewards", "Uses the claim prompt as soon as a batch is ready (part of Auto Farm)")
-toggle(Smelt, "JC2_SmeltInput", "smeltInput", "Start smelter batches", "Feeds the smelter whenever it's idle. It takes from what you're holding, so it competes a little with the factory")
-local smeltLabel = Smelt:AddLabel("…", true)
-
-local Move = Tabs.Farm:AddRightGroupbox("Movement", "footprints")
-toggle(Move, "JC2_FastMove", "fastMove", "Fast move", "Steps your character 8 studs at a time instead of walking. Faster, but more visible than walking")
-local Game = Tabs.Farm:AddRightGroupbox("Game's AUTO LOADER", "package")
-if A("AutoLoader") == true then
-    local gl = Game:AddToggle("JC2_GameLoader", {
-        Text = "Game's Auto Loader (pass)", Default = A("AutoLoaderDisabled") ~= true,
-        Tooltip = "The pass's own switch. While it's on, Unload blocks above stands aside",
-        Callback = function(v)
-            if S.syncLoader or v == (A("AutoLoaderDisabled") ~= true) then return end
-            task.spawn(call, "SetAutoLoaderEnabled", v)
-        end,
-    })
-    on(LP:GetAttributeChangedSignal("AutoLoaderDisabled"), function()
-        S.syncLoader = true
-        gl:SetValue(A("AutoLoaderDisabled") ~= true)
-        S.syncLoader = false
-    end)
-else
-    Game:AddLabel("The Auto Loader is a pass you don't own. Unload blocks above does the same, free.", true)
-end
-
--- ---------- Upgrades ----------
-local Plot = Tabs.Upgrades:AddLeftGroupbox("Plot — coin board, crusher, dumpster", "coins")
-toggle(Plot, "JC2_Upgrades", "upgrades", "Auto Upgrades", "Coin board, crusher, dumpster, factory upgraders + Auto Build, and Auto Roll. One purchase at a time, each confirmed by the server before the next")
-multi(Plot, "JC2_CoinKeys", "coinKeys", "Coin board cards", COIN_KEYS, "Rain = better junk tiers · Rain Speed = more drops (beats the Fast Rain pass at max) · Auto Clicker = server pickups · Drone Speed / Slots", COIN_TEXT)
-dropdown(Plot, "JC2_CoinOrder", "coinOrder", "Buy order", { "Cheapest first", "Card order (Rain first)" })
-toggle(Plot, "JC2_Crusher", "crusher", "Crusher speed", "4 levels: 1K / 10K / 100K / 1M. Each takes 1 s off the 7 s crush")
-toggle(Plot, "JC2_Dumpster", "dumpster", "Bigger dumpster", "17 levels from 30 coins. More room = fewer loot trips")
-slider(Plot, "JC2_Reserve", "reserve", "Keep in reserve", 0, 90, "% of coins", "Upgrades only spend what's above this")
-local upLabel = Plot:AddLabel("…", true)
-
-local Roll = Tabs.Upgrades:AddLeftGroupbox("Auto Roll — drone crates", "dices")
-Roll:AddLabel("Runs with Auto Upgrades. When a full batch is affordable above the floor it goes to the crate (game's Shops teleport), rolls, equips your best drones and comes home. Gems / tokens only: Robux crate buttons are locked out of this hub.", true)
-S.rollToggle = toggle(Roll, "JC2_Roll", "roll", "Auto Roll", "Pauses farming while it's at the shop")
-dropdown(Roll, "JC2_CrateKind", "crateKind", "Crate", CRATE_KINDS,
-    "Normal 100 gems · Infernal 300 gems (Griffin / Prism Leviathan) · Rebirth 10 tokens (Reforge / Afterburner / Harbringer) · Mega 10K gems")
-Roll:AddDropdown("JC2_CrateBatch", { Text = "Roll at a time", Values = { "1", "3" }, Default = tostring(CFG.crateBatch),
-    Callback = function(v) CFG.crateBatch = tonumber(v) or 1 end })
-slider(Roll, "JC2_CrateFloor", "crateFloor", "Keep at least", 0, 50000, "", "Gems (or tokens for the Rebirth crate) never spent")
-dropdown(Roll, "JC2_CrateStop", "crateStop", "Stop rolling when I get", { "Never", "Legendary", "Mythical", "Exotic", "Akashic", "Secret" },
-    "Turns Auto Roll off and notifies you when a drone this rare or better drops")
-local rollLabel = Roll:AddLabel("…", true)
-
-local Fac = Tabs.Upgrades:AddRightGroupbox("Factory — upgraders", "factory")
-Fac:AddLabel("Every upgrader on the line multiplies each block once (Polisher x1.4 … Drum Refiner x1.8). Coin upgraders are lost on rebirth; this buys them back.", true)
-toggle(Fac, "JC2_FactoryBuy", "factoryBuy", "Buy upgraders", "Cheapest missing first: Polisher 1K -> Wooden Smelter 25K -> Laser 100K -> Press 2.5M -> Spectrum 100M -> Smoker 5B -> Drum Refiner 10T")
-toggle(Fac, "JC2_AutoBuild", "autoBuild", "Auto Build", "The game's free Auto Build button, pressed after every upgrader buy, after rebirth, and whenever a part sits unplaced in stock. It re-lays out the WHOLE factory into the game's spiral, so a custom layout gets replaced")
-toggle(Fac, "JC2_UpgraderTut", "upgraderTut", "Finish the upgrader tutorial", "GO -> free Polisher -> Auto Build: +x1.4 and +2,000 coins")
-local facLabel = Fac:AddLabel("…", true)
-
-local Pass = Tabs.Upgrades:AddRightGroupbox("Gamepasses, recreated free", "sparkles")
-Pass:AddLabel("Auto Loader -> Farm > Unload blocks\nInfinite Storage -> Farm > Loot dumpster + Bigger dumpster\nFast Rain (+50%) -> Rain Speed card (+300% at max)\nAuto Clicker -> Farm > Pick up rain junk (~2.5/s)\n2x Sell, Drone Luck, VIP: server-side multipliers, no free equivalent. Stack the free 2x coin boosts instead (Rewards).", true)
-
--- ---------- Rebirth ----------
-local Reb = Tabs.Rebirth:AddLeftGroupbox("Rebirth — tokens, gems, +0.5x coins", "rotate-ccw")
-Reb:AddLabel("Costs 1M and spends ALL coins; resets coins, upgrades, dumpster and coin upgraders. Pays rebirth tokens (1 at 1M, +1 each 5x more), 50 gems per token, and +0.5x coins for each of your first 5 rebirths.", true)
-dropdown(Reb, "JC2_RebirthMode", "rebirthMode", "Auto Rebirth", { "Off", "As soon as possible", "At token count", "Smart" },
-    "Smart: rebirths at 1M until you have 5, then waits while the next token comes faster than this run's average")
-slider(Reb, "JC2_RebirthTokens", "rebirthMinTokens", "Token count", 1, 12, " tokens", "For 'At token count'")
-slider(Reb, "JC2_RebirthMax", "rebirthMax", "Stop at rebirth", 0, 200, "", "0 = no limit")
-local rebLabel = Reb:AddLabel("…", true)
-
-local Shop = Tabs.Rebirth:AddRightGroupbox("Rebirth shop — spends tokens", "store")
-toggle(Shop, "JC2_Shop", "shop", "Auto Rebirth Shop", "Buys in this order: Gold, Magnet, Refabricator, Diamond, Atomic, Amplifier, Ion, PowerCore, Drone Luck, then mutation levels. Everything here survives rebirth")
-multi(Shop, "JC2_ShopItems", "shopItems", "Buy", SHOP_GROUPS)
-toggle(Shop, "JC2_ShopSave", "shopSave", "Save for the next item", "Don't skip ahead to cheaper items while the next one in order is unaffordable")
-local shopLabel = Shop:AddLabel("…", true)
-
--- ---------- Drones ----------
-local Eq = Tabs.Drones:AddLeftGroupbox("Equip", "plane")
-toggle(Eq, "JC2_EquipBest", "equipBest", "Auto Equip Best", "The game's own Equip Best, re-run whenever you get a drone, a slot, or a level")
-local droneLabel = Eq:AddLabel("…", true)
-
-local DN = Tabs.Drones:AddRightGroupbox("Rolls — notifications", "bell")
-DN:AddLabel("Auto Roll (crate opening) lives under Upgrades > Auto Roll and runs with Auto Upgrades.", true)
-toggle(DN, "JC2_RareNotify", "rareNotify", "Notify on Mythical+")
-toggle(DN, "JC2_ServerRare", "serverRare", "Server-wide rare drops", "Other players' Mythical+ unboxes")
-
--- ---------- Rewards ----------
-local Cl = Tabs.Rewards:AddLeftGroupbox("Claims", "gift")
-toggle(Cl, "JC2_Claims", "claims", "Auto Claim", "Checks every 5 s; each claim is the game's own button")
-toggle(Cl, "JC2_CWelcome", "cWelcome", "Welcome boost", "2x coins + 2x luck each session")
-toggle(Cl, "JC2_CDaily", "cDaily", "Daily reward", "7-day cycle: coins, Junk Hunter, gems, Reactor Overlord")
-toggle(Cl, "JC2_COffline", "cOffline", "Offline earnings", "The free claim only (the 2x button is Robux)")
-toggle(Cl, "JC2_CHourly", "cHourly", "Hourly quests")
-toggle(Cl, "JC2_CDailyQuest", "cDailyQuest", "Daily quests")
-toggle(Cl, "JC2_CMain", "cMain", "Main quests")
-toggle(Cl, "JC2_CIndex", "cIndex", "Junk index entries", "10-40 gems for each new junk / mutation found")
-toggle(Cl, "JC2_CMilestone", "cMilestone", "Junk index milestones", "Gems, +0.1x coins, +10% rain, a drone slot, a Mega Crate")
-S.chestToggle = toggle(Cl, "JC2_CChest", "cChest", "Daily chest", "Needs the game's Roblox group")
-local Quests = Tabs.Rewards:AddRightGroupbox("Quests", "list-checks")
-local questLabel = Quests:AddLabel("…", true)
-local Timers = Tabs.Rewards:AddRightGroupbox("Timers & boosts", "timer")
-local timerLabel = Timers:AddLabel("…", true)
-
--- ---------- Events ----------
-local Boss = Tabs.Events:AddLeftGroupbox("Junk Boss", "skull")
-Boss:AddLabel("Spawns every 150 pickups for 20 s and blocks rain pickups while it's up. Faster kills pay up to 100x coins and 2x gems.", true)
-dropdown(Boss, "JC2_BossMode", "bossMode", "Boss", { "Game default", "Kill it", "Turn it off" },
-    "Kill it: clicks it at action pace. Turn it off: the game's own switch, so the farm never pauses")
-local bossLabel = Boss:AddLabel("…", true)
-
-local Dia = Tabs.Events:AddLeftGroupbox("Diamond event", "gem")
-toggle(Dia, "JC2_Diamond", "diamond", "Auto Diamond Event", "Joins with the game's teleport, picks up diamonds on the platform, then farming resumes")
-toggle(Dia, "JC2_GemUp", "gemUpgrades", "Buy event upgrades", "Gems (+0.2x rebirth gems, max 10) then Luck (+0.1x crate luck, max 30), bought on the platform")
-slider(Dia, "JC2_GemFloor", "gemFloor", "Keep at least", 0, 50000, " gems")
-
-local Drop = Tabs.Events:AddRightGroupbox("Drops & world", "party-popper")
-toggle(Drop, "JC2_Mega", "megaCrates", "Grab Mega Crate rain", "4 free Mega Crates per rain. Walks to each landed crate")
-toggle(Drop, "JC2_Meteor", "meteorCrates", "Grab meteor crates", "Drone crates from the Meteor shower")
-toggle(Drop, "JC2_World", "worldChallenge", "World Challenge reward", "1,000 gems once the server-wide goal is reached")
-toggle(Drop, "JC2_EventNotify", "eventNotify", "Event notifications")
-local eventLabel = Drop:AddLabel("…", true)
-
--- ---------- Teleport ----------
-local Tp = Tabs.Teleport:AddLeftGroupbox("Teleports", "map-pin")
-Tp:AddLabel("Uses the game's own Base / Shops buttons. Turn Auto Farm off first or it walks you back.", true)
-Tp:AddButton({ Text = "My base", Func = function() task.spawn(call, "TeleportToBase") end })
-Tp:AddButton({ Text = "Shops", Func = function() task.spawn(call, "TeleportToShops") end })
-local function walkSpot(text, path)
-    Tp:AddButton({ Text = text, Func = function()
-        task.spawn(function()
-            local part = workspace
-            for _, n in path do part = part and part:FindFirstChild(n) end
-            local pos = posOf(part)
-            if not pos then notify(text .. ": not found") return end
-            if dist(pos) > 60 then call("TeleportToShops") task.wait(1.5) end
-            moveTo(pos, 8, 25)
+-- Farm
+do
+    local box = Tabs.Farm:AddLeftGroupbox("Auto Farm", "recycle")
+    toggle(box, "JC2_Farm", "farm", "Auto Farm")
+        :AddKeyPicker("JC2_FarmKey", { Default = "F6", SyncToggleState = true, Mode = "Toggle", Text = "Auto Farm" })
+    box:AddDivider()
+    toggle(box, "JC2_Pickup", "pickup", "Pick up junk")
+    toggle(box, "JC2_Loot", "loot", "Loot dumpster")
+    toggle(box, "JC2_Crush", "crush", "Crush junk")
+    toggle(box, "JC2_Blocks", "blocks", "Collect blocks")
+    toggle(box, "JC2_Unload", "unload", "Unload blocks", "Free Auto Loader")
+    if A("AutoLoader") == true then -- pass owners: mirror the game's own switch
+        local gl = box:AddToggle("JC2_GameLoader", {
+            Text = "Game Auto Loader", Default = A("AutoLoaderDisabled") ~= true,
+            Callback = function(v)
+                if S.syncLoader or v == (A("AutoLoaderDisabled") ~= true) then return end
+                task.spawn(call, "SetAutoLoaderEnabled", v)
+            end,
+        })
+        on(LP:GetAttributeChangedSignal("AutoLoaderDisabled"), function()
+            S.syncLoader = true
+            gl:SetValue(A("AutoLoaderDisabled") ~= true)
+            S.syncLoader = false
         end)
-    end })
+    end
+    box:AddDivider()
+    slider(box, "JC2_Reach", "reach", "Pickup reach", 10, 46, " studs")
+    slider(box, "JC2_CrushMin", "crushMin", "Crush at", 1, 50, " junk")
+    slider(box, "JC2_LootIdle", "lootIdle", "Loot when idle", 2, 60, "s")
+    box:AddDivider()
+    L.farm = box:AddLabel("", true)
+
+    local smelt = Tabs.Farm:AddRightGroupbox("Smelter", "flame")
+    toggle(smelt, "JC2_SmeltClaim", "smeltClaim", "Claim rewards")
+    toggle(smelt, "JC2_SmeltInput", "smeltInput", "Start batches", "Uses junk you're holding")
+    L.smelt = smelt:AddLabel("", true)
+
+    local move = Tabs.Farm:AddRightGroupbox("Movement", "footprints")
+    toggle(move, "JC2_FastMove", "fastMove", "Fast move", "Steps instead of walking")
 end
-walkSpot("Drone crates", { "DroneShop", "DroneCrate" })
-walkSpot("Rebirth shop", { "RebirthShop" })
-walkSpot("Dumpster shop", { "DumpsterShop" })
-walkSpot("World Challenge", { "WorldChallenge" })
 
--- ---------- Status ----------
-local Stat = Tabs.Status:AddLeftGroupbox("Status", "activity")
-local statusLabel = Stat:AddLabel("…", true)
-local Log = Tabs.Status:AddRightGroupbox("Log", "scroll-text")
-local logLabel = Log:AddLabel("", true)
+-- Upgrades
+do
+    local box = Tabs.Upgrades:AddLeftGroupbox("Upgrades", "coins")
+    toggle(box, "JC2_Upgrades", "upgrades", "Auto Upgrades", "Also runs Auto Build and Auto Roll")
+    box:AddDivider()
+    multi(box, "JC2_CoinKeys", "coinKeys", "Coin cards", COIN_KEYS, COIN_TEXT)
+    dropdown(box, "JC2_CoinOrder", "coinOrder", "Buy order", { "Cheapest first", "Card order" })
+    toggle(box, "JC2_Crusher", "crusher", "Crusher speed")
+    toggle(box, "JC2_Dumpster", "dumpster", "Dumpster size")
+    slider(box, "JC2_Reserve", "reserve", "Keep in reserve", 0, 90, "%")
+    box:AddDivider()
+    L.up = box:AddLabel("", true)
 
-local function fmtSince(untilT) local s = (tonumber(untilT) or 0) - now() return s > 0 and clock(s) or nil end
+    local fac = Tabs.Upgrades:AddRightGroupbox("Factory", "factory")
+    toggle(fac, "JC2_FactoryBuy", "factoryBuy", "Buy upgraders", "Cheapest missing first")
+    toggle(fac, "JC2_AutoBuild", "autoBuild", "Auto Build", "Re-lays out the whole factory")
+    toggle(fac, "JC2_UpgraderTut", "upgraderTut", "Upgrader tutorial", "Free Polisher + 2,000 coins")
+    fac:AddDivider()
+    L.fac = fac:AddLabel("", true)
+
+    local roll = Tabs.Upgrades:AddRightGroupbox("Auto Roll", "dices")
+    S.rollToggle = toggle(roll, "JC2_Roll", "roll", "Auto Roll", "Gems / tokens only")
+    roll:AddDivider()
+    dropdown(roll, "JC2_CrateKind", "crateKind", "Crate", CRATE_KINDS)
+    roll:AddDropdown("JC2_CrateBatch", { Text = "Per roll", Values = { "1", "3" }, Default = tostring(CFG.crateBatch),
+        Callback = function(v) CFG.crateBatch = tonumber(v) or 1 end })
+    slider(roll, "JC2_CrateFloor", "crateFloor", "Keep at least", 0, 50000, "")
+    dropdown(roll, "JC2_CrateStop", "crateStop", "Stop at", { "Never", "Legendary", "Mythical", "Exotic", "Akashic", "Secret" })
+    roll:AddDivider()
+    L.roll = roll:AddLabel("", true)
+end
+
+-- Rebirth
+do
+    local box = Tabs.Rebirth:AddLeftGroupbox("Rebirth", "rotate-ccw")
+    dropdown(box, "JC2_RebirthMode", "rebirthMode", "Auto Rebirth", { "Off", "ASAP", "At tokens", "Smart" },
+        "Smart: ASAP until 5 rebirths, then when tokens slow down")
+    slider(box, "JC2_RebirthTokens", "rebirthMinTokens", "Tokens", 1, 12, "")
+    slider(box, "JC2_RebirthMax", "rebirthMax", "Stop at rebirth", 0, 200, "")
+    box:AddDivider()
+    L.reb = box:AddLabel("", true)
+
+    local shop = Tabs.Rebirth:AddRightGroupbox("Rebirth Shop", "store")
+    toggle(shop, "JC2_Shop", "shop", "Auto Rebirth Shop")
+    toggle(shop, "JC2_ShopSave", "shopSave", "Save for next item", "Don't skip ahead to cheaper items")
+    multi(shop, "JC2_ShopItems", "shopItems", "Buy", SHOP_GROUPS)
+    shop:AddDivider()
+    L.shop = shop:AddLabel("", true)
+end
+
+-- Drones
+do
+    local box = Tabs.Drones:AddLeftGroupbox("Drones", "plane")
+    toggle(box, "JC2_EquipBest", "equipBest", "Auto Equip Best")
+    toggle(box, "JC2_RareNotify", "rareNotify", "Notify Mythical+")
+    toggle(box, "JC2_ServerRare", "serverRare", "Server rare drops")
+    box:AddDivider()
+    L.drone = box:AddLabel("", true)
+end
+
+-- Rewards
+do
+    local box = Tabs.Rewards:AddLeftGroupbox("Auto Claim", "gift")
+    toggle(box, "JC2_Claims", "claims", "Auto Claim")
+    box:AddDivider()
+    toggle(box, "JC2_CWelcome", "cWelcome", "Welcome boost")
+    toggle(box, "JC2_CDaily", "cDaily", "Daily reward")
+    toggle(box, "JC2_COffline", "cOffline", "Offline coins")
+    toggle(box, "JC2_CHourly", "cHourly", "Hourly quests")
+    toggle(box, "JC2_CDailyQuest", "cDailyQuest", "Daily quests")
+    toggle(box, "JC2_CMain", "cMain", "Main quests")
+    toggle(box, "JC2_CIndex", "cIndex", "Index entries")
+    toggle(box, "JC2_CMilestone", "cMilestone", "Index milestones")
+    S.chestToggle = toggle(box, "JC2_CChest", "cChest", "Daily chest", "Needs the game's group")
+
+    L.quests = Tabs.Rewards:AddRightGroupbox("Quests", "list-checks"):AddLabel("", true)
+    L.timers = Tabs.Rewards:AddRightGroupbox("Timers", "timer"):AddLabel("", true)
+end
+
+-- Events
+do
+    local boss = Tabs.Events:AddLeftGroupbox("Junk Boss", "skull")
+    dropdown(boss, "JC2_BossMode", "bossMode", "Boss", { "Default", "Kill", "Disable" }, "Disable: the farm never pauses")
+    L.boss = boss:AddLabel("", true)
+
+    local dia = Tabs.Events:AddLeftGroupbox("Diamond Event", "gem")
+    toggle(dia, "JC2_Diamond", "diamond", "Auto Diamond Event")
+    toggle(dia, "JC2_GemUp", "gemUpgrades", "Buy event upgrades")
+    slider(dia, "JC2_GemFloor", "gemFloor", "Keep gems", 0, 50000, "")
+
+    local drop = Tabs.Events:AddRightGroupbox("Drops", "party-popper")
+    toggle(drop, "JC2_Mega", "megaCrates", "Mega Crate rain")
+    toggle(drop, "JC2_Meteor", "meteorCrates", "Meteor crates")
+    toggle(drop, "JC2_World", "worldChallenge", "World Challenge")
+    toggle(drop, "JC2_EventNotify", "eventNotify", "Notifications")
+    drop:AddDivider()
+    L.event = drop:AddLabel("", true)
+end
+
+-- Misc
+local function iy(command)
+    local root = gethui and gethui() or game:GetService("CoreGui")
+    local bar = root:FindFirstChild("Cmdbar", true)
+    local input = bar and (bar:IsA("TextBox") and bar or bar:FindFirstChildWhichIsA("TextBox"))
+    if not (input and getconnections) then log("IY not loaded: " .. command) return false end
+    input.Text = command
+    for _, c in getconnections(input.FocusLost) do c:Fire(true) end
+    log("IY: " .. command)
+    return true
+end
+
+do
+    local tp = Tabs.Misc:AddLeftGroupbox("Teleport", "map-pin")
+    tp:AddButton({ Text = "Base", Func = function() task.spawn(call, "TeleportToBase") end })
+    tp:AddButton({ Text = "Shops", Func = function() task.spawn(call, "TeleportToShops") end })
+    tp:AddDivider()
+    for _, spot in { { "Drone crates", { "DroneShop", "DroneCrate" } }, { "Rebirth shop", { "RebirthShop" } },
+        { "Dumpster shop", { "DumpsterShop" } }, { "World Challenge", { "WorldChallenge" } } } do
+        tp:AddButton({ Text = spot[1], Func = function()
+            task.spawn(function()
+                local part = workspace
+                for _, n in spot[2] do part = part and part:FindFirstChild(n) end
+                local pos = posOf(part)
+                if not pos then notify(spot[1] .. " not found") return end
+                if dist(pos) > 60 then call("TeleportToShops") task.wait(1.5) end
+                moveTo(pos, 8, 25)
+            end)
+        end })
+    end
+
+    -- server-stored settings: mirrored, only written when you change them
+    local game_ = Tabs.Misc:AddRightGroupbox("Game Settings", "sliders-horizontal")
+    for _, s in { { "Reduce lag", "SettingsReduceLag" }, { "Hide other drones", "SettingsHideOtherDrones" },
+        { "Mute music", "SettingsMusicMuted" } } do
+        local key = s[2]
+        local tg = game_:AddToggle("JC2_" .. key, {
+            Text = s[1], Default = A(key) == true,
+            Callback = function(v)
+                if S["sync" .. key] or v == (A(key) == true) then return end
+                task.spawn(call, "UpdatePlayerSetting", key, v)
+            end,
+        })
+        on(LP:GetAttributeChangedSignal(key), function()
+            S["sync" .. key] = true
+            tg:SetValue(A(key) == true)
+            S["sync" .. key] = false
+        end)
+    end
+
+    local iyBox = Tabs.Misc:AddRightGroupbox("Infinite Yield", "terminal")
+    toggle(iyBox, "JC2_IySafety", "iySafety", "AFK safety", "staffwatch + noprompts + clearerror",
+        function(v) iy(v and "staffwatch\\noprompts\\clearerror" or "unstaffwatch\\showprompts") end)
+    toggle(iyBox, "JC2_IyNoRender", "iyNoRender", "No rendering", "CPU saver",
+        function(v) iy(v and "norender" or "render") end)
+end
+
+-- Status
+L.status = Tabs.Status:AddLeftGroupbox("Status", "activity"):AddLabel("", true)
+L.log = Tabs.Status:AddRightGroupbox("Log", "scroll-text"):AddLabel("", true)
+
+-- Settings
+do
+    local box = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
+    toggle(box, "JC2_AntiAfk", "antiAfk", "Anti-AFK")
+    toggle(box, "JC2_Rejoin", "rejoin", "Reload after teleport")
+    slider(box, "JC2_Gap", "gap", "Action spacing", 0.3, 1, "s", 2)
+    box:AddDivider()
+    box:AddButton({ Text = "Unload", Func = unload })
+end
+
+-- ============================== readouts ==============================
+local function left(untilT) local s = (tonumber(untilT) or 0) - now() return s > 0 and clock(s) or nil end
+local function lv(attr, max) return ("%d/%d"):format(num(attr), max) end
 
 task.spawn(function()
     while S.alive do
         pcall(function()
-            local p, t = plot(), now()
+            local p, t, cnt = plot(), now(), S.counts
             local d = p and F.dumpster(p)
-            local hours = math.max((os.clock() - S.t0) / 3600, 1 / 60)
-            local cnt = S.counts
-            farmLabel:SetText(("%s\ndumpster %s/%s · looted %d · carrying %d\npicked %d · loots %d · crushes %d · blocks %d · unloaded %d")
+            local c = coins()
+
+            L.farm:SetText(("%s\nDumpster %s/%s · Junk %d · Blocks %d\nPicked %d · Loots %d · Unloaded %d")
                 :format(S.status, tostring(d and d:GetAttribute("CurrentCapacity") or "?"),
                     d and (d:GetAttribute("InfiniteStorage") and "∞" or tostring(d:GetAttribute("MaxCapacity") or 25)) or "?",
-                    looted(), carried(), cnt.picks, cnt.loots, cnt.crushes, cnt.blocks, cnt.unloads))
+                    looted(), carried(), cnt.picks, cnt.loots, cnt.unloads))
+
             local sm = p and p:FindFirstChild("Smelter")
-            smeltLabel:SetText(sm and ("%s · %d reward(s) waiting"):format(sm:GetAttribute("Smelting") and "smelting" or "idle",
-                sm:GetAttribute("PendingRewards") or 0) or "smelter not found")
-            upLabel:SetText(("rain Lv.%d · speed %d/30 · clicker %d/16 · drone speed %d/20 · slots %d/3\ncrusher %d/4 · dumpster Lv.%d · bought %d")
-                :format(num("JunkRainLevel"), num("RainSpeedLevel"), num("AutoClickerLevel"), num("DroneSpeedLevel"),
-                    num("DroneSlots"), num("CrusherSpeedLevel"), num("DumpsterLevel"), cnt.buys))
-            local data, own = json("FactoryDataJSON"), {}
-            for _, u in UPGRADERS do if factoryOwned(data, u[1]) then own[#own + 1] = u[1] end end
-            facLabel:SetText(("owned: %s · sales %s%s"):format(#own > 0 and table.concat(own, ", ") or "none", compact(S.sales),
-                S.wantBuild and "\nAuto Build waits until you're on your base" or ""))
-            local c = coins()
+            L.smelt:SetText(sm and ("%s · %d waiting"):format(sm:GetAttribute("Smelting") and "Smelting" or "Idle",
+                sm:GetAttribute("PendingRewards") or 0) or "")
+
+            L.up:SetText(("Rain %d · Speed %s · Clicker %s\nDrone speed %s · Slots %s\nCrusher %s · Dumpster %d · Bought %d")
+                :format(num("JunkRainLevel"), lv("RainSpeedLevel", 30), lv("AutoClickerLevel", 16), lv("DroneSpeedLevel", 20),
+                    lv("DroneSlots", 3), lv("CrusherSpeedLevel", 4), num("DumpsterLevel"), cnt.buys))
+
+            local data, own = json("FactoryDataJSON"), 0
+            for _, u in UPGRADERS do if factoryOwned(data, u[1]) then own += 1 end end
+            L.fac:SetText(("Upgraders %d/%d · Sales %s%s"):format(own, #UPGRADERS, compact(S.sales),
+                S.wantBuild and "\nAuto Build waiting for base" or ""))
+
+            local cr = CRATES[CFG.crateKind]
+            if cr then
+                local need = cr.price * (cr.single and 1 or CFG.crateBatch) + CFG.crateFloor
+                L.roll:SetText(A("PaidRandomAllowed") ~= true and "Crates disabled for this account"
+                    or ("%s %s/%s · Rolled %d"):format(cr.cur == "gems" and "Gems" or "Tokens",
+                        compact(cr.cur == "gems" and gems() or tokens()), compact(need), cnt.drones))
+            end
+
             local k = rebirthTokensFor(c)
-            rebLabel:SetText(("rebirths %d · coins %s -> %d token(s)\nnext token at %s · coin mult x%.1f\nrebirths this session %d")
-                :format(num("Rebirths"), compact(c), k, compact(1e6 * 5 ^ k), 1 + 0.5 * math.min(num("Rebirths"), 5), cnt.rebirths))
-            shopLabel:SetText(("tokens %d · magnet %d/3 · drone luck %d/4\nmutations: gold %s · diamond %s · atomic %s")
-                :format(tokens(), num("JunkMagnetLevel"), num("DroneLuckLevel"),
-                    A("GoldUnlocked") and ("Lv." .. num("GoldLevel")) or "locked",
-                    A("DiamondUnlocked") and ("Lv." .. num("DiamondLevel")) or "locked",
-                    A("AtomicUnlocked") and ("Lv." .. num("AtomicLevel")) or "locked"))
-            local inv, eq = json("DroneInventoryJSON"), {}
-            local owned = 0
+            L.reb:SetText(("Rebirths %d · x%.1f coins\n%s coins → %d tokens\nNext token at %s")
+                :format(num("Rebirths"), 1 + 0.5 * math.min(num("Rebirths"), 5), compact(c), k, compact(1e6 * 5 ^ k)))
+
+            local function mut(id) return A(id .. "Unlocked") and tostring(num(id .. "Level")) or "-" end
+            L.shop:SetText(("Tokens %d · Magnet %s · Luck %s\nGold %s · Diamond %s · Atomic %s")
+                :format(tokens(), lv("JunkMagnetLevel", 3), lv("DroneLuckLevel", 4), mut("Gold"), mut("Diamond"), mut("Atomic")))
+
+            local inv, eq, owned = json("DroneInventoryJSON"), {}, 0
             for _ in inv do owned += 1 end
             for _, key in { "EquippedDrone", "EquippedDrone2", "EquippedDrone3", "EquippedDrone4", "EquippedDrone5" } do
                 local id = A(key)
                 if type(id) == "string" and id ~= "" then eq[#eq + 1] = DRONE_NAME[inv[id]] or tostring(inv[id] or id) end
             end
-            droneLabel:SetText(("%d drone(s) owned · slots %d\nequipped: %s\nunboxed this session %d · gems %s")
+            L.drone:SetText(("Owned %d · Slots %d · Gems %s\n%s")
                 :format(owned, num("DroneSlots") + num("PaidDroneSlots") + num("GiftedDroneSlots") + (A("VIP") and 1 or 0),
-                    #eq > 0 and table.concat(eq, ", ") or "none", cnt.drones, compact(gems())))
-            local cr = CRATES[CFG.crateKind]
-            local need = cr.price * (cr.single and 1 or CFG.crateBatch) + CFG.crateFloor
-            local have = cr.cur == "gems" and gems() or tokens()
-            rollLabel:SetText(("%s %s / %s for the next roll%s\nrolled this session %d")
-                :format(cr.cur == "gems" and "gems" or "tokens", compact(have), compact(need),
-                    A("PaidRandomAllowed") ~= true and "\ncrates are disabled for this account (policy)" or "", cnt.drones))
+                    compact(gems()), #eq > 0 and table.concat(eq, "\n") or "Nothing equipped"))
+
             local ql = {}
             for _, q in C.activeHourly() do
-                ql[#ql + 1] = ("hourly · %s %s/%s%s"):format(q[3], compact(num("Hourly" .. q[1] .. "Progress")), compact(q[2]),
+                ql[#ql + 1] = ("%s  %s/%s%s"):format(q[3], compact(num("Hourly" .. q[1] .. "Progress")), compact(q[2]),
                     A("Hourly" .. q[1] .. "Claimed") and " ✓" or "")
             end
             for _, slot in C.activeDaily() do
                 local q = slot[1]
-                ql[#ql + 1] = ("daily · %s %d/%d%s"):format(q[3], num(slot[2]), q[2], A(slot[3]) and " ✓" or "")
+                ql[#ql + 1] = ("%s  %d/%d%s"):format(q[3], num(slot[2]), q[2], A(slot[3]) and " ✓" or "")
             end
             local stage = num("MainQuestStage")
-            ql[#ql + 1] = stage <= 4 and ("main · stage %d%s"):format(stage, A("MainQuestDone" .. stage) and " (ready)" or "") or "main · done"
-            ql[#ql + 1] = ("claimed this session %d"):format(cnt.claims)
-            questLabel:SetText(table.concat(ql, "\n"))
+            ql[#ql + 1] = stage <= 4 and ("Main quest %d%s"):format(stage, A("MainQuestDone" .. stage) and " ✓" or "") or "Main quests done"
+            L.quests:SetText(table.concat(ql, "\n"))
+
             local tl = {
-                "daily reward " .. (num("DailyNextClaim") <= t and "ready" or clock(num("DailyNextClaim") - t)),
-                "hourly quests reset " .. clock(3600 - math.floor(t) % 3600),
-                "daily quests reset " .. clock((num("DailyQuestDay") + 1) * 86400 - t),
-                "daily chest " .. (num("GroupChestNextClaim") <= t and "ready" or clock(num("GroupChestNextClaim") - t)),
+                "Daily reward  " .. (num("DailyNextClaim") <= t and "ready" or clock(num("DailyNextClaim") - t)),
+                "Daily chest  " .. (num("GroupChestNextClaim") <= t and "ready" or clock(num("GroupChestNextClaim") - t)),
+                "Hourly reset  " .. clock(3600 - math.floor(t) % 3600),
+                "Daily reset  " .. clock((num("DailyQuestDay") + 1) * 86400 - t),
             }
-            for _, b in { { "WelcomeBoostUntil", "welcome 2x" }, { "SmelterCoinBoostUntil", "2x coins potion" },
-                { "SmelterLuckBoostUntil", "2x luck potion" }, { "DailyCoinBoostUntil", "daily 2x coins" } } do
-                local left = fmtSince(A(b[1]))
-                if left then tl[#tl + 1] = b[2] .. " " .. left end
+            for _, b in { { "WelcomeBoostUntil", "Welcome 2x" }, { "SmelterCoinBoostUntil", "2x coins" },
+                { "SmelterLuckBoostUntil", "2x luck" }, { "DailyCoinBoostUntil", "Daily 2x" } } do
+                local l = left(A(b[1]))
+                if l then tl[#tl + 1] = b[2] .. "  " .. l end
             end
-            if num("OfflineCoins") > 0 then tl[#tl + 1] = "offline coins waiting: " .. compact(num("OfflineCoins")) end
-            timerLabel:SetText(table.concat(tl, "\n"))
+            L.timers:SetText(table.concat(tl, "\n"))
+
             local boss = p and p:FindFirstChild("PersonalJunkBoss")
-            bossLabel:SetText(A("JunkBossActive") and boss and ("BOSS UP · %s/%s HP"):format(compact(boss:GetAttribute("Health")),
-                compact(boss:GetAttribute("MaxHealth"))) or ("%s · next at %d/150 pickups · kills %d")
-                :format(A("JunkBossEnabled") == false and "off" or "on", num("JunkBossProgress"), cnt.bossKills))
+            L.boss:SetText(A("JunkBossActive") and boss
+                and ("Boss up · %s/%s HP"):format(compact(boss:GetAttribute("Health")), compact(boss:GetAttribute("MaxHealth")))
+                or ("%s · %d/150 · Kills %d"):format(A("JunkBossEnabled") == false and "Off" or "On", num("JunkBossProgress"), cnt.bossKills))
+
             local st, mega = RS:FindFirstChild("DiamondEventState"), RS:FindFirstChild("MegaCrateEventState")
             local el = {}
             if st and st:GetAttribute("Active") then
-                el[#el + 1] = ("%s event · %s · %s/%s drops"):format(tostring(st:GetAttribute("EventType")),
-                    tostring(st:GetAttribute("DiamondPhase") or "active"), tostring(st:GetAttribute("CollectedDrops") or 0),
-                    tostring(st:GetAttribute("PlannedDrops") or 40))
+                el[#el + 1] = ("%s · %s"):format(tostring(st:GetAttribute("EventType")), tostring(st:GetAttribute("DiamondPhase") or "active"))
             elseif st then
-                el[#el + 1] = "next diamond/meteor event in " .. clock((st:GetAttribute("EndsAt") or t) - t)
+                el[#el + 1] = "Next event  " .. clock((st:GetAttribute("EndsAt") or t) - t)
             end
-            if mega and mega:GetAttribute("Active") then el[#el + 1] = "Mega Crate rain NOW" end
-            el[#el + 1] = ("diamonds %d · drops %d · gems %s"):format(cnt.diamonds, cnt.drops, compact(gems()))
-            eventLabel:SetText(table.concat(el, "\n"))
-            local admin = {}
-            if (tonumber(RS:GetAttribute("AdminGlobalCoinMultiplier")) or 1) > 1 then admin[#admin + 1] = "COINS x" .. RS:GetAttribute("AdminGlobalCoinMultiplier") end
-            if (tonumber(RS:GetAttribute("AdminGlobalLuckMultiplier")) or 1) > 1 then admin[#admin + 1] = "LUCK x" .. RS:GetAttribute("AdminGlobalLuckMultiplier") end
-            statusLabel:SetText(table.concat({
-                ("farm: %s%s"):format(S.status, S.eventBusy and " (event running)" or ""),
-                ("coins %s · earned %s (%s/h) · now %s/s"):format(compact(c), compact(S.earned), compact(S.earned / hours), compact(S.income)),
-                ("gems %s · tokens %d · rebirths %d · factory sales %s"):format(compact(gems()), tokens(), num("Rebirths"), compact(S.sales)),
-                ("rain x%.2f%s · global boosts: %s"):format(
-                    (tonumber(RS:GetAttribute("MeteorRainMultiplier")) or 1) * (A("FastRain") and 1.5 or 1) * (1 + 0.1 * num("RainSpeedLevel") + num("IndexRainBonus")),
-                    A("FastRain") and " (Fast Rain pass)" or "", #admin > 0 and table.concat(admin, ", ") or "none"),
-                ("place v%d (spec verified on v%d)%s"):format(game.PlaceVersion, SPEC_VERSION,
-                    game.PlaceVersion ~= SPEC_VERSION and " · game updated since: watch the log" or ""),
-            }, "\n"))
-            logLabel:SetText(table.concat(S.log, "\n", math.max(1, #S.log - 13)))
+            if mega and mega:GetAttribute("Active") then el[#el + 1] = "Mega Crate rain now" end
+            el[#el + 1] = ("Diamonds %d · Drops %d"):format(cnt.diamonds, cnt.drops)
+            L.event:SetText(table.concat(el, "\n"))
+
+            local hours = math.max((os.clock() - S.t0) / 3600, 1 / 60)
+            local boosts = {}
+            if (tonumber(RS:GetAttribute("AdminGlobalCoinMultiplier")) or 1) > 1 then boosts[#boosts + 1] = "coins x" .. RS:GetAttribute("AdminGlobalCoinMultiplier") end
+            if (tonumber(RS:GetAttribute("AdminGlobalLuckMultiplier")) or 1) > 1 then boosts[#boosts + 1] = "luck x" .. RS:GetAttribute("AdminGlobalLuckMultiplier") end
+            local sl = {
+                "Farm: " .. S.status,
+                ("Coins %s · %s/h"):format(compact(c), compact(S.earned / hours)),
+                ("Gems %s · Tokens %d · Rebirths %d"):format(compact(gems()), tokens(), num("Rebirths")),
+                ("Claims %d · Rolled %d · Sales %s"):format(cnt.claims, cnt.drones, compact(S.sales)),
+            }
+            if #boosts > 0 then sl[#sl + 1] = "Global boost: " .. table.concat(boosts, ", ") end
+            if game.PlaceVersion ~= SPEC_VERSION then sl[#sl + 1] = ("Game updated (v%d), watch the log"):format(game.PlaceVersion) end
+            L.status:SetText(table.concat(sl, "\n"))
+            L.log:SetText(table.concat(S.log, "\n", math.max(1, #S.log - 13)))
         end)
         task.wait(0.5)
     end
@@ -1829,69 +1876,16 @@ Library:OnUnload(function()
     if getgenv().CruelHubJC2 == S then getgenv().CruelHubJC2 = nil end
 end)
 
--- ---------- Settings ----------
-local iy
-do
-    function iy(command)
-        local root = gethui and gethui() or game:GetService("CoreGui")
-        local bar = root:FindFirstChild("Cmdbar", true)
-        local input = bar and (bar:IsA("TextBox") and bar or bar:FindFirstChildWhichIsA("TextBox"))
-        if not (input and getconnections) then
-            log("IY not loaded - skipped: " .. command)
-            return false
-        end
-        input.Text = command
-        for _, c in getconnections(input.FocusLost) do c:Fire(true) end
-        log("IY: " .. command)
-        return true
-    end
-end
-
-local Menu = Tabs.Settings:AddLeftGroupbox("Menu", "menu")
-toggle(Menu, "JC2_AntiAfk", "antiAfk", "Anti-AFK", "Stops the 20-minute idle kick")
-toggle(Menu, "JC2_Rejoin", "rejoin", "Restart hub after a rejoin / server hop",
-    "Queues this hub for the next server when a teleport starts (IY autorejoin, hops). Save it in your workspace as jc2_main.lua to skip the download")
-slider(Menu, "JC2_Gap", "gap", "Action spacing", 0.3, 1, "s", "Time between any two remotes or prompts. 0.3 s is the floor every CruelHub script keeps", 2)
--- the game's own settings live on the server: these mirror them and only write what you change
-local function gameSetting(text, key, tip)
-    local tg = Menu:AddToggle("JC2_" .. key, {
-        Text = text, Tooltip = tip, Default = A(key) == true,
-        Callback = function(v)
-            if S["sync" .. key] or v == (A(key) == true) then return end
-            task.spawn(call, "UpdatePlayerSetting", key, v)
-        end,
-    })
-    on(LP:GetAttributeChangedSignal(key), function()
-        S["sync" .. key] = true
-        tg:SetValue(A(key) == true)
-        S["sync" .. key] = false
-    end)
-end
-gameSetting("Reduce lag (game setting)", "SettingsReduceLag", "Skips collect / crusher / unbox animations, shadows and post effects")
-gameSetting("Hide other drones (game setting)", "SettingsHideOtherDrones", "Hides other players' drones, sounds and pulses")
-gameSetting("Mute music (game setting)", "SettingsMusicMuted")
-Menu:AddButton({ Text = "Unload", Func = function() unload() end })
-
-local IyBox = Tabs.Settings:AddRightGroupbox("Infinite Yield (runs its own commands)", "terminal")
-IyBox:AddLabel("Drives IY's command bar, so these need IY loaded (your autoexec does it).", true)
-CFG.iySafety, CFG.iyNoRender = false, false
-toggle(IyBox, "JC2_IySafety", "iySafety", "AFK safety bundle",
-    "staffwatch (alert when game staff join) + noprompts (no purchase popups) + clearerror (clear kick blur)",
-    function(v) iy(v and "staffwatch\\noprompts\\clearerror" or "unstaffwatch\\showprompts") end)
-toggle(IyBox, "JC2_IyNoRender", "iyNoRender", "Stop 3D rendering (AFK CPU saver)", "IY norender / render",
-    function(v) iy(v and "norender" or "render") end)
-
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "JC2_GameLoader", "JC2_SettingsReduceLag", "JC2_SettingsHideOtherDrones", "JC2_SettingsMusicMuted" }) -- server-stored; a saved copy would fight it
+SaveManager:SetIgnoreIndexes({ "JC2_GameLoader", "JC2_SettingsReduceLag", "JC2_SettingsHideOtherDrones", "JC2_SettingsMusicMuted" })
 SaveManager:SetFolder(DIR)
 ThemeManager:SetFolder(DIR)
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:SetDefaultTheme({ BackgroundColor = "0c0a0b", MainColor = "161214", AccentColor = "e0233c", OutlineColor = "2a1d20", FontColor = "f2eded" }) -- CruelHub look
 ThemeManager:ApplyToTab(Tabs.Settings)
-if not getgenv().CRUELHUB_SAFEBOOT then SaveManager:LoadAutoloadConfig() end -- safe boot: nothing auto-starts
+if not getgenv().CRUELHUB_SAFEBOOT then SaveManager:LoadAutoloadConfig() end
 
--- PlaceVersion: the spec was verified on 1616; a different number means the game updated since
-log(("loaded - %s · place v%s · job %s"):format(A("PlotName") or "no plot yet", tostring(game.PlaceVersion), game.JobId:sub(1, 8)))
-Library:Notify("Junk Crushers 2 ready — RightCtrl toggles the UI, F6 toggles Auto Farm. Save a config in Settings to keep your toggles.", 5)
+log(("loaded · %s · v%s"):format(A("PlotName") or "no plot", tostring(game.PlaceVersion)))
+Library:Notify("Junk Crushers 2 loaded · RightCtrl menu · F6 farm", 5)
