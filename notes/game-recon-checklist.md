@@ -2,6 +2,8 @@
 
 # Game Recon Checklist — before building any auto farm
 
+> **Start with `RECON_QUICKSTART.md`.** It's the step-by-step runbook plus `recon.lua`, and its routing table names the sections of this file to open. This file is the reference; don't read it whole.
+
 Written after Build A Battle Bot (2026-09-26). The first farm shipped with gaps the player found in minutes:
 
 - It never re-bought Energy Stations after a rebirth.

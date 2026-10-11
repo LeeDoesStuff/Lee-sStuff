@@ -59,4 +59,12 @@ Game "[BRAKES] Fix It Up!", PlaceId 72712036210947, GameId 7673659635, max 22 pl
 
 **NEVER fire an auction MoneyBuy prompt in a test:** it has no confirm, so firing it spends €75K. On 2026-10-08 a "spy and decline" probe opened Garage3; the €75K MoneyPile came back, so it was net zero by luck. Any test that fires a purchase prompt spends real in-game money: ask first.
 
+**Personal tracker (2026-10-10):** `rblx/tracker.lua` is a private watch list with join-in-FIU. It is NOT in sync_notes, so never publish it. Run it with `loadstring(readfile("tracker.lua"))()`; RightShift toggles it. Its list is saved in `CruelHub/tracker.json`. A user's server is visible only:
+- for friends, via `LP:GetFriendsOnline()` (GameId);
+- for anyone whose join setting is Everyone, via presence gameId. Executor requests carry no login.
+
+Roblox's server list no longer returns playerTokens (0 tokens across 100 servers / 1,575 players), so the headshot-matching server finder is dead. A hidden game plus a Global-chat line in fiu_main's chatters.json within 15 min shows as "probably in Fix It Up" (that needs fiu_main running; display names aren't unique).
+
+Logged-in requests still return playerTokens, but only 5 per server (user's browser check, 2026-10-10). RoSniper is just logged-in presence polling. The user **dropped** extended tracking (cookie helper / token search): don't re-offer it.
+
 See [potassium-bridge-quirks](../notes/potassium-bridge-quirks.md), [game-recon-full-progression](../notes/game-recon-checklist.md).
